@@ -20,7 +20,7 @@ from excel.parser import ExcelParser
 from mappings.manager import MappingManager
 from validation.validator import DataValidator
 from database.client import SupabaseSyncClient
-from logging.logger import SyncLogger
+from sync_logger.logger import SyncLogger
 
 # Environment Configuration
 PORT = int(os.getenv("PORT", 8000))
