@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -283,6 +284,87 @@ app.add_middleware(
 class TriggerRequest(BaseModel):
     dry_run: bool = False
     filename: Optional[str] = None
+
+@app.get("/", response_class=HTMLResponse)
+def root_dashboard():
+    """Serves an informative status dashboard on root path."""
+    nc_connected = bool(NEXTCLOUD_WEBDAV_URL and NEXTCLOUD_USERNAME and NEXTCLOUD_APP_PASSWORD)
+    supa_connected = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+    job = scheduler.get_job("sync_job")
+    next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S UTC") if job and job.next_run_time else "Not scheduled"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nextcloud Excel Sync Worker</title>
+    <style>
+        :root {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+        body {{ background: #0f172a; color: #f8fafc; margin: 0; padding: 40px 20px; display: flex; justify-content: center; }}
+        .card {{ background: #1e293b; border: 1px solid #334155; border-radius: 12px; max-width: 650px; width: 100%; padding: 32px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); }}
+        .header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #334155; }}
+        .badge {{ background: #166534; color: #86efac; padding: 4px 12px; border-radius: 9999px; font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }}
+        .badge::before {{ content: ''; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; display: inline-block; }}
+        h1 {{ font-size: 22px; margin: 0; font-weight: 700; color: #38bdf8; }}
+        .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }}
+        .box {{ background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px; }}
+        .box-title {{ font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }}
+        .box-value {{ font-size: 14px; font-weight: 600; word-break: break-all; }}
+        .links {{ display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap; }}
+        .btn {{ background: #0284c7; color: white; padding: 10px 18px; border-radius: 6px; text-decoration: none; font-size: 14px; font-weight: 500; border: none; cursor: pointer; transition: 0.15s ease; }}
+        .btn:hover {{ background: #0369a1; }}
+        .btn-outline {{ background: transparent; border: 1px solid #475569; color: #cbd5e1; }}
+        .btn-outline:hover {{ background: #334155; color: white; }}
+        pre {{ background: #0f172a; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; color: #a5f3fc; border: 1px solid #334155; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <div>
+                <h1>Nextcloud Excel Sync Worker</h1>
+                <p style="color: #94a3b8; font-size: 14px; margin: 4px 0 0 0;">FastAPI Background Poller & Supabase Sync</p>
+            </div>
+            <span class="badge">Running</span>
+        </div>
+
+        <div class="grid">
+            <div class="box">
+                <div class="box-title">Nextcloud WebDAV</div>
+                <div class="box-value" style="color: {'#4ade80' if nc_connected else '#f87171'};">
+                    {('Connected (' + NEXTCLOUD_FOLDER + ')') if nc_connected else 'Credentials Missing'}
+                </div>
+            </div>
+            <div class="box">
+                <div class="box-title">Supabase Database</div>
+                <div class="box-value" style="color: {'#4ade80' if supa_connected else '#f87171'};">
+                    {'Connected' if supa_connected else 'Credentials Missing'}
+                </div>
+            </div>
+            <div class="box">
+                <div class="box-title">Sync Schedule</div>
+                <div class="box-value">{SYNC_INTERVAL}</div>
+            </div>
+            <div class="box">
+                <div class="box-title">Next Scheduled Run</div>
+                <div class="box-value" style="font-size: 12px;">{next_run}</div>
+            </div>
+        </div>
+
+        <div class="box" style="margin-bottom: 24px;">
+            <div class="box-title">API Quick Links</div>
+            <p style="font-size: 13px; color: #94a3b8; margin: 6px 0 12px 0;">Interactive OpenAPI Swagger documentation and system endpoints:</p>
+            <div class="links" style="margin-top: 0;">
+                <a href="/docs" class="btn" target="_blank">Open Swagger API Docs</a>
+                <a href="/status" class="btn btn-outline" target="_blank">View Status JSON</a>
+                <a href="/health" class="btn btn-outline" target="_blank">Healthcheck</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 @app.get("/health")
 def health_check():

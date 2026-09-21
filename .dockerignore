@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.env
+.env.local
+temp_downloads
+worker/temp_downloads
+__pycache__
+*.pyc
