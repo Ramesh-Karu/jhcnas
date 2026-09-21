@@ -34,7 +34,7 @@ NEXTCLOUD_APP_PASSWORD = os.getenv("NEXTCLOUD_APP_PASSWORD", "")
 NEXTCLOUD_FOLDER = os.getenv("NEXTCLOUD_FOLDER", "/ExcelImports")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("SUPABASE_KEY", "")
 SYNC_INTERVAL = os.getenv("SYNC_INTERVAL", "15m")
 
 # Global scheduler
@@ -68,7 +68,7 @@ def run_synchronization_cycle(dry_run: bool = False, specific_file: Optional[str
         return {"status": "skipped", "reason": "Missing Nextcloud or Supabase configuration."}
 
     nc = NextcloudClient(NEXTCLOUD_WEBDAV_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_APP_PASSWORD, NEXTCLOUD_FOLDER)
-    supa = SupabaseSyncClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    supa = SupabaseSyncClient(SUPABASE_URL, SUPABASE_KEY)
     logger = SyncLogger(supa.client)
 
     files = nc.list_excel_files()
@@ -289,7 +289,7 @@ class TriggerRequest(BaseModel):
 def root_dashboard():
     """Serves an informative status dashboard on root path."""
     nc_connected = bool(NEXTCLOUD_WEBDAV_URL and NEXTCLOUD_USERNAME and NEXTCLOUD_APP_PASSWORD)
-    supa_connected = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+    supa_connected = bool(SUPABASE_URL and SUPABASE_KEY)
     job = scheduler.get_job("sync_job")
     next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S UTC") if job and job.next_run_time else "Not scheduled"
 
@@ -401,7 +401,7 @@ def test_connections():
     nc = NextcloudClient(NEXTCLOUD_WEBDAV_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_APP_PASSWORD, NEXTCLOUD_FOLDER)
     nc_result = nc.test_connection()
 
-    supa = SupabaseSyncClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    supa = SupabaseSyncClient(SUPABASE_URL, SUPABASE_KEY)
     supa_result = supa.test_connection()
 
     return {

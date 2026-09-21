@@ -165,7 +165,7 @@ export class StorageService {
   static getMappings(): WorksheetMapping[] {
     const raw = localStorage.getItem(STORAGE_KEYS.MAPPINGS);
     if (raw) return JSON.parse(raw);
-    return getDefaultSampleMappings('students_complex.xlsx');
+    return [];
   }
 
   static saveMappings(mappings: WorksheetMapping[]): void {
@@ -175,58 +175,7 @@ export class StorageService {
   static getImportLogs(): ImportLog[] {
     const raw = localStorage.getItem(STORAGE_KEYS.IMPORT_LOGS);
     if (raw) return JSON.parse(raw);
-    return [
-      {
-        id: 'log-101',
-        filename: 'students_complex.xlsx',
-        filePath: '/ExcelImports/students_complex.xlsx',
-        fileHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-        status: 'Success',
-        isDryRun: false,
-        numberOfWorksheets: 5,
-        rowsProcessed: 43,
-        rowsInserted: 35,
-        rowsUpdated: 8,
-        rowsFailed: 0,
-        startedAt: new Date(Date.now() - 1000 * 60 * 12 - 2100).toISOString(),
-        completedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-        durationMs: 2100
-      },
-      {
-        id: 'log-102',
-        filename: 'term2_attendance_weekly.xlsx',
-        filePath: '/ExcelImports/term2_attendance_weekly.xlsx',
-        fileHash: 'a7c5b98298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7899a12c',
-        status: 'Skipped',
-        isDryRun: false,
-        numberOfWorksheets: 1,
-        rowsProcessed: 0,
-        rowsInserted: 0,
-        rowsUpdated: 0,
-        rowsFailed: 0,
-        startedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-        completedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-        durationMs: 45,
-        errorSummary: 'File unchanged (SHA-256 hash matched previous import)'
-      },
-      {
-        id: 'log-103',
-        filename: 'q1_admissions_draft.xlsx',
-        filePath: '/ExcelImports/q1_admissions_draft.xlsx',
-        fileHash: 'c2f8e12398fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7800ba89',
-        status: 'Partial Success',
-        isDryRun: false,
-        numberOfWorksheets: 2,
-        rowsProcessed: 28,
-        rowsInserted: 26,
-        rowsUpdated: 0,
-        rowsFailed: 2,
-        startedAt: new Date(Date.now() - 1000 * 60 * 360).toISOString(),
-        completedAt: new Date(Date.now() - 1000 * 60 * 359).toISOString(),
-        durationMs: 1350,
-        errorSummary: '2 rows failed validation (Missing Student ID & Invalid Date)'
-      }
-    ];
+    return [];
   }
 
   static saveImportLogs(logs: ImportLog[]): void {
@@ -236,34 +185,7 @@ export class StorageService {
   static getImportErrors(): ImportAuditError[] {
     const raw = localStorage.getItem(STORAGE_KEYS.IMPORT_ERRORS);
     if (raw) return JSON.parse(raw);
-    return [
-      {
-        id: 'err-1',
-        importLogId: 'log-103',
-        filename: 'q1_admissions_draft.xlsx',
-        worksheetName: 'Candidate List',
-        rowNumber: 14,
-        excelColumn: 'A',
-        columnName: 'student_number',
-        rawValue: '',
-        errorMessage: 'Row 14: Required field \'student_number\' is missing or empty.',
-        errorType: 'missing_required',
-        createdAt: new Date(Date.now() - 1000 * 60 * 359).toISOString()
-      },
-      {
-        id: 'err-2',
-        importLogId: 'log-103',
-        filename: 'q1_admissions_draft.xlsx',
-        worksheetName: 'Candidate List',
-        rowNumber: 22,
-        excelColumn: 'D',
-        columnName: 'dob',
-        rawValue: '19/99/2026',
-        errorMessage: 'Row 22: Invalid date format \'19/99/2026\'. Expected YYYY-MM-DD.',
-        errorType: 'invalid_date',
-        createdAt: new Date(Date.now() - 1000 * 60 * 359).toISOString()
-      }
-    ];
+    return [];
   }
 
   static saveImportErrors(errs: ImportAuditError[]): void {
@@ -273,15 +195,7 @@ export class StorageService {
   static getWorkerLogs(): LogMessage[] {
     const raw = localStorage.getItem(STORAGE_KEYS.WORKER_LOGS);
     if (raw) return JSON.parse(raw);
-    return [
-      { id: 'l1', timestamp: new Date(Date.now() - 1000 * 60 * 12).toISOString(), level: 'info', component: 'Worker', message: 'Triggering scheduled synchronization cycle (interval: 15m)' },
-      { id: 'l2', timestamp: new Date(Date.now() - 1000 * 60 * 12 + 100).toISOString(), level: 'info', component: 'WebDAV', message: 'Connecting to Nextcloud TrueNAS SCALE at https://cloud.internal.truenas.net/remote.php/dav/files/excel-sync/' },
-      { id: 'l3', timestamp: new Date(Date.now() - 1000 * 60 * 12 + 300).toISOString(), level: 'info', component: 'WebDAV', message: 'Scanned /ExcelImports: found 3 files' },
-      { id: 'l4', timestamp: new Date(Date.now() - 1000 * 60 * 12 + 500).toISOString(), level: 'info', component: 'Parser', message: 'Analyzing students_complex.xlsx: detected 5 worksheets, 3 merged ranges (A1:H1 title, A3:H3 & A13:H13 section headers)' },
-      { id: 'l5', timestamp: new Date(Date.now() - 1000 * 60 * 12 + 900).toISOString(), level: 'info', component: 'MappingEngine', message: 'Applied downward propagation: "CLASS 10A" mapped to 7 student records, "CLASS 10B" mapped to 5 student records' },
-      { id: 'l6', timestamp: new Date(Date.now() - 1000 * 60 * 12 + 1500).toISOString(), level: 'info', component: 'Supabase', message: 'Batch upsert executed: 35 inserted, 8 updated into tables: students, attendance, sports, medical, results' },
-      { id: 'l7', timestamp: new Date(Date.now() - 1000 * 60 * 12 + 2100).toISOString(), level: 'success', component: 'Worker', message: 'Cycle completed successfully. Updated SHA-256 hash.' }
-    ];
+    return [];
   }
 
   static saveWorkerLogs(logs: LogMessage[]): void {
@@ -291,45 +205,33 @@ export class StorageService {
   static getDatabaseState(): Record<string, any[]> {
     const raw = localStorage.getItem(STORAGE_KEYS.DB_STATE);
     if (raw) return JSON.parse(raw);
-    return {
-      students: [
-        { student_number: 'STU-1001', name: 'Alice Smith', class: 'CLASS 10A', gender: 'Female', dob: '2008-04-12', phone: '+15550192831', status: 'Active' },
-        { student_number: 'STU-1002', name: 'Bob Jones', class: 'CLASS 10A', gender: 'Male', dob: '2008-09-21', phone: '+15550184422', status: 'Active' },
-        { student_number: 'STU-1003', name: 'Charlie Davis', class: 'CLASS 10A', gender: 'Male', dob: '2007-12-05', phone: '+15550173311', status: 'Active' },
-        { student_number: 'STU-1004', name: 'Diana Prince', class: 'CLASS 10A', gender: 'Female', dob: '2008-06-18', phone: '+15550165544', status: 'Active' },
-        { student_number: 'STU-1005', name: 'Ethan Hunt', class: 'CLASS 10A', gender: 'Male', dob: '2008-01-30', phone: '+15550156677', status: 'Active' }
-      ],
-      attendance: [
-        { student_number: 'STU-1001', attendance_date: '2025-09-15', status: 'Present', remarks: 'On time' },
-        { student_number: 'STU-1002', attendance_date: '2025-09-15', status: 'Absent', remarks: 'Excused medical leave' },
-        { student_number: 'STU-1003', attendance_date: '2025-09-15', status: 'Late', remarks: 'Bus delay' }
-      ],
-      sports: [
-        { student_number: 'STU-1001', sport_name: 'Basketball', position: 'Point Guard', medical_clearance: true },
-        { student_number: 'STU-1004', sport_name: 'Soccer', position: 'Midfielder', medical_clearance: true }
-      ],
-      medical: [
-        { student_number: 'STU-1001', blood_group: 'O+', allergies: 'Peanuts', doctor_contact: 'Dr. Wilson (555-0100)' },
-        { student_number: 'STU-1002', blood_group: 'A+', allergies: 'None', doctor_contact: 'Dr. Gomez (555-0200)' }
-      ],
-      results: [
-        { student_number: 'STU-1001', term: 'Term 1', mathematics: 94.5, science: 88.0, english: 92.0, total_score: 274.5, grade: 'A' },
-        { student_number: 'STU-1002', term: 'Term 1', mathematics: 76.0, science: 82.5, english: 79.0, total_score: 237.5, grade: 'B' }
-      ]
-    };
+    return {};
   }
 
   static saveDatabaseState(state: Record<string, any[]>): void {
     localStorage.setItem(STORAGE_KEYS.DB_STATE, JSON.stringify(state));
   }
 
+  static loadSampleData(): void {
+    const sample = createComplexSampleWorkbook();
+    const { analysis } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);
+    analysis.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    this.saveCurrentAnalysis(analysis);
+    this.saveMappings(getDefaultSampleMappings(sample.filename));
+    localStorage.setItem(STORAGE_KEYS.SAMPLE_LOADED, 'true');
+  }
+
+  static clearAllData(): void {
+    localStorage.removeItem(STORAGE_KEYS.CURRENT_ANALYSIS);
+    localStorage.removeItem(STORAGE_KEYS.MAPPINGS);
+    localStorage.removeItem(STORAGE_KEYS.IMPORT_LOGS);
+    localStorage.removeItem(STORAGE_KEYS.IMPORT_ERRORS);
+    localStorage.removeItem(STORAGE_KEYS.WORKER_LOGS);
+    localStorage.removeItem(STORAGE_KEYS.DB_STATE);
+    localStorage.removeItem(STORAGE_KEYS.SAMPLE_LOADED);
+  }
+
   static initSampleIfNeeded(): void {
-    if (!localStorage.getItem(STORAGE_KEYS.SAMPLE_LOADED)) {
-      const sample = createComplexSampleWorkbook();
-      const { analysis } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);
-      analysis.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-      this.saveCurrentAnalysis(analysis);
-      localStorage.setItem(STORAGE_KEYS.SAMPLE_LOADED, 'true');
-    }
+    // In production mode, leave empty until user configures or uploads files
   }
 }

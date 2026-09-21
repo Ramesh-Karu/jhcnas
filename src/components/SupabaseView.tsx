@@ -9,9 +9,156 @@ import {
   ExternalLink, 
   Eye, 
   Code, 
-  Layers 
+  Layers,
+  Copy,
+  Check
 } from 'lucide-react';
 import { SupabaseConfig } from '../types';
+
+const PRODUCTION_SQL = `-- Nextcloud Excel Sync - Production Supabase PostgreSQL Schema
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- 1. Sync Settings
+CREATE TABLE IF NOT EXISTS sync_settings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    nextcloud_url TEXT NOT NULL DEFAULT '',
+    nextcloud_webdav_url TEXT NOT NULL DEFAULT '',
+    nextcloud_username TEXT NOT NULL DEFAULT '',
+    nextcloud_folder TEXT NOT NULL DEFAULT '/ExcelImports',
+    sync_interval TEXT NOT NULL DEFAULT '15m',
+    auto_sync_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    backup_to_storage BOOLEAN NOT NULL DEFAULT FALSE,
+    storage_bucket TEXT DEFAULT 'excel-archives',
+    last_sync_at TIMESTAMPTZ,
+    next_sync_at TIMESTAMPTZ,
+    worker_status TEXT NOT NULL DEFAULT 'idle',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. Workbooks Registry
+CREATE TABLE IF NOT EXISTS workbooks (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL,
+    nextcloud_path TEXT NOT NULL UNIQUE,
+    file_size BIGINT NOT NULL DEFAULT 0,
+    file_hash TEXT,
+    last_modified_at TIMESTAMPTZ,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    auto_detect_headers BOOLEAN NOT NULL DEFAULT TRUE,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 3. Worksheet Mappings
+CREATE TABLE IF NOT EXISTS worksheet_mappings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workbook_id UUID NOT NULL REFERENCES workbooks(id) ON DELETE CASCADE,
+    worksheet_name TEXT NOT NULL,
+    supabase_table TEXT NOT NULL,
+    header_row INTEGER NOT NULL DEFAULT 1,
+    data_start_row INTEGER NOT NULL DEFAULT 2,
+    data_end_row INTEGER,
+    section_heading_col TEXT,
+    section_heading_target_col TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(workbook_id, worksheet_name)
+);
+
+-- 4. Column Mappings
+CREATE TABLE IF NOT EXISTS column_mappings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    worksheet_mapping_id UUID NOT NULL REFERENCES worksheet_mappings(id) ON DELETE CASCADE,
+    excel_column TEXT NOT NULL,
+    excel_header TEXT NOT NULL,
+    supabase_column TEXT NOT NULL,
+    data_type TEXT NOT NULL DEFAULT 'text',
+    required BOOLEAN NOT NULL DEFAULT FALSE,
+    unique_key BOOLEAN NOT NULL DEFAULT FALSE,
+    default_value TEXT,
+    transformation TEXT NOT NULL DEFAULT 'none',
+    validation_regex TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 5. Import Audit Logs
+CREATE TABLE IF NOT EXISTS import_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workbook_id UUID REFERENCES workbooks(id) ON DELETE SET NULL,
+    filename TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    file_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Pending',
+    is_dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+    number_of_worksheets INTEGER NOT NULL DEFAULT 1,
+    rows_processed INTEGER NOT NULL DEFAULT 0,
+    rows_inserted INTEGER NOT NULL DEFAULT 0,
+    rows_updated INTEGER NOT NULL DEFAULT 0,
+    rows_failed INTEGER NOT NULL DEFAULT 0,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    error_summary TEXT,
+    details JSONB
+);
+
+-- 6. Import Errors
+CREATE TABLE IF NOT EXISTS import_errors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    import_log_id UUID NOT NULL REFERENCES import_logs(id) ON DELETE CASCADE,
+    worksheet_name TEXT NOT NULL,
+    row_number INTEGER NOT NULL,
+    excel_column TEXT,
+    column_name TEXT,
+    raw_value TEXT,
+    error_message TEXT NOT NULL,
+    error_type TEXT NOT NULL DEFAULT 'validation',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_workbooks_hash ON workbooks(file_hash);
+CREATE INDEX IF NOT EXISTS idx_workbooks_path ON workbooks(nextcloud_path);
+CREATE INDEX IF NOT EXISTS idx_import_logs_hash ON import_logs(file_hash);
+CREATE INDEX IF NOT EXISTS idx_import_logs_status ON import_logs(status);
+CREATE INDEX IF NOT EXISTS idx_import_logs_started ON import_logs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_worksheet_mappings_wb ON worksheet_mappings(workbook_id);
+CREATE INDEX IF NOT EXISTS idx_column_mappings_ws ON column_mappings(worksheet_mapping_id);
+CREATE INDEX IF NOT EXISTS idx_import_errors_log ON import_errors(import_log_id);
+
+-- Row Level Security
+ALTER TABLE sync_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workbooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE worksheet_mappings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE column_mappings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE import_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE import_errors ENABLE ROW LEVEL SECURITY;
+
+-- Grant broad RLS policies for clean production access
+DO $$
+BEGIN
+    DROP POLICY IF EXISTS "Allow full access to sync_settings" ON sync_settings;
+    CREATE POLICY "Allow full access to sync_settings" ON sync_settings FOR ALL TO public USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow full access to workbooks" ON workbooks;
+    CREATE POLICY "Allow full access to workbooks" ON workbooks FOR ALL TO public USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow full access to worksheet_mappings" ON worksheet_mappings;
+    CREATE POLICY "Allow full access to worksheet_mappings" ON worksheet_mappings FOR ALL TO public USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow full access to column_mappings" ON column_mappings;
+    CREATE POLICY "Allow full access to column_mappings" ON column_mappings FOR ALL TO public USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow full access to import_logs" ON import_logs;
+    CREATE POLICY "Allow full access to import_logs" ON import_logs FOR ALL TO public USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow full access to import_errors" ON import_errors;
+    CREATE POLICY "Allow full access to import_errors" ON import_errors FOR ALL TO public USING (true) WITH CHECK (true);
+END $$;`;
 
 interface SupabaseViewProps {
   config: SupabaseConfig;
@@ -25,14 +172,24 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
   onSaveConfig
 }) => {
   const [formData, setFormData] = useState<SupabaseConfig>(config);
-  const [selectedTable, setSelectedTable] = useState<string>('students');
+  const stateTables = Object.keys(databaseState);
+  const availableTables = stateTables.length > 0 
+    ? stateTables 
+    : ['sync_settings', 'workbooks', 'worksheet_mappings', 'column_mappings', 'import_logs', 'import_errors'];
+
+  const [selectedTable, setSelectedTable] = useState<string>(() => availableTables[0] || 'workbooks');
   const [activeTab, setActiveTab] = useState<'tables' | 'sql'>('tables');
   const [isTesting, setIsTesting] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
-
-  const availableTables = ['students', 'attendance', 'sports', 'medical', 'results'];
+  const [copiedSql, setCopiedSql] = useState(false);
 
   const currentRecords = databaseState[selectedTable] || [];
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(PRODUCTION_SQL);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2500);
+  };
 
   const handleTest = async () => {
     setIsTesting(true);
@@ -208,41 +365,17 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
         /* SQL Schema Tab */
         <div className="bg-slate-900 text-slate-200 rounded-xl p-6 border border-slate-800 font-mono text-xs overflow-x-auto shadow-2xs">
           <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-800 text-slate-400">
-            <span>/supabase/migrations/001_initial_schema.sql</span>
-            <span className="text-emerald-400 font-sans">Ready for Production Deployment</span>
+            <span className="font-semibold text-slate-300">/supabase/production_schema.sql</span>
+            <button
+              onClick={handleCopySql}
+              className="inline-flex items-center space-x-1.5 px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs transition-colors"
+            >
+              {copiedSql ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedSql ? 'Copied to Clipboard!' : 'Copy SQL for Supabase'}</span>
+            </button>
           </div>
-          <pre className="text-slate-300 leading-relaxed">
-{`-- Core Tables Schema
-CREATE TABLE IF NOT EXISTS workbooks (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name TEXT NOT NULL,
-    nextcloud_path TEXT NOT NULL UNIQUE,
-    file_size BIGINT NOT NULL,
-    file_hash TEXT, -- SHA-256 for change detection
-    enabled BOOLEAN NOT NULL DEFAULT TRUE
-);
-
-CREATE TABLE IF NOT EXISTS worksheet_mappings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    workbook_id UUID REFERENCES workbooks(id) ON DELETE CASCADE,
-    worksheet_name TEXT NOT NULL,
-    supabase_table TEXT NOT NULL,
-    header_row INTEGER NOT NULL DEFAULT 1,
-    data_start_row INTEGER NOT NULL DEFAULT 2,
-    section_heading_target_col TEXT -- e.g. 'class'
-);
-
-CREATE TABLE IF NOT EXISTS column_mappings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    worksheet_mapping_id UUID REFERENCES worksheet_mappings(id) ON DELETE CASCADE,
-    excel_column TEXT NOT NULL,
-    excel_header TEXT NOT NULL,
-    supabase_column TEXT NOT NULL,
-    data_type TEXT NOT NULL DEFAULT 'text',
-    required BOOLEAN NOT NULL DEFAULT FALSE,
-    unique_key BOOLEAN NOT NULL DEFAULT FALSE,
-    transformation TEXT NOT NULL DEFAULT 'none'
-);`}
+          <pre className="text-slate-300 leading-relaxed font-mono">
+            {PRODUCTION_SQL}
           </pre>
         </div>
       )}
