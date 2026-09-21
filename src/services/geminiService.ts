@@ -1,18 +1,6 @@
-import { GoogleGenAI } from '@google/genai';
 import { SheetAnalysis, WorksheetMapping, ColumnMapping, DataType, TransformationType } from '../types';
 
 export class GeminiWorkbookService {
-  private static aiClient: GoogleGenAI | null = null;
-
-  private static getClient(): GoogleGenAI | null {
-    const apiKey = typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : (import.meta as any).env?.VITE_GEMINI_API_KEY;
-    if (!apiKey) return null;
-    if (!this.aiClient) {
-      this.aiClient = new GoogleGenAI({ apiKey });
-    }
-    return this.aiClient;
-  }
-
   static async analyzeSheetAndSuggestMappings(
     sheet: SheetAnalysis,
     workbookName: string
@@ -24,8 +12,6 @@ export class GeminiWorkbookService {
     columns: ColumnMapping[];
     reasoning: string;
   }> {
-    const ai = this.getClient();
-
     // Prepare prompt payload with sheet statistics, merged cells, and headers
     const sampleHeaders = sheet.headers.map(h => `${h.colLetter}: "${h.name}" (sample: ${h.sampleValues.slice(0, 2).join(', ')})`).join('\n');
     const sampleMerges = sheet.mergedRanges.map(m => `${m.range} (${m.type}): "${m.value}"`).join('\n');
@@ -75,19 +61,17 @@ Format your response as pure JSON matching this structure:
   ]
 }`;
 
-    if (ai) {
-      try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json'
-          }
-        });
+    try {
+      const response = await fetch('/api/gemini/suggest-mapping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
 
-        const text = response.text;
-        if (text) {
-          const parsed = JSON.parse(text);
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success && result.data) {
+          const parsed = result.data;
           return {
             suggestedTable: parsed.suggestedTable || sheet.sheetName.toLowerCase().replace(/\s+/g, '_'),
             headerRow: parsed.headerRow || sheet.detectedHeaderRow,
@@ -106,9 +90,9 @@ Format your response as pure JSON matching this structure:
             reasoning: parsed.reasoning || "AI generated mapping based on schema structure and sample values."
           };
         }
-      } catch (err) {
-        console.warn("[Gemini] API call failed or unconfigured, using heuristic intelligence:", err);
       }
+    } catch (err) {
+      console.warn("[Gemini] Server route unavailable or returned error, using heuristic intelligence:", err);
     }
 
     // Heuristic Fallback Analysis

@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
+import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
@@ -9,6 +10,14 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+let aiClient: GoogleGenAI | null = null;
+function getGemini(): GoogleGenAI | null {
+  if (!aiClient && process.env.GEMINI_API_KEY) {
+    aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return aiClient;
+}
 
 // Helper to construct basic auth header
 function getBasicAuth(username: string, appPassword: string) {
@@ -398,6 +407,50 @@ app.post('/api/nextcloud/upload-file', async (req, res) => {
     }
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Gemini AI Schema and Column Mapping Endpoint
+app.post('/api/gemini/suggest-mapping', async (req, res) => {
+  try {
+    const ai = getGemini();
+    if (!ai) {
+      return res.status(200).json({
+        available: false,
+        message: 'GEMINI_API_KEY not configured on server',
+      });
+    }
+
+    const { prompt } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const text = response.text;
+    if (text) {
+      const parsed = JSON.parse(text);
+      return res.json({
+        available: true,
+        success: true,
+        data: parsed,
+      });
+    }
+
+    return res.json({ available: false, message: 'Empty response from model' });
+  } catch (err: any) {
+    console.warn('[Gemini] API error on server:', err.message);
+    return res.json({
+      available: false,
+      error: err.message,
+    });
   }
 });
 

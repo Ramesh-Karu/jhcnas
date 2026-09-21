@@ -19,7 +19,7 @@ from nextcloud.client import NextcloudClient
 from excel.parser import ExcelParser
 from mappings.manager import MappingManager
 from validation.validator import DataValidator
-from supabase.client import SupabaseSyncClient
+from database.client import SupabaseSyncClient
 from logging.logger import SyncLogger
 
 # Environment Configuration

@@ -3,6 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          var origFetch = window.fetch ? window.fetch.bind(window) : undefined;
+          var currentFetch = origFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return currentFetch;
+            },
+            set: function(val) {
+              currentFetch = typeof val === 'function' ? val : origFetch;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          // Graceful fallback if non-configurable
+        }
+      })();
+    </script>
     <title>Nextcloud Excel Sync</title>
     <meta name="description" content="Centralized platform for reading complex Excel workbooks from Nextcloud, transforming records with merged-cell and multi-sheet intelligence, and synchronizing to Supabase PostgreSQL." />
     <meta property="og:title" content="Nextcloud Excel Sync" />
