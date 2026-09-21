@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  nextcloud-excel-sync-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nextcloud-excel-sync-worker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - NEXTCLOUD_URL=${NEXTCLOUD_URL}
+      - NEXTCLOUD_WEBDAV_URL=${NEXTCLOUD_WEBDAV_URL}
+      - NEXTCLOUD_USERNAME=${NEXTCLOUD_USERNAME}
+      - NEXTCLOUD_APP_PASSWORD=${NEXTCLOUD_APP_PASSWORD}
+      - NEXTCLOUD_FOLDER=${NEXTCLOUD_FOLDER:-/ExcelImports}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-15m}
+    volumes:
+      - ./temp_downloads:/app/temp_downloads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

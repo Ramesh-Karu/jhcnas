@@ -1,0 +1,6 @@
+{
+  "name": "Nextcloud Excel Sync",
+  "description": "Centralized platform for reading complex Excel workbooks from Nextcloud, transforming records with merged-cell and multi-sheet intelligence, and synchronizing to Supabase PostgreSQL.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
