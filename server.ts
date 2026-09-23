@@ -819,6 +819,7 @@ app.post('/api/supabase/fetch-table', async (req, res) => {
         'Authorization': `Bearer ${key}`,
         'Range': `0-${maxLimit - 1}`,
       },
+      signal: AbortSignal.timeout(8000),
     });
 
     if (!fetchRes.ok) {
@@ -918,19 +919,35 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
     const cleanUrl = url.trim().replace(/\/+$/, '');
 
     // Strip internal metadata keys (e.g. __updated_at, __source_file, __rowNumber)
+    // Also remove empty string / null id field so PostgreSQL auto-generates serial or UUID
     const cleanedRecords = records.map((r: any) => {
       const clean: Record<string, any> = {};
       for (const [k, v] of Object.entries(r)) {
         if (!k.startsWith('__')) {
+          if (k === 'id' && (v === '' || v === null || v === undefined)) {
+            continue;
+          }
           clean[k] = v;
         }
       }
       return clean;
     });
 
+    // Only apply onConflict if the column actually exists and has values in the records
+    let effectiveConflictCol: string | null = null;
+    if (onConflict && typeof onConflict === 'string' && onConflict.trim() !== '') {
+      const colName = onConflict.trim();
+      const hasConflictValues = cleanedRecords.some(r => r[colName] !== undefined && r[colName] !== null && String(r[colName]).trim() !== '');
+      if (hasConflictValues) {
+        effectiveConflictCol = colName;
+      } else {
+        console.warn(`[Supabase Upsert] onConflict '${colName}' omitted because records have no values for this column.`);
+      }
+    }
+
     let upsertUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}`;
-    if (onConflict) {
-      upsertUrl += `?on_conflict=${encodeURIComponent(onConflict)}`;
+    if (effectiveConflictCol) {
+      upsertUrl += `?on_conflict=${encodeURIComponent(effectiveConflictCol)}`;
     }
 
     let upsertRes = await fetch(upsertUrl, {
@@ -939,17 +956,18 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
         'apikey': key,
         'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json',
-        'Prefer': onConflict ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
+        'Prefer': effectiveConflictCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
       },
       body: JSON.stringify(cleanedRecords),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!upsertRes.ok) {
-      const errText = await upsertRes.text().catch(() => '');
+      let errText = await upsertRes.text().catch(() => '');
       
-      // If failed due to ON CONFLICT missing unique constraint in Supabase, retry as regular INSERT
-      if (onConflict && (errText.includes('ON CONFLICT') || errText.includes('constraint') || upsertRes.status === 400)) {
-        console.warn(`[Supabase Upsert] on_conflict=${onConflict} rejected, retrying with standard insert: ${errText}`);
+      // If failed due to ON CONFLICT missing unique constraint in Supabase (42P10) or any conflict issue, retry as regular INSERT
+      if (effectiveConflictCol || errText.includes('ON CONFLICT') || errText.includes('constraint') || errText.includes('42P10') || upsertRes.status === 400) {
+        console.warn(`[Supabase Upsert] Conflict key '${effectiveConflictCol}' rejected (${errText}), retrying with standard insert.`);
         const fallbackUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}`;
         const fallbackRes = await fetch(fallbackUrl, {
           method: 'POST',
@@ -960,6 +978,7 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
             'Prefer': 'return=representation',
           },
           body: JSON.stringify(cleanedRecords),
+          signal: AbortSignal.timeout(15000),
         });
 
         if (fallbackRes.ok) {
@@ -969,8 +988,85 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
             tableName,
             upsertedCount: cleanedRecords.length,
             records: data,
-            note: `Successfully inserted into public.${tableName} (on_conflict '${onConflict}' bypassed).`,
+            note: effectiveConflictCol
+              ? `Note: Column '${effectiveConflictCol}' does not have a UNIQUE constraint in Supabase. Records were safely inserted as new records.`
+              : `Successfully inserted into public.${tableName}.`,
           });
+        } else {
+          // Keep the fallback error text so downstream type error detection can process it
+          errText = await fallbackRes.text().catch(() => errText);
+        }
+      }
+
+      // Check for code "22P02": invalid input syntax for type integer: "GRADE 07 A"
+      if (errText.includes('invalid input syntax for type integer') || errText.includes('22P02')) {
+        const intErrMatch = errText.match(/invalid input syntax for type integer:\s*"([^"]+)"/i);
+        const offendingVal = intErrMatch ? intErrMatch[1] : null;
+
+        // Identify columns that contain the offending value or non-numeric strings
+        const candidateCols = new Set<string>();
+        if (offendingVal) {
+          for (const r of cleanedRecords) {
+            for (const [k, v] of Object.entries(r)) {
+              if (String(v).trim() === offendingVal.trim()) {
+                candidateCols.add(k);
+              }
+            }
+          }
+        }
+
+        // If candidate column not found via exact match, check common candidates (class, grade, etc.)
+        if (candidateCols.size === 0 && cleanedRecords[0]) {
+          for (const [k, v] of Object.entries(cleanedRecords[0])) {
+            if (typeof v === 'string' && isNaN(Number(v)) && /\d+/.test(v)) {
+              candidateCols.add(k);
+            }
+          }
+        }
+
+        if (candidateCols.size > 0) {
+          console.warn(`[Supabase Auto-Heal] Coercing non-numeric string values to integers for column(s): ${Array.from(candidateCols).join(', ')}`);
+          
+          const healedRecords = cleanedRecords.map((r: any) => {
+            const copy = { ...r };
+            for (const col of candidateCols) {
+              if (copy[col] !== undefined && copy[col] !== null) {
+                const s = String(copy[col]).trim();
+                const dMatch = s.match(/\d+/);
+                copy[col] = dMatch ? parseInt(dMatch[0], 10) : null;
+              }
+            }
+            return copy;
+          });
+
+          let healUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+          if (onConflict) healUrl += `?on_conflict=${encodeURIComponent(onConflict)}`;
+
+          const healRes = await fetch(healUrl, {
+            method: 'POST',
+            headers: {
+              'apikey': key,
+              'Authorization': `Bearer ${key}`,
+              'Content-Type': 'application/json',
+              'Prefer': onConflict ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
+            },
+            body: JSON.stringify(healedRecords),
+          });
+
+          if (healRes.ok) {
+            const data = await healRes.json().catch(() => []);
+            const firstCol = Array.from(candidateCols)[0];
+            return res.json({
+              success: true,
+              tableName,
+              upsertedCount: healedRecords.length,
+              records: data,
+              autoHealed: true,
+              healedColumns: Array.from(candidateCols),
+              warning: `Column '${Array.from(candidateCols).join(', ')}' in Supabase is type INTEGER. Non-numeric values like '${offendingVal || 'text'}' were converted to numbers. To store full text in Supabase, run: ALTER TABLE public.${tableName} ALTER COLUMN ${firstCol} TYPE text;`,
+              alterSql: `ALTER TABLE public.${tableName} ALTER COLUMN ${firstCol} TYPE text;`
+            });
+          }
         }
       }
 
@@ -1255,21 +1351,91 @@ async function executeFullPipelineCore(params: {
     }
 
     if (!upsertRes.ok) {
-      const errText = await upsertRes.text().catch(() => '');
-      totalFailed += recordsToUpsert.length;
-      errors.push({
-        worksheetName: wm.worksheetName,
-        targetTable,
-        httpStatus: upsertRes.status,
-        error: `Supabase rejected upsert into public.${targetTable}: ${errText}`,
-      });
-      syncResults.push({
-        sheetName: wm.worksheetName,
-        targetTable,
-        rowsCount: recordsToUpsert.length,
-        status: 'Failed',
-        error: errText,
-      });
+      let errText = await upsertRes.text().catch(() => '');
+
+      // Check for code "22P02": invalid input syntax for type integer: "GRADE 07 A"
+      if (errText.includes('invalid input syntax for type integer') || errText.includes('22P02')) {
+        const intErrMatch = errText.match(/invalid input syntax for type integer:\s*"([^"]+)"/i);
+        const offendingVal = intErrMatch ? intErrMatch[1] : null;
+
+        const candidateCols = new Set<string>();
+        if (offendingVal) {
+          for (const r of recordsToUpsert) {
+            for (const [k, v] of Object.entries(r)) {
+              if (String(v).trim() === offendingVal.trim()) {
+                candidateCols.add(k);
+              }
+            }
+          }
+        }
+
+        if (candidateCols.size === 0 && recordsToUpsert[0]) {
+          for (const [k, v] of Object.entries(recordsToUpsert[0])) {
+            if (typeof v === 'string' && isNaN(Number(v)) && /\d+/.test(v)) {
+              candidateCols.add(k);
+            }
+          }
+        }
+
+        if (candidateCols.size > 0) {
+          console.warn(`[Sync Core Auto-Heal] Coercing non-numeric string values to integers for column(s): ${Array.from(candidateCols).join(', ')}`);
+          const healedRecords = recordsToUpsert.map((r: any) => {
+            const copy = { ...r };
+            for (const col of candidateCols) {
+              if (copy[col] !== undefined && copy[col] !== null) {
+                const s = String(copy[col]).trim();
+                const dMatch = s.match(/\d+/);
+                copy[col] = dMatch ? parseInt(dMatch[0], 10) : null;
+              }
+            }
+            return copy;
+          });
+
+          let healUrl = `${supUrl}/rest/v1/${encodeURIComponent(targetTable)}`;
+          if (uniqueCol) healUrl += `?on_conflict=${encodeURIComponent(uniqueCol)}`;
+
+          upsertRes = await fetch(healUrl, {
+            method: 'POST',
+            headers: {
+              'apikey': supKey,
+              'Authorization': `Bearer ${supKey}`,
+              'Content-Type': 'application/json',
+              'Prefer': uniqueCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
+            },
+            body: JSON.stringify(healedRecords),
+            signal: AbortSignal.timeout(15000),
+          });
+        }
+      }
+
+      if (!upsertRes.ok) {
+        errText = await upsertRes.text().catch(() => errText);
+        totalFailed += recordsToUpsert.length;
+        errors.push({
+          worksheetName: wm.worksheetName,
+          targetTable,
+          httpStatus: upsertRes.status,
+          error: `Supabase rejected upsert into public.${targetTable}: ${errText}`,
+        });
+        syncResults.push({
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: recordsToUpsert.length,
+          status: 'Failed',
+          error: errText,
+        });
+      } else {
+        const upsertedData = await upsertRes.json().catch(() => []);
+        const count = Array.isArray(upsertedData) ? upsertedData.length : recordsToUpsert.length;
+        totalInserted += count;
+        syncResults.push({
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: count,
+          uniqueKey: uniqueCol,
+          status: 'Success',
+        });
+      }
     } else {
       const upsertedData = await upsertRes.json().catch(() => []);
       const count = Array.isArray(upsertedData) ? upsertedData.length : recordsToUpsert.length;

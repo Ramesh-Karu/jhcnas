@@ -16,7 +16,9 @@ import {
   Sparkles,
   ShieldAlert,
   Wand2,
-  Check
+  Check,
+  Copy,
+  Info
 } from 'lucide-react';
 import { 
   WorkbookAnalysis, 
@@ -58,6 +60,14 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
   const [importNotice, setImportNotice] = useState<{ success: boolean; message: string } | null>(null);
   const [filterAction, setFilterAction] = useState<'ALL' | 'INSERT' | 'UPDATE' | 'FAIL'>('ALL');
   const [selectedErrorType, setSelectedErrorType] = useState<string>('ALL');
+  const [copiedAlterSql, setCopiedAlterSql] = useState<boolean>(false);
+  const [typeMismatchAlert, setTypeMismatchAlert] = useState<{
+    tableName: string;
+    columnName: string;
+    offendingValue: string;
+    alterSql: string;
+    isFixing?: boolean;
+  } | null>(null);
 
   const getEffectiveWorkbook = (): XLSX.WorkBook => {
     if (currentAnalysis?.base64Data) {
@@ -108,37 +118,61 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     setIsRunningDryRun(true);
     setImportNotice(null);
 
-    const wb = getEffectiveWorkbook();
-    const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'students.xlsx';
+    try {
+      const wb = getEffectiveWorkbook();
+      const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'students.xlsx';
 
-    // Synchronize latest existing records from Supabase if connected
-    const mergedDbState: Record<string, any[]> = { ...databaseState };
-    if (supabaseConfig?.url && (supabaseConfig.anonKey || supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey)) {
-      try {
-        const uniqueTables = Array.from(new Set(mappings.map(m => m.supabaseTable)));
-        for (const tbl of uniqueTables) {
-          const res = await ApiClient.fetchSupabaseTableRows(supabaseConfig, tbl, 100);
-          if (res.success && res.rows && res.rows.length > 0) {
-            mergedDbState[tbl] = res.rows;
-            onUpdateDatabase(tbl, res.rows);
-          }
+      // Synchronize latest existing records from Supabase in parallel if connected
+      const mergedDbState: Record<string, any[]> = { ...databaseState };
+      if (supabaseConfig?.url && (supabaseConfig.anonKey || supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey)) {
+        try {
+          const uniqueTables = Array.from(new Set(mappings.map(m => m.supabaseTable)));
+          await Promise.allSettled(
+            uniqueTables.map(async (tbl) => {
+              const res = await ApiClient.fetchSupabaseTableRows(supabaseConfig, tbl, 50);
+              if (res.success && res.rows && res.rows.length > 0) {
+                mergedDbState[tbl] = res.rows;
+                onUpdateDatabase(tbl, res.rows);
+              }
+            })
+          );
+        } catch (e) {
+          console.warn('Supabase fetch prior to dry-run notice:', e);
         }
-      } catch (e) {
-        console.warn('Supabase fetch prior to dry-run notice:', e);
       }
+
+      const result = DryRunEngine.executeDryRun(
+        wb,
+        filename,
+        mappings,
+        mergedDbState,
+        currentAnalysis
+      );
+
+      await new Promise(r => setTimeout(r, 150));
+      setDryRunResult(result);
+    } catch (err: any) {
+      console.error('Dry run error:', err);
+    } finally {
+      setIsRunningDryRun(false);
     }
+  };
 
-    const result = DryRunEngine.executeDryRun(
-      wb,
-      filename,
-      mappings,
-      mergedDbState,
-      currentAnalysis
-    );
-
-    await new Promise(r => setTimeout(r, 200));
-    setDryRunResult(result);
-    setIsRunningDryRun(false);
+  // Switch all mappings to direct INSERT mode (clear all merge keys to bypass conflict validation errors)
+  const handleSwitchToInsertOnly = () => {
+    if (!onSaveMappings) return;
+    const updated = mappings.map(m => ({
+      ...m,
+      columns: m.columns.map(c => ({ ...c, uniqueKey: false }))
+    }));
+    onSaveMappings(updated);
+    setImportNotice({
+      success: true,
+      message: 'All worksheets switched to Direct INSERT mode. Re-running simulation with zero key conflicts...'
+    });
+    setTimeout(() => {
+      handleRunDryRun();
+    }, 150);
   };
 
   // Run dry run automatically on mount so user never sees empty screen
@@ -210,14 +244,47 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
             if (upRes.success) {
               supabaseSuccessCount += cleanRecordsForSupabase.length;
-              supabaseWriteNotice += ` Synced ${cleanRecordsForSupabase.length} rows to '${wm.supabaseTable}'.`;
+              if ((upRes as any).warning) {
+                supabaseWriteNotice += ` Synced ${cleanRecordsForSupabase.length} rows to '${wm.supabaseTable}'. ${(upRes as any).warning}`;
+              } else {
+                supabaseWriteNotice += ` Synced ${cleanRecordsForSupabase.length} rows to '${wm.supabaseTable}'.`;
+              }
               // Fetch latest live rows from Supabase to update local UI databaseState
               const latest = await ApiClient.fetchSupabaseTableRows(supabaseConfig, wm.supabaseTable, 100);
               if (latest.success && latest.rows) {
                 onUpdateDatabase(wm.supabaseTable, latest.rows);
               }
             } else {
-              supabaseErrors.push(`${wm.supabaseTable}: ${upRes.error || 'Check table schema'}`);
+              const errStr = upRes.error || '';
+              supabaseErrors.push(`${wm.supabaseTable}: ${errStr || 'Check table schema'}`);
+
+              // Detect PostgreSQL 22P02: invalid input syntax for type integer: "GRADE 07 A"
+              if (errStr.includes('invalid input syntax for type integer') || errStr.includes('22P02')) {
+                const intMatch = errStr.match(/invalid input syntax for type integer:\s*"([^"]+)"/i);
+                const offending = intMatch ? intMatch[1] : 'GRADE 07 A';
+
+                // Find culprit column
+                let culpritCol = '';
+                for (const r of cleanRecordsForSupabase) {
+                  for (const [k, v] of Object.entries(r)) {
+                    if (String(v).trim() === offending.trim()) {
+                      culpritCol = k;
+                      break;
+                    }
+                  }
+                  if (culpritCol) break;
+                }
+                if (!culpritCol) {
+                  culpritCol = wm.sectionHeadingTargetCol || 'class';
+                }
+
+                setTypeMismatchAlert({
+                  tableName: wm.supabaseTable,
+                  columnName: culpritCol,
+                  offendingValue: offending,
+                  alterSql: `ALTER TABLE public.${wm.supabaseTable} ALTER COLUMN ${culpritCol} TYPE text;`
+                });
+              }
             }
           }
         }
@@ -234,7 +301,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     if (supabaseErrors.length > 0) {
       setImportNotice({
         success: false,
-        message: `Import processed locally, but Supabase reported issues: ${supabaseErrors.join(' | ')}. Please check the Supabase Schema tab to verify tables exist.`
+        message: `Import processed locally, but Supabase reported issues: ${supabaseErrors.join(' | ')}. Please check the Supabase Schema tab or use the 1-Click fix below.`
       });
     } else {
       setImportNotice({
@@ -246,6 +313,67 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     // Re-run dry run to show updated status
     const updatedResult = DryRunEngine.executeDryRun(wb, filename, mappings, capturedDbRecords, currentAnalysis);
     setDryRunResult(updatedResult);
+  };
+
+  // Convert column type to text in Supabase with 1-click DDL
+  const handleFixTypeMismatchByAlterSql = async () => {
+    if (!typeMismatchAlert || !supabaseConfig) return;
+    setTypeMismatchAlert(prev => prev ? { ...prev, isFixing: true } : null);
+    try {
+      const ddlRes = await ApiClient.executeSupabaseDdl(
+        supabaseConfig,
+        typeMismatchAlert.alterSql,
+        typeMismatchAlert.tableName
+      );
+
+      if (ddlRes.success && ddlRes.directExecuted) {
+        setImportNotice({
+          success: true,
+          message: `Schema updated! Successfully executed: ${typeMismatchAlert.alterSql}. Retrying import to Supabase now...`
+        });
+        setTypeMismatchAlert(null);
+        setTimeout(() => {
+          handleExecuteImport();
+        }, 500);
+      } else {
+        setImportNotice({
+          success: false,
+          message: `Execute SQL in Supabase SQL Editor: ${typeMismatchAlert.alterSql} (Copy the command below).`
+        });
+        setTypeMismatchAlert(prev => prev ? { ...prev, isFixing: false } : null);
+      }
+    } catch (e: any) {
+      setTypeMismatchAlert(prev => prev ? { ...prev, isFixing: false } : null);
+    }
+  };
+
+  // Auto-extract numbers only (converts "GRADE 07 A" -> 7)
+  const handleFixTypeMismatchByExtractNumber = () => {
+    if (!typeMismatchAlert || !onSaveMappings) return;
+    const colName = typeMismatchAlert.columnName;
+    const updated = mappings.map(m => {
+      if (m.supabaseTable.toLowerCase() === typeMismatchAlert.tableName.toLowerCase()) {
+        return {
+          ...m,
+          columns: m.columns.map(c => {
+            if (c.supabaseColumn.toLowerCase() === colName.toLowerCase()) {
+              return { ...c, dataType: 'integer' as const, transformation: 'parse_number' as const };
+            }
+            return c;
+          })
+        };
+      }
+      return m;
+    });
+    onSaveMappings(updated);
+    setTypeMismatchAlert(null);
+    setImportNotice({
+      success: true,
+      message: `Updated mapping for '${colName}' to parse numbers (e.g. extracts 7 from 'GRADE 07 A'). Retrying import now...`
+    });
+    setTimeout(() => {
+      handleExecuteImport();
+    }, 400);
   };
 
   // Auto-resolve non-critical validation errors by unsetting strict requirement or setting flexible transformations
@@ -311,14 +439,14 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
             className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors"
           >
             <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isRunningDryRun ? 'animate-spin' : ''}`} />
-            <span>{isRunningDryRun ? 'Simulating...' : 'Re-Run Simulation'}</span>
+            <span>{isRunningDryRun ? 'Simulating...' : 'Re-Run Simulation (Dry Run)'}</span>
           </button>
 
           <button
             id="btn-import-now"
             onClick={handleExecuteImport}
             disabled={isImporting}
-            className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold text-white shadow-2xs transition-colors"
+            className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold text-white shadow-2xs transition-colors cursor-pointer"
           >
             <Play className={`w-3.5 h-3.5 ${isImporting ? 'animate-spin' : ''}`} />
             <span>{isImporting ? 'Writing to Supabase...' : 'Import Now (Write to DB)'}</span>
@@ -326,10 +454,128 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
         </div>
       </div>
 
+      {/* Simulation Notice Banner */}
+      <div className="p-4 rounded-xl bg-sky-50 border border-sky-200 text-xs text-sky-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
+        <div className="flex items-start space-x-2.5">
+          <Info className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold text-sky-900">Dry Run is a Simulation (Zero Database Writes):</span>
+            <p className="text-sky-800 mt-0.5">
+              The Dry Run validates your mappings, transformations, and preview rows without modifying Supabase. To write the verified rows to your live database, click the green <strong>&quot;Import Now (Write to DB)&quot;</strong> button.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={handleExecuteImport}
+          disabled={isImporting || (dryRunResult ? dryRunResult.validRows === 0 : false)}
+          className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-bold text-white shadow-2xs transition-colors shrink-0 disabled:opacity-50 cursor-pointer"
+        >
+          <Play className={`w-3.5 h-3.5 ${isImporting ? 'animate-spin' : ''}`} />
+          <span>{isImporting ? 'Writing...' : 'Push to Supabase Now'}</span>
+        </button>
+      </div>
+
+      {/* Duplicate / Key Conflict Auto-Fix Banner */}
+      {dryRunResult && dryRunResult.errors.some(e => e.errorType === 'duplicate') && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-2xs">
+          <div className="flex items-start space-x-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold text-amber-900">Merge Key Conflict in Data:</span>
+              <p className="text-amber-800 mt-0.5">
+                The column marked as Merge Key contains duplicate values across rows. To import all rows directly without unique key blocks, switch to Direct INSERT.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleSwitchToInsertOnly}
+            className="px-3.5 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs shrink-0 shadow-2xs cursor-pointer"
+          >
+            Switch to Direct INSERT (Clear Merge Keys)
+          </button>
+        </div>
+      )}
+
       {importNotice && (
-        <div className="p-4 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-medium flex items-center space-x-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-          <span>{importNotice.message}</span>
+        <div className={`p-4 rounded-xl text-xs font-medium flex items-center space-x-2 border shadow-2xs ${
+          importNotice.success
+            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+            : 'bg-rose-50 text-rose-900 border-rose-200'
+        }`}>
+          {importNotice.success ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+          )}
+          <span className="flex-1">{importNotice.message}</span>
+        </div>
+      )}
+
+      {typeMismatchAlert && (
+        <div className="p-5 rounded-xl bg-amber-50 border-2 border-amber-300 text-slate-800 shadow-xs space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start space-x-3">
+              <div className="p-2 rounded-lg bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+                <Database className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Supabase PostgreSQL Data Type Mismatch (Error 22P02)
+                </h3>
+                <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                  Supabase column <code className="px-1.5 py-0.5 bg-amber-100 rounded font-mono font-bold text-amber-900">{typeMismatchAlert.columnName}</code> in table <code className="px-1.5 py-0.5 bg-amber-100 rounded font-mono font-bold text-amber-900">{typeMismatchAlert.tableName}</code> is defined as <strong className="font-semibold text-rose-700">INTEGER</strong> in PostgreSQL, but your source data has text: <code className="px-1.5 py-0.5 bg-white border border-amber-200 rounded font-mono font-bold text-slate-900">&quot;{typeMismatchAlert.offendingValue}&quot;</code>. PostgreSQL cannot store words inside integer columns.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setTypeMismatchAlert(null)}
+              className="text-xs text-slate-400 hover:text-slate-600 font-semibold"
+            >
+              Dismiss
+            </button>
+          </div>
+
+          <div className="bg-white p-3.5 rounded-lg border border-amber-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Recommended Resolution (Store Full Text):</span>
+              <div className="font-mono text-xs bg-slate-900 text-emerald-400 px-3 py-1.5 rounded flex items-center justify-between">
+                <span>{typeMismatchAlert.alterSql}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(typeMismatchAlert.alterSql);
+                    setCopiedAlterSql(true);
+                    setTimeout(() => setCopiedAlterSql(false), 2000);
+                  }}
+                  className="ml-3 text-slate-400 hover:text-white"
+                  title="Copy SQL to Clipboard"
+                >
+                  {copiedAlterSql ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-2 md:pt-0">
+              <button
+                type="button"
+                onClick={handleFixTypeMismatchByAlterSql}
+                disabled={typeMismatchAlert.isFixing}
+                className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-2xs transition-colors flex items-center space-x-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{typeMismatchAlert.isFixing ? 'Altering Column...' : '1-Click Convert to TEXT & Retry'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleFixTypeMismatchByExtractNumber}
+                className="px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs shadow-2xs transition-colors"
+                title="Converts 'GRADE 07 A' to number 7"
+              >
+                Extract Number (e.g. 7)
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

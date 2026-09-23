@@ -87,7 +87,14 @@ export class MappingEngine {
       case 'parse_number': {
         const clean = valStr.replace(/[$,€£₹% ]/g, '').replace(/,/g, '');
         const num = Number(clean);
-        return isNaN(num) ? rawVal : num;
+        if (!isNaN(num)) return num;
+        // Extract embedded numbers from text like "GRADE 07 A" -> 7
+        const embedded = valStr.match(/\d+(\.\d+)?/);
+        if (embedded) {
+          const parsed = Number(embedded[0]);
+          if (!isNaN(parsed)) return parsed;
+        }
+        return rawVal;
       }
 
       case 'yes_no_to_boolean': {
@@ -131,7 +138,14 @@ export class MappingEngine {
         if (targetDataType === 'integer' || targetDataType === 'decimal') {
           const clean = valStr.replace(/[$,€£₹% ]/g, '').replace(/,/g, '');
           const num = Number(clean);
-          return isNaN(num) ? valStr : num;
+          if (!isNaN(num)) return targetDataType === 'integer' ? Math.round(num) : num;
+          // Extract embedded digits e.g. "GRADE 07 A" -> 7
+          const embedded = valStr.match(/\d+(\.\d+)?/);
+          if (embedded) {
+            const parsed = Number(embedded[0]);
+            if (!isNaN(parsed)) return targetDataType === 'integer' ? Math.round(parsed) : parsed;
+          }
+          return valStr;
         }
         return valStr;
     }
@@ -150,7 +164,14 @@ export class MappingEngine {
 
     // Assign section heading if mapped (e.g. class = 'CLASS 10A')
     if (sectionHeadingTargetCol && rawRecord.__sectionHeading) {
-      cleanRecord[sectionHeadingTargetCol] = rawRecord.__sectionHeading;
+      const headingVal = rawRecord.__sectionHeading;
+      const targetCm = colMappings.find(c => c.supabaseColumn === sectionHeadingTargetCol);
+      if (targetCm && targetCm.dataType === 'integer') {
+        const numMatch = String(headingVal).match(/\d+/);
+        cleanRecord[sectionHeadingTargetCol] = numMatch ? parseInt(numMatch[0], 10) : null;
+      } else {
+        cleanRecord[sectionHeadingTargetCol] = headingVal;
+      }
     }
 
     for (const cm of colMappings) {
@@ -171,6 +192,11 @@ export class MappingEngine {
 
       // 2. Required Check
       if (cm.required && isEmpty) {
+        // If the column is 'id', PostgreSQL generates it via DEFAULT (uuid or serial).
+        // Never fail rows because the Excel source didn't contain an 'id' column.
+        if (cm.supabaseColumn === 'id') {
+          continue;
+        }
         errors.push({
           worksheetName,
           rowNumber,
@@ -199,15 +225,21 @@ export class MappingEngine {
           const cleanNumStr = strVal.replace(/[$,€£₹% ]/g, '').replace(/,/g, '');
           const num = Number(cleanNumStr);
           if (isNaN(num)) {
-            errors.push({
-              worksheetName,
-              rowNumber,
-              excelColumn: cm.excelColumn,
-              columnName: cm.supabaseColumn,
-              rawValue: strVal,
-              errorMessage: `Row ${rowNumber}: Field '${cm.supabaseColumn}' value '${strVal}' is not a valid integer.`,
-              errorType: 'type_mismatch'
-            });
+            // Check for embedded digits (e.g. "GRADE 07 A" -> 7)
+            const embedded = strVal.match(/\d+/);
+            if (embedded) {
+              coercedVal = parseInt(embedded[0], 10);
+            } else {
+              errors.push({
+                worksheetName,
+                rowNumber,
+                excelColumn: cm.excelColumn,
+                columnName: cm.supabaseColumn,
+                rawValue: strVal,
+                errorMessage: `Row ${rowNumber}: Field '${cm.supabaseColumn}' value '${strVal}' is not a valid integer.`,
+                errorType: 'type_mismatch'
+              });
+            }
           } else {
             coercedVal = Math.round(num);
           }

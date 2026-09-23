@@ -272,7 +272,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           supabaseColumn: matched.name,
           dataType: dt,
           transformation: trans,
-          uniqueKey: matched.isPrimary || matched.name === 'username' || col.uniqueKey,
+          uniqueKey: col.uniqueKey,
           required: matched.required || col.required,
         };
       }
@@ -321,7 +321,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           supabaseColumn: match.name,
           dataType: dt,
           transformation: trans,
-          uniqueKey: match.isPrimary || match.name === 'username' || col.uniqueKey,
+          uniqueKey: col.uniqueKey,
           required: match.required || col.required,
         };
       }
@@ -356,7 +356,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     setTimeout(() => setSaveMessage(null), 3500);
   };
 
-  // Toggle a column as the primary merge conflict key
+  // Toggle a column as the primary merge conflict key (single active key policy)
   const handleToggleMergeKey = (colId: string) => {
     if (!activeMapping) return;
     const targetCol = activeMapping.columns.find(c => c.id === colId);
@@ -367,13 +367,37 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       if (c.id === colId) {
         return { ...c, uniqueKey: newUnique, required: newUnique ? true : c.required };
       }
+      // If activating this key, unset all other columns to avoid composite key conflicts in Supabase
+      if (newUnique) {
+        return { ...c, uniqueKey: false };
+      }
       return c;
     });
 
     handleUpdateActiveMapping({ columns: updatedCols });
     setSaveMessage(newUnique 
-      ? `Column '${targetCol.supabaseColumn}' marked as PRIMARY MERGE KEY (ON CONFLICT DO UPDATE).`
-      : `Column '${targetCol.supabaseColumn}' is no longer a merge conflict key.`
+      ? `Column '${targetCol.supabaseColumn}' set as PRIMARY MERGE KEY (ON CONFLICT DO UPDATE).`
+      : `Merge key unset. Worksheets will import via direct INSERT.`
+    );
+    setTimeout(() => setSaveMessage(null), 3500);
+  };
+
+  // Explicitly select primary merge key from dropdown or clear it (Insert Only)
+  const handleSetPrimaryMergeKey = (targetColName: string) => {
+    if (!activeMapping) return;
+    const updatedCols = activeMapping.columns.map(c => {
+      const isMatch = c.supabaseColumn === targetColName && targetColName !== '';
+      return {
+        ...c,
+        uniqueKey: isMatch,
+        required: isMatch ? true : c.required
+      };
+    });
+
+    handleUpdateActiveMapping({ columns: updatedCols });
+    setSaveMessage(targetColName 
+      ? `Column '${targetColName}' set as PRIMARY MERGE KEY (ON CONFLICT DO UPDATE).`
+      : `Merge key cleared. All rows will import via direct INSERT.`
     );
     setTimeout(() => setSaveMessage(null), 3500);
   };
@@ -814,15 +838,30 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                 </button>
               </div>
 
-              <div className="flex items-center space-x-2 text-[11px] text-slate-500 pt-1">
-                <span>Unique Merge Key:</span>
+              <div className="flex flex-wrap items-center gap-2 pt-1.5">
+                <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wide flex items-center space-x-1">
+                  <Key className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Unique Merge Key:</span>
+                </span>
+                <select
+                  value={mergeKeys[0] || ''}
+                  onChange={(e) => handleSetPrimaryMergeKey(e.target.value)}
+                  className="px-2.5 py-1 rounded-md border border-slate-300 bg-white font-mono text-xs text-slate-900 font-bold focus:ring-1 focus:ring-emerald-500 shadow-2xs"
+                >
+                  <option value="">None (Insert Only — Safe, recommended)</option>
+                  {activeMapping.columns.map(c => (
+                    <option key={c.id} value={c.supabaseColumn}>
+                      🔑 {c.supabaseColumn} (col {c.excelColumn}: {c.excelHeader || c.excelColumn})
+                    </option>
+                  ))}
+                </select>
                 {mergeKeys.length > 0 ? (
-                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono font-bold">
-                    🔑 {mergeKeys.join(', ')} (ON CONFLICT DO UPDATE)
+                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono font-bold text-[11px] border border-amber-300">
+                    ON CONFLICT ({mergeKeys.join(', ')}) DO UPDATE
                   </span>
                 ) : (
-                  <span className="text-rose-600 font-semibold">
-                    ⚠️ No merge key selected (will insert only)
+                  <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-medium text-[11px] border border-blue-200">
+                    Direct INSERT mode (no unique key required)
                   </span>
                 )}
               </div>
@@ -834,25 +873,25 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
             <GitFork className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
             <div className="space-y-0.5">
               <span className="font-bold text-emerald-900">Merge & Upsert Strategy:</span>
-              <p className="text-emerald-800">
+              <p className="text-emerald-800 leading-relaxed">
                 Excel sheet <strong>&quot;{activeMapping.worksheetName}&quot;</strong> merges into Supabase table <strong>&quot;public.{activeMapping.supabaseTable}&quot;</strong>.
                 {mergeKeys.length > 0 ? (
-                  <> When an Excel row has the same <strong>{mergeKeys.join(', ')}</strong> as an existing record in Supabase, the Supabase record is <strong>MERGED &amp; UPDATED</strong>. Unmatched rows are <strong>INSERTED</strong> as new records.</>
+                  <> When an Excel row has the same <strong>{mergeKeys.join(', ')}</strong> as an existing record in Supabase, the Supabase record is <strong>MERGED &amp; UPDATED</strong>. If the column does not have a UNIQUE constraint in PostgreSQL, it automatically falls back to safe <strong>INSERT</strong>.</>
                 ) : (
-                  <> Please select a Merge Key (e.g. <code>username</code>) below so duplicates are safely merged rather than failing.</>
+                  <> Operating in <strong>Direct INSERT Mode</strong>. All verified rows will be appended as new records in <code>public.{activeMapping.supabaseTable}</code>. If your table has a unique column (e.g. <code>admission_no</code>), you can select it from the dropdown above to merge duplicates.</>
                 )}
               </p>
             </div>
           </div>
 
           {/* Column Mappings Table */}
-          <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
             <div className="p-3.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
               <div className="flex items-center space-x-2">
                 <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
                   Column Mappings ({activeMapping.columns.length})
                 </span>
-                <span className="text-[11px] text-slate-500">
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
                   Map each Excel column to its corresponding Supabase field
                 </span>
               </div>
@@ -870,7 +909,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="min-w-[780px] w-full text-left text-xs">
                 <thead className="bg-slate-50 text-slate-700 uppercase font-semibold tracking-wider border-b border-slate-200">
                   <tr>
                     <th className="px-3 py-3 w-16 text-center">Col</th>
@@ -960,7 +999,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                                   supabaseColumn: chosen,
                                   dataType: dt,
                                   transformation: trans,
-                                  uniqueKey: matchedCol?.isPrimary || chosen === 'username' || col.uniqueKey
+                                  uniqueKey: col.uniqueKey
                                 });
                               }}
                               className="w-full px-2.5 py-1 rounded border border-slate-300 font-mono font-bold text-xs text-emerald-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
