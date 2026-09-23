@@ -93,8 +93,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="text"
                 value={formData.workerUrl}
                 onChange={(e) => setFormData({ ...formData, workerUrl: e.target.value })}
+                placeholder="https://worker.yourdomain.com or http://worker:8000"
                 className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
+              <p className="text-[11px] text-slate-500 mt-1">
+                If using a Coolify public domain/FQDN with Traefik (e.g. <code>https://worker.yourdomain.com</code>), <strong>do not include port 8000</strong>. Traefik routes standard port 443 directly to container port 8000.
+              </p>
             </div>
 
             <div className="pt-2">
