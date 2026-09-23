@@ -16,7 +16,8 @@ import {
   ImportAuditError, 
   LogMessage, 
   SheetAnalysis,
-  SyncConflictRecord
+  SyncConflictRecord,
+  LiveSchedulerStatus
 } from './types';
 import { StorageService } from './services/storage';
 import { ApiClient } from './services/apiClient';
@@ -38,6 +39,7 @@ import { LogsView } from './components/LogsView';
 import { SettingsView } from './components/SettingsView';
 import { AiAssistantModal } from './components/AiAssistantModal';
 import { SampleWorkbookModal } from './components/SampleWorkbookModal';
+import { SecretsVaultModal } from './components/SecretsVaultModal';
 
 export default function App() {
   const handleFetchNextcloudFiles = async () => {
@@ -65,11 +67,43 @@ export default function App() {
   const [workerLogs, setWorkerLogs] = useState<LogMessage[]>(() => StorageService.getWorkerLogs());
   const [databaseState, setDatabaseState] = useState<Record<string, any[]>>(() => StorageService.getDatabaseState());
   const [conflicts, setConflicts] = useState<SyncConflictRecord[]>(() => StorageService.getConflicts());
+  const [schedulerStatus, setSchedulerStatus] = useState<LiveSchedulerStatus | null>(null);
 
-  // Initialize sample data on first visit & load real files from Nextcloud
+  const handleFetchSchedulerStatus = async () => {
+    try {
+      const res = await ApiClient.getSchedulerStatus();
+      if (res.success && res.status) {
+        setSchedulerStatus(res.status);
+      }
+    } catch (e) {
+      console.error('Failed to poll scheduler status:', e);
+    }
+  };
+
+  // Initialize sample data on first visit, load real files from Nextcloud & poll production scheduler
   useEffect(() => {
     StorageService.initSampleIfNeeded();
     handleFetchNextcloudFiles();
+    handleFetchSchedulerStatus();
+
+    // Poll live production scheduler state every 10 seconds
+    const interval = setInterval(() => {
+      handleFetchSchedulerStatus();
+    }, 10000);
+
+    // Initial scheduler configuration check
+    ApiClient.configureScheduler({
+      enabled: syncSettings.autoSyncEnabled,
+      intervalLabel: syncSettings.syncInterval,
+      workerUrl: syncSettings.workerUrl,
+      nextcloud,
+      supabase,
+      mappings,
+    }).then(res => {
+      if (res.success && res.status) {
+        setSchedulerStatus(res.status);
+      }
+    }).catch(() => {});
 
     // Check if conflicts need initialization
     const stored = StorageService.getConflicts();
@@ -88,9 +122,13 @@ export default function App() {
         console.warn('Initial diff scan notice:', e);
       }
     }
+
+    return () => clearInterval(interval);
   }, []);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isSampleModalOpen, setIsSampleModalOpen] = useState(false);
+  const [isSecretsModalOpen, setIsSecretsModalOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [aiTargetSheet, setAiTargetSheet] = useState<SheetAnalysis | null>(null);
 
   // Sync Cycle State
@@ -290,6 +328,7 @@ export default function App() {
       StorageService.saveWorkerLogs(finalLogs);
     } finally {
       setIsSyncing(false);
+      handleFetchSchedulerStatus();
     }
   };
 
@@ -356,10 +395,14 @@ export default function App() {
         onRefreshAll={handleRefreshAll}
         onOpenSampleModal={() => setIsSampleModalOpen(true)}
         onOpenAiAssistant={() => handleOpenAiAssistant()}
+        onOpenSecretsVault={() => setIsSecretsModalOpen(true)}
+        onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)}
+        allSecretsConnected={nextcloud.isConnected && supabase.isConnected}
+        schedulerStatus={schedulerStatus ?? undefined}
       />
 
       {/* Main Layout Body */}
-      <div className="flex-1 flex flex-col md:flex-row">
+      <div className="flex-1 flex flex-col md:flex-row relative">
         {/* Left Sidebar */}
         <Sidebar
           currentTab={currentTab}
@@ -367,10 +410,15 @@ export default function App() {
           errorCount={importErrors.length}
           filesWaitingCount={files.filter(f => f.status === 'New' || f.status === 'Modified').length}
           conflictCount={conflicts.filter(c => c.state === 'CONFLICT').length}
+          isOpenMobile={isMobileMenuOpen}
+          onCloseMobile={() => setIsMobileMenuOpen(false)}
+          onOpenSecretsVault={() => setIsSecretsModalOpen(true)}
+          allSecretsConnected={nextcloud.isConnected && supabase.isConnected}
+          schedulerStatus={schedulerStatus ?? undefined}
         />
 
         {/* Content Viewport */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+        <main className="flex-1 p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full min-w-0">
           {currentTab === 'dashboard' && (
             <DashboardView
               nextcloud={nextcloud}
@@ -381,6 +429,8 @@ export default function App() {
               onNavigate={setCurrentTab}
               onTriggerSync={handleTriggerSync}
               isSyncing={isSyncing}
+              onOpenSecretsVault={() => setIsSecretsModalOpen(true)}
+              schedulerStatus={schedulerStatus ?? undefined}
             />
           )}
 
@@ -396,6 +446,7 @@ export default function App() {
             <SupabaseView
               config={supabase}
               databaseState={databaseState}
+              mappings={mappings}
               onSaveConfig={handleSaveSupabase}
             />
           )}
@@ -418,6 +469,7 @@ export default function App() {
               activeMappings={mappings}
               onUpdateMappingHeaderDataRow={handleUpdateMappingHeaderDataRow}
               nextcloudConfig={nextcloud}
+              supabaseConfig={supabase}
               onSaveMappings={handleSaveMappings}
             />
           )}
@@ -429,6 +481,7 @@ export default function App() {
               onNavigate={setCurrentTab}
               onOpenAiAssistant={() => handleOpenAiAssistant()}
               currentAnalysis={currentAnalysis}
+              supabaseConfig={supabase}
             />
           )}
 
@@ -440,6 +493,8 @@ export default function App() {
               onUpdateDatabase={handleUpdateDatabase}
               onAddImportLog={handleAddImportLog}
               onNavigate={setCurrentTab}
+              supabaseConfig={supabase}
+              onSaveMappings={handleSaveMappings}
             />
           )}
 
@@ -486,10 +541,27 @@ export default function App() {
               supabaseConfig={supabase}
               mappings={mappings}
               onTriggerLiveSync={handleTriggerSync}
+              onOpenSecretsVault={() => setIsSecretsModalOpen(true)}
+              onSaveNextcloud={handleSaveNextcloud}
+              onSaveSupabase={handleSaveSupabase}
+              schedulerStatus={schedulerStatus ?? undefined}
+              onRefreshScheduler={handleFetchSchedulerStatus}
             />
           )}
         </main>
       </div>
+
+      {/* Unified Secrets Vault Modal */}
+      <SecretsVaultModal
+        isOpen={isSecretsModalOpen}
+        onClose={() => setIsSecretsModalOpen(false)}
+        nextcloud={nextcloud}
+        supabase={supabase}
+        syncSettings={syncSettings}
+        onSaveNextcloud={handleSaveNextcloud}
+        onSaveSupabase={handleSaveSupabase}
+        onSaveSyncSettings={handleSaveSettings}
+      />
 
       {/* AI Assistant Modal (Section 29) */}
       <AiAssistantModal

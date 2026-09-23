@@ -63,6 +63,42 @@ export interface SyncSettings {
   nextSyncAt?: string;
 }
 
+export interface LiveSchedulerStatus {
+  enabled: boolean;
+  intervalMinutes: number;
+  intervalLabel: SyncInterval;
+  state: 'IDLE' | 'SYNCING' | 'SCHEDULED' | 'DISABLED' | 'ERROR';
+  engineMode: 'INTEGRATED_PRODUCTION_ENGINE' | 'EXTERNAL_WORKER_DAEMON';
+  workerEndpoint?: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  secondsUntilNextRun: number | null;
+  lastRunResult?: {
+    success: boolean;
+    totalInserted: number;
+    totalUpdated: number;
+    totalFailed: number;
+    filename?: string;
+    executedAt: string;
+    error?: string;
+  } | null;
+}
+
+export interface SystemSecretItem {
+  id: string;
+  key: string;
+  label: string;
+  category: 'Nextcloud' | 'Supabase' | 'Worker Engine' | 'AI Assistant';
+  value: string;
+  isConfigured: boolean;
+  isConnected?: boolean;
+  isSecret: boolean;
+  description: string;
+  latencyMs?: number;
+  statusMessage?: string;
+  placeholder?: string;
+}
+
 export interface NextcloudFile {
   id: string;
   filename: string;
@@ -86,11 +122,20 @@ export interface MergedRange {
   type: 'title' | 'section_heading' | 'data_span';
 }
 
+export type MultiSheetConsolidationMode = 
+  | 'SEPARATE_TABLES'  // 1:1 Each worksheet maps to its own Supabase table
+  | 'UNIFIED_TABLE'    // Common schema: All worksheets merge into 1 common Supabase table
+  | 'CUSTOM_GROUPING'; // Hybrid: Group specific sheets into chosen tables
+
 export interface SheetHeader {
   colLetter: string;
   colIndex: number;
   name: string;
   sampleValues: string[];
+  inferredType?: DataType;
+  nullCount?: number;
+  uniqueCount?: number;
+  isCandidateKey?: boolean;
 }
 
 export interface SheetAnalysis {
@@ -118,6 +163,52 @@ export interface WorkbookAnalysis {
   worksheets: SheetAnalysis[];
   analyzedAt: string;
   fileHash: string;
+  base64Data?: string;
+  consolidationMode?: MultiSheetConsolidationMode;
+  sheetToTableMap?: Record<string, string>;
+}
+
+export interface TableSchemaColumn {
+  name: string;
+  originalHeaders: string[];
+  dataType: DataType;
+  sqlType: string;
+  isPrimary: boolean;
+  required: boolean;
+  sampleValues: string[];
+  matchesSupabaseColumn?: boolean;
+  supabaseMatchDetails?: string;
+}
+
+export interface TableSchemaPlan {
+  tableName: string;
+  sourceSheetNames: string[];
+  columns: TableSchemaColumn[];
+  createTableSql: string;
+  alterTableSql: string;
+  indexesSql: string;
+  completeSql: string;
+  diffStatus: 'NEW_TABLE' | 'EXACT_MATCH' | 'NEEDS_ALTER' | 'MODIFIED';
+  missingInSupabaseColumns: string[];
+  alreadyInSupabaseColumns: string[];
+}
+
+export interface SupabaseTableColumn {
+  name: string;
+  type: string;
+  format?: string;
+  isPrimary?: boolean;
+  required?: boolean;
+  description?: string;
+  defaultValue?: string;
+}
+
+export interface SupabaseTableInfo {
+  name: string;
+  columns: SupabaseTableColumn[];
+  primaryKeys: string[];
+  description?: string;
+  approximateRowCount?: number;
 }
 
 export interface ColumnMapping {

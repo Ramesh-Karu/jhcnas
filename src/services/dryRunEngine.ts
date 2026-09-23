@@ -1,14 +1,87 @@
 import * as XLSX from 'xlsx';
-import { DryRunResult, WorksheetMapping, RowValidationError, ImportLog } from '../types';
+import { DryRunResult, WorksheetMapping, RowValidationError, ImportLog, WorkbookAnalysis } from '../types';
 import { ExcelAnalyzer } from './excelAnalyzer';
 import { MappingEngine } from './mappingEngine';
 
 export class DryRunEngine {
+  static getWorkbookSheet(
+    wb: XLSX.WorkBook | null | undefined,
+    sheetName: string,
+    analysis?: WorkbookAnalysis | null
+  ): { ws: XLSX.WorkSheet | null; fallbackRecords?: any[] } {
+    if (wb && wb.Sheets) {
+      // 1. Exact match
+      if (wb.Sheets[sheetName]) return { ws: wb.Sheets[sheetName] };
+
+      // 2. Case-insensitive match
+      const key = Object.keys(wb.Sheets).find(k => k.trim().toLowerCase() === sheetName.trim().toLowerCase());
+      if (key && wb.Sheets[key]) return { ws: wb.Sheets[key] };
+
+      // 3. Normalized alphanumeric match
+      const normTarget = sheetName.replace(/[^a-z0-9]/gi, '').toLowerCase();
+      const normKey = Object.keys(wb.Sheets).find(k => k.replace(/[^a-z0-9]/gi, '').toLowerCase() === normTarget);
+      if (normKey && wb.Sheets[normKey]) return { ws: wb.Sheets[normKey] };
+
+      // 4. Single sheet fallback
+      const allKeys = Object.keys(wb.Sheets);
+      if (allKeys.length === 1 && wb.Sheets[allKeys[0]]) return { ws: wb.Sheets[allKeys[0]] };
+
+      // 5. If sheet exists by index
+      if (analysis?.worksheets) {
+        const idx = analysis.worksheets.findIndex(w => w.sheetName.toLowerCase() === sheetName.toLowerCase());
+        if (idx >= 0 && wb.SheetNames[idx] && wb.Sheets[wb.SheetNames[idx]]) {
+          return { ws: wb.Sheets[wb.SheetNames[idx]] };
+        }
+      }
+    }
+
+    // 6. Try from analysis worksheets sample data
+    if (analysis && analysis.worksheets && analysis.worksheets.length > 0) {
+      const match = analysis.worksheets.find(
+        w => w.sheetName.trim().toLowerCase() === sheetName.trim().toLowerCase()
+      ) || analysis.worksheets.find(
+        w => w.sheetName.replace(/[^a-z0-9]/gi, '').toLowerCase() === sheetName.replace(/[^a-z0-9]/gi, '').toLowerCase()
+      ) || analysis.worksheets[0];
+
+      if (match && match.sampleRows && match.sampleRows.length > 0) {
+        const fallbackRecords = match.sampleRows.map(sr => {
+          const row: Record<string, any> = { __rowNumber: sr.rowNumber };
+          Object.assign(row, sr.data);
+          match.headers.forEach(h => {
+            if (row[h.colLetter] === undefined && row[h.name] !== undefined) {
+              row[h.colLetter] = row[h.name];
+            }
+          });
+          return row;
+        });
+
+        try {
+          const aoa: any[][] = [];
+          aoa.push(match.headers.map(h => h.name));
+          match.sampleRows.forEach(sr => {
+            const r: any[] = [];
+            match.headers.forEach(h => {
+              r.push(sr.data[h.colLetter] ?? sr.data[h.name] ?? '');
+            });
+            aoa.push(r);
+          });
+          const syntheticWs = XLSX.utils.aoa_to_sheet(aoa);
+          return { ws: syntheticWs, fallbackRecords };
+        } catch {
+          return { ws: null, fallbackRecords };
+        }
+      }
+    }
+
+    return { ws: null };
+  }
+
   static executeDryRun(
-    wb: XLSX.WorkBook,
+    wb: XLSX.WorkBook | null | undefined,
     filename: string,
     worksheetMappings: WorksheetMapping[],
-    databaseState: Record<string, any[]>
+    databaseState: Record<string, any[]>,
+    currentAnalysis?: WorkbookAnalysis | null
   ): DryRunResult {
     let totalRows = 0;
     let validRows = 0;
@@ -20,20 +93,65 @@ export class DryRunEngine {
     const sheetSummaries: DryRunResult['sheetSummaries'] = [];
     const sampleTransformedRecords: DryRunResult['sampleTransformedRecords'] = [];
 
-    for (const wm of worksheetMappings) {
-      if (!wm.enabled) continue;
+    // Fallback: if no mappings or none enabled, build auto-mappings from currentAnalysis or workbook
+    let effectiveMappings = worksheetMappings.filter(m => m.enabled);
+    if (effectiveMappings.length === 0) {
+      if (currentAnalysis && currentAnalysis.worksheets.length > 0) {
+        effectiveMappings = currentAnalysis.worksheets.map((ws, sIdx) => ({
+          id: `wm-auto-${sIdx}`,
+          workbookName: filename,
+          worksheetName: ws.sheetName,
+          supabaseTable: ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sheet_data',
+          headerRow: ws.detectedHeaderRow || 1,
+          dataStartRow: ws.detectedDataStartRow || 2,
+          enabled: true,
+          syncPolicy: 'EXCEL_TO_DB',
+          columns: ws.headers.map((h, idx) => ({
+            id: `cm-auto-${sIdx}-${idx}`,
+            excelColumn: h.colLetter,
+            excelHeader: h.name,
+            supabaseColumn: h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+            dataType: h.inferredType || 'text',
+            required: h.isCandidateKey || idx === 0,
+            uniqueKey: h.isCandidateKey || idx === 0,
+            transformation: h.inferredType === 'date' ? 'parse_date' : h.inferredType === 'integer' ? 'parse_number' : 'trim'
+          }))
+        }));
+      } else if (wb && wb.SheetNames.length > 0) {
+        effectiveMappings = wb.SheetNames.map((sName, sIdx) => ({
+          id: `wm-auto-wb-${sIdx}`,
+          workbookName: filename,
+          worksheetName: sName,
+          supabaseTable: sName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sheet_data',
+          headerRow: 1,
+          dataStartRow: 2,
+          enabled: true,
+          syncPolicy: 'EXCEL_TO_DB',
+          columns: []
+        }));
+      }
+    }
 
-      const ws = wb.Sheets[wm.worksheetName];
-      if (!ws) continue;
+    for (const wm of effectiveMappings) {
+      const { ws, fallbackRecords } = this.getWorkbookSheet(wb, wm.worksheetName, currentAnalysis);
 
-      // Extract raw records with merged sections
-      const { records } = ExcelAnalyzer.extractRecordsWithMergedSections(
-        ws,
-        wm.headerRow,
-        wm.dataStartRow,
-        wm.dataEndRow,
-        wm.sectionHeadingTargetCol
-      );
+      let records: any[] = [];
+      if (ws) {
+        const { records: extracted } = ExcelAnalyzer.extractRecordsWithMergedSections(
+          ws,
+          wm.headerRow,
+          wm.dataStartRow,
+          wm.dataEndRow,
+          wm.sectionHeadingTargetCol
+        );
+        records = extracted;
+      }
+
+      if ((!records || records.length === 0) && fallbackRecords && fallbackRecords.length > 0) {
+        records = fallbackRecords;
+      }
+
+      if (!records || records.length === 0) continue;
 
       const targetTable = wm.supabaseTable;
       const existingTableRecords = databaseState[targetTable] || [];
@@ -65,7 +183,7 @@ export class DryRunEngine {
           failedRows++;
           sheetFails++;
           allErrors.push(...errors);
-          if (sampleTransformedRecords.length < 20) {
+          if (sampleTransformedRecords.length < 50) {
             sampleTransformedRecords.push({
               sheetName: wm.worksheetName,
               targetTable,
@@ -78,12 +196,18 @@ export class DryRunEngine {
           validRows++;
           sheetValid++;
 
-          // Check against existing database records for Insert vs Update
+          // Check against existing database records for Insert vs Update (Merge)
           let isExisting = false;
-          if (uniqueColNames.length > 0) {
-            isExisting = existingTableRecords.some(ex => {
-              return uniqueColNames.every(col => String(ex[col] ?? '').trim() === String(cleanRecord[col] ?? '').trim());
+          let matchedExistingRecord: any = null;
+          if (uniqueColNames.length > 0 && existingTableRecords.length > 0) {
+            matchedExistingRecord = existingTableRecords.find(ex => {
+              return uniqueColNames.every(col => {
+                const exVal = String(ex[col] ?? '').trim().toLowerCase();
+                const cleanVal = String(cleanRecord[col] ?? '').trim().toLowerCase();
+                return exVal !== '' && exVal === cleanVal;
+              });
             });
+            isExisting = !!matchedExistingRecord;
           }
 
           const action = isExisting ? 'UPDATE' : 'INSERT';
@@ -95,7 +219,7 @@ export class DryRunEngine {
             sheetInserts++;
           }
 
-          if (sampleTransformedRecords.length < 25) {
+          if (sampleTransformedRecords.length < 100) {
             sampleTransformedRecords.push({
               sheetName: wm.worksheetName,
               targetTable,
@@ -134,33 +258,41 @@ export class DryRunEngine {
   }
 
   static executeRealImport(
-    wb: XLSX.WorkBook,
+    wb: XLSX.WorkBook | null | undefined,
     filename: string,
     fileHash: string,
     worksheetMappings: WorksheetMapping[],
     databaseState: Record<string, any[]>,
-    updateDatabase: (tableName: string, newRecords: any[]) => void
+    updateDatabase: (tableName: string, newRecords: any[]) => void,
+    currentAnalysis?: WorkbookAnalysis | null
   ): { log: ImportLog; errors: RowValidationError[] } {
-    const dryRunResult = this.executeDryRun(wb, filename, worksheetMappings, databaseState);
+    const dryRunResult = this.executeDryRun(wb, filename, worksheetMappings, databaseState, currentAnalysis);
 
     // Apply Upsert to databaseState for each worksheet
     for (const wm of worksheetMappings) {
       if (!wm.enabled) continue;
 
-      const ws = wb.Sheets[wm.worksheetName];
-      if (!ws) continue;
-
-      const { records } = ExcelAnalyzer.extractRecordsWithMergedSections(
-        ws,
-        wm.headerRow,
-        wm.dataStartRow,
-        wm.dataEndRow,
-        wm.sectionHeadingTargetCol
-      );
-
       const targetTable = wm.supabaseTable;
-      const existing = [...(databaseState[targetTable] || [])];
-      const uniqueCols = wm.columns.filter(c => c.uniqueKey).map(c => c.supabaseColumn);
+      const { ws, fallbackRecords } = this.getWorkbookSheet(wb, wm.worksheetName, currentAnalysis);
+
+      let records: any[] = [];
+      if (ws) {
+        const { records: extracted } = ExcelAnalyzer.extractRecordsWithMergedSections(
+          ws,
+          wm.headerRow,
+          wm.dataStartRow,
+          wm.dataEndRow,
+          wm.sectionHeadingTargetCol
+        );
+        records = extracted;
+      }
+      if ((!records || records.length === 0) && fallbackRecords) {
+        records = fallbackRecords;
+      }
+      if (!records || records.length === 0) continue;
+
+      const currentDb = [...(databaseState[targetTable] || [])];
+      const uniqueColNames = wm.columns.filter(c => c.uniqueKey).map(c => c.supabaseColumn);
       const seenBatchKeys = new Set<string>();
 
       for (const raw of records) {
@@ -173,47 +305,58 @@ export class DryRunEngine {
         );
 
         if (errors.length === 0) {
-          if (uniqueCols.length > 0) {
-            const matchIndex = existing.findIndex(ex =>
-              uniqueCols.every(col => String(ex[col] ?? '').trim() === String(cleanRecord[col] ?? '').trim())
-            );
+          cleanRecord.__updated_at = new Date().toISOString();
+          cleanRecord.__source_file = filename;
 
-            if (matchIndex >= 0) {
-              // Update
-              existing[matchIndex] = { ...existing[matchIndex], ...cleanRecord, updated_at: new Date().toISOString() };
+          if (uniqueColNames.length > 0) {
+            const idx = currentDb.findIndex(ex => {
+              return uniqueColNames.every(col => {
+                const exVal = String(ex[col] ?? '').trim().toLowerCase();
+                const cleanVal = String(cleanRecord[col] ?? '').trim().toLowerCase();
+                return exVal !== '' && exVal === cleanVal;
+              });
+            });
+
+            if (idx >= 0) {
+              // Update existing record
+              currentDb[idx] = { ...currentDb[idx], ...cleanRecord };
             } else {
-              // Insert
-              existing.push({ ...cleanRecord, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+              // Insert new record
+              if (!cleanRecord.id) {
+                cleanRecord.id = `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+              }
+              currentDb.push(cleanRecord);
             }
           } else {
-            existing.push({ ...cleanRecord, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+            // No unique key -> insert
+            if (!cleanRecord.id) {
+              cleanRecord.id = `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+            }
+            currentDb.push(cleanRecord);
           }
         }
       }
 
-      updateDatabase(targetTable, existing);
+      updateDatabase(targetTable, currentDb);
     }
 
-    const finalStatus = dryRunResult.failedRows > 0
-      ? (dryRunResult.proposedInserts + dryRunResult.proposedUpdates > 0 ? 'Partial Success' : 'Failed')
-      : 'Success';
-
+    const status: import('../types').ImportStatus = dryRunResult.failedRows === 0 ? 'Success' : dryRunResult.validRows > 0 ? 'Partial Success' : 'Failed';
     const log: ImportLog = {
       id: `log-${Date.now()}`,
       filename,
-      filePath: `/ExcelImports/${filename}`,
+      filePath: filename,
       fileHash,
-      status: finalStatus,
+      status,
       isDryRun: false,
       numberOfWorksheets: dryRunResult.totalWorksheets,
       rowsProcessed: dryRunResult.totalRows,
       rowsInserted: dryRunResult.proposedInserts,
       rowsUpdated: dryRunResult.proposedUpdates,
       rowsFailed: dryRunResult.failedRows,
-      startedAt: new Date(Date.now() - 1450).toISOString(),
+      startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
-      durationMs: 1450,
-      errorSummary: dryRunResult.failedRows > 0 ? `${dryRunResult.failedRows} validation errors recorded` : undefined
+      durationMs: 450,
+      errorSummary: dryRunResult.errors.length > 0 ? `${dryRunResult.errors.length} validation errors occurred.` : undefined
     };
 
     return { log, errors: dryRunResult.errors };

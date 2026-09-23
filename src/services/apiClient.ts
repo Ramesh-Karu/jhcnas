@@ -1,4 +1,4 @@
-import { NextcloudConfig, SupabaseConfig, NextcloudFile, WorkbookAnalysis } from '../types';
+import { NextcloudConfig, SupabaseConfig, NextcloudFile, WorkbookAnalysis, SupabaseTableInfo, LiveSchedulerStatus, SyncInterval } from '../types';
 
 export interface SupabaseTestResult {
   success: boolean;
@@ -363,6 +363,208 @@ export class ApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async getSupabaseSchema(config: SupabaseConfig): Promise<{
+    success: boolean;
+    tables: SupabaseTableInfo[];
+    tablesCount?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/supabase/schema', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey,
+          serviceRoleKey: config.serviceRoleKey,
+        }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, tables: [], error: e.message };
+    }
+  }
+
+  static async executeSupabaseDdl(
+    config: SupabaseConfig,
+    sql: string,
+    tableName?: string
+  ): Promise<{
+    success: boolean;
+    directExecuted?: boolean;
+    message?: string;
+    sql?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/supabase/execute-ddl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey,
+          serviceRoleKey: config.serviceRoleKey,
+          sql,
+          tableName,
+        }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async fetchSupabaseTableRows(
+    config: SupabaseConfig,
+    tableName: string,
+    limit: number = 50
+  ): Promise<{
+    success: boolean;
+    tableName?: string;
+    count?: number;
+    rows?: any[];
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/supabase/fetch-table', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey,
+          serviceRoleKey: config.serviceRoleKey,
+          tableName,
+          limit,
+        }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, rows: [], error: e.message };
+    }
+  }
+
+  static async testAllSecrets(payload: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    workerUrl?: string;
+  }): Promise<{
+    success: boolean;
+    report?: {
+      timestamp: string;
+      allConnected: boolean;
+      nextcloud: {
+        isConnected: boolean;
+        latencyMs: number;
+        statusText: string;
+        checks: { hostReachability: boolean; authValid: boolean; folderAccessible: boolean };
+        error?: string;
+      };
+      supabase: {
+        isConnected: boolean;
+        latencyMs: number;
+        statusText: string;
+        tablesCount: number;
+        tables: string[];
+        checks: { hostReachability: boolean; authValid: boolean; schemaDetected: boolean };
+        error?: string;
+      };
+      worker: {
+        isConnected: boolean;
+        latencyMs: number;
+        statusText: string;
+        endpoint: string;
+        error?: string;
+      };
+    };
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/secrets/test-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async updateWorkerSecrets(payload: any): Promise<{
+    success: boolean;
+    relayedToWorker?: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/worker/secrets/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async getSchedulerStatus(): Promise<{
+    success: boolean;
+    status?: LiveSchedulerStatus;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/scheduler/status');
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async configureScheduler(payload: {
+    enabled?: boolean;
+    intervalLabel?: SyncInterval;
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    mappings?: any[];
+    workerUrl?: string;
+  }): Promise<{
+    success: boolean;
+    status?: LiveSchedulerStatus;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/scheduler/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async triggerSchedulerNow(): Promise<{
+    success: boolean;
+    result?: any;
+    status?: LiveSchedulerStatus;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/scheduler/trigger-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
       });
       return await res.json();
     } catch (e: any) {

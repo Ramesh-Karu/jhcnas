@@ -357,7 +357,6 @@ export class StorageService {
     analysis.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     this.saveCurrentAnalysis(analysis);
     this.saveMappings(getDefaultSampleMappings(sample.filename));
-    this.saveDatabaseState(getSampleInitialDatabaseState());
     localStorage.setItem(STORAGE_KEYS.SAMPLE_LOADED, 'true');
   }
 
@@ -374,8 +373,7 @@ export class StorageService {
 
   static initSampleIfNeeded(): void {
     const isLoaded = localStorage.getItem(STORAGE_KEYS.SAMPLE_LOADED);
-    const existingDb = this.getDatabaseState();
-    if (!isLoaded || Object.keys(existingDb).length === 0) {
+    if (!isLoaded) {
       this.loadSampleData();
     }
   }

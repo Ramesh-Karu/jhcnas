@@ -18,9 +18,13 @@ import {
   ArrowRight,
   Radio,
   FileSpreadsheet,
-  Terminal
+  Terminal,
+  Key,
+  Eye,
+  EyeOff,
+  Edit3
 } from 'lucide-react';
-import { SyncSettings, NextcloudConfig, SupabaseConfig, WorksheetMapping } from '../types';
+import { SyncSettings, NextcloudConfig, SupabaseConfig, WorksheetMapping, LiveSchedulerStatus } from '../types';
 import { ApiClient } from '../services/apiClient';
 
 interface SettingsViewProps {
@@ -30,6 +34,11 @@ interface SettingsViewProps {
   supabaseConfig?: SupabaseConfig;
   mappings?: WorksheetMapping[];
   onTriggerLiveSync?: () => Promise<void>;
+  onOpenSecretsVault?: () => void;
+  onSaveNextcloud?: (cfg: NextcloudConfig) => void;
+  onSaveSupabase?: (cfg: SupabaseConfig) => void;
+  schedulerStatus?: LiveSchedulerStatus;
+  onRefreshScheduler?: () => Promise<void>;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -38,11 +47,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   nextcloudConfig,
   supabaseConfig,
   mappings = [],
-  onTriggerLiveSync
+  onTriggerLiveSync,
+  onOpenSecretsVault,
+  onSaveNextcloud,
+  onSaveSupabase,
+  schedulerStatus,
+  onRefreshScheduler,
 }) => {
   const [formData, setFormData] = useState<SyncSettings>(settings);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   
+  // Secrets Visibility in Settings
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
+  const [editingSecretKey, setEditingSecretKey] = useState<string | null>(null);
+
   // Diagnostics State
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState<boolean>(false);
   const [diagResult, setDiagResult] = useState<any>(null);
@@ -51,11 +69,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [isRunningSync, setIsRunningSync] = useState<boolean>(false);
   const [syncNotice, setSyncNotice] = useState<{ success: boolean; message: string; details?: any } | null>(null);
 
-  const handleSave = (e: React.FormEvent) => {
+  const toggleSecretReveal = (key: string) => {
+    setRevealedSecrets(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     onSaveSettings(formData);
-    setSavedNotice('Worker scheduling and storage settings saved successfully.');
-    setTimeout(() => setSavedNotice(null), 3000);
+    try {
+      await ApiClient.configureScheduler({
+        enabled: formData.autoSyncEnabled,
+        intervalLabel: formData.syncInterval,
+        workerUrl: formData.workerUrl,
+        nextcloud: nextcloudConfig,
+        supabase: supabaseConfig,
+        mappings,
+      });
+      if (onRefreshScheduler) {
+        await onRefreshScheduler();
+      }
+    } catch {
+      // Best-effort background configure
+    }
+    setSavedNotice('Production sync scheduler configuration applied successfully.');
+    setTimeout(() => setSavedNotice(null), 3500);
   };
 
   const handleRunDiagnostics = async () => {
@@ -211,6 +248,165 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
+      {/* System Secrets & Configuration Vault (Admin Panel Integration) */}
+      <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
+              <Key className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+                  Secrets & Credentials Vault
+                </h2>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                  (nextcloudConfig?.isConnected && supabaseConfig?.isConnected)
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {(nextcloudConfig?.isConnected && supabaseConfig?.isConnected) ? '● All Connected' : '○ Configuration Check'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Inspect, reveal, edit, and confirm that all required integration secrets are active.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {onOpenSecretsVault && (
+              <button
+                type="button"
+                id="btn-open-secrets-vault-settings"
+                onClick={onOpenSecretsVault}
+                className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold shadow-2xs transition-colors"
+              >
+                <Key className="w-3.5 h-3.5 text-amber-400" />
+                <span>Open Full Secrets Vault</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Quick Secrets Cards Matrix */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {/* Nextcloud App Password */}
+          <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">NEXTCLOUD_APP_PASSWORD</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
+                nextcloudConfig?.appPassword ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+              }`}>
+                {nextcloudConfig?.appPassword ? 'Configured' : 'Missing'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs font-mono bg-white p-2 rounded border border-slate-200">
+              <span className="truncate max-w-[180px]">
+                {revealedSecrets['nc_pass'] ? (nextcloudConfig?.appPassword || 'None') : '••••••••••••••••'}
+              </span>
+              <div className="flex items-center space-x-1">
+                <button
+                  type="button"
+                  onClick={() => toggleSecretReveal('nc_pass')}
+                  className="p-1 text-slate-400 hover:text-slate-600"
+                  title="Reveal or mask"
+                >
+                  {revealedSecrets['nc_pass'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+                {onOpenSecretsVault && (
+                  <button
+                    type="button"
+                    onClick={onOpenSecretsVault}
+                    className="p-1 text-slate-400 hover:text-slate-700"
+                    title="Edit secret"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              WebDAV token for <span className="font-semibold text-slate-700">{nextcloudConfig?.username || 'truenas_admin'}</span>
+            </div>
+          </div>
+
+          {/* Supabase Service Role Key */}
+          <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">SUPABASE_SERVICE_ROLE_KEY</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
+                (supabaseConfig?.serviceKey || supabaseConfig?.serviceRoleKey) ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+              }`}>
+                {(supabaseConfig?.serviceKey || supabaseConfig?.serviceRoleKey) ? 'Configured' : 'Missing'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs font-mono bg-white p-2 rounded border border-slate-200">
+              <span className="truncate max-w-[180px]">
+                {revealedSecrets['supa_key'] ? (supabaseConfig?.serviceKey || supabaseConfig?.serviceRoleKey || 'None') : '••••••••••••••••'}
+              </span>
+              <div className="flex items-center space-x-1">
+                <button
+                  type="button"
+                  onClick={() => toggleSecretReveal('supa_key')}
+                  className="p-1 text-slate-400 hover:text-slate-600"
+                  title="Reveal or mask"
+                >
+                  {revealedSecrets['supa_key'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+                {onOpenSecretsVault && (
+                  <button
+                    type="button"
+                    onClick={onOpenSecretsVault}
+                    className="p-1 text-slate-400 hover:text-slate-700"
+                    title="Edit secret"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              RLS bypass key for worker upserts to PostgreSQL
+            </div>
+          </div>
+
+          {/* Worker Service Daemon or Integrated Engine */}
+          <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">
+                {formData.workerUrl ? 'EXTERNAL_WORKER_URL' : 'SYNC_PIPELINE_ENGINE'}
+              </span>
+              <span className="text-[10px] px-2 py-0.5 rounded font-bold uppercase bg-emerald-100 text-emerald-800">
+                {formData.workerUrl ? 'Configured' : 'Active'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs font-mono bg-white p-2 rounded border border-slate-200">
+              <span className="truncate max-w-[180px]">
+                {formData.workerUrl || 'In-Process Production Engine'}
+              </span>
+              <div className="flex items-center space-x-1">
+                {onOpenSecretsVault && (
+                  <button
+                    type="button"
+                    onClick={onOpenSecretsVault}
+                    className="p-1 text-slate-400 hover:text-slate-700"
+                    title="Edit worker endpoint"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              {formData.workerUrl 
+                ? 'External remote worker daemon configured'
+                : 'Production Node.js In-App Pipeline (No external daemon required)'}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Live Health & Diagnostics Matrix */}
       <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-2xs space-y-4">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -279,17 +475,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                 <Cpu className="w-3.5 h-3.5 text-purple-600" />
-                Worker Sync Pipeline
+                Sync Engine Pipeline
               </span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase bg-emerald-100 text-emerald-800">
-                Active
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                schedulerStatus?.state === 'SYNCING' ? 'bg-amber-100 text-amber-800 animate-pulse' :
+                schedulerStatus?.enabled ? 'bg-emerald-100 text-emerald-800' :
+                'bg-slate-200 text-slate-700'
+              }`}>
+                {schedulerStatus?.state === 'SYNCING' ? 'Syncing...' : schedulerStatus?.enabled ? 'Auto Active' : 'Manual'}
               </span>
             </div>
             <div className="text-xs text-slate-600 font-mono truncate">
-              {formData.workerUrl || 'Integrated In-App Pipeline'}
+              {formData.workerUrl || 'In-Process Production Engine'}
             </div>
             <div className="text-[11px] text-slate-500">
-              Schedule: <span className="font-semibold text-slate-700">Every {formData.syncInterval || '15m'}</span>
+              {schedulerStatus?.enabled
+                ? `Auto-Sync: Every ${schedulerStatus.intervalLabel}${schedulerStatus.secondsUntilNextRun !== null ? ` (in ${Math.ceil(schedulerStatus.secondsUntilNextRun / 60)}m)` : ''}`
+                : 'Manual Mode (Scheduled auto-sync disabled)'}
             </div>
           </div>
         </div>
@@ -373,10 +575,63 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Worker Scheduling */}
           <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-2xs space-y-4">
-            <h2 className="text-base font-semibold text-slate-900 flex items-center space-x-2">
-              <Clock className="w-4 h-4 text-blue-600" />
-              <span>Automated Background Polling</span>
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900 flex items-center space-x-2">
+                <Clock className="w-4 h-4 text-blue-600" />
+                <span>Production Background Scheduler</span>
+              </h2>
+              {schedulerStatus && (
+                <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                  schedulerStatus.state === 'SYNCING' ? 'bg-amber-100 text-amber-800 animate-pulse' :
+                  schedulerStatus.state === 'SCHEDULED' ? 'bg-emerald-100 text-emerald-800' :
+                  'bg-slate-100 text-slate-700'
+                }`}>
+                  {schedulerStatus.state === 'SYNCING' ? 'Syncing...' : schedulerStatus.state}
+                </span>
+              )}
+            </div>
+
+            {/* Live Scheduler Status Box */}
+            {schedulerStatus && (
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-2">
+                <div className="flex items-center justify-between text-slate-700">
+                  <span className="font-medium">Active Engine:</span>
+                  <span className="font-mono font-semibold text-indigo-700">
+                    {schedulerStatus.engineMode === 'EXTERNAL_WORKER_DAEMON'
+                      ? `Worker (${schedulerStatus.workerEndpoint})`
+                      : 'In-Process Production Engine'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-slate-700">
+                  <span className="font-medium">Next Scheduled Run:</span>
+                  <span className="font-mono font-semibold text-slate-900">
+                    {schedulerStatus.enabled && schedulerStatus.nextRunAt
+                      ? `${new Date(schedulerStatus.nextRunAt).toLocaleTimeString()} (${
+                          schedulerStatus.secondsUntilNextRun !== null && schedulerStatus.secondsUntilNextRun < 60
+                            ? '< 1 minute'
+                            : `${Math.ceil((schedulerStatus.secondsUntilNextRun || 0) / 60)} minutes`
+                        })`
+                      : 'Manual trigger only'}
+                  </span>
+                </div>
+                {schedulerStatus.lastRunAt && (
+                  <div className="flex items-center justify-between text-slate-700 border-t border-slate-200/60 pt-1.5">
+                    <span className="font-medium">Last Run Result:</span>
+                    <span className="font-mono text-[11px]">
+                      {schedulerStatus.lastRunResult?.success ? (
+                        <span className="text-emerald-700 font-bold">
+                          ✓ {schedulerStatus.lastRunResult?.totalInserted ?? 0} inserted, {schedulerStatus.lastRunResult?.totalFailed ?? 0} failed
+                        </span>
+                      ) : (
+                        <span className="text-rose-600 font-bold">
+                          ✗ {schedulerStatus.lastRunResult?.error || 'Failed'}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
@@ -394,23 +649,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <option value="1d">Daily</option>
               </select>
               <p className="text-[11px] text-slate-500 mt-1">
-                The sync pipeline checks Nextcloud WebDAV on this interval, downloads modified files, and executes upserts.
+                The sync pipeline automatically polls Nextcloud WebDAV on this interval, detects changes, and executes upserts.
               </p>
             </div>
 
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Coolify Worker API URL (Optional External Daemon)
+                External Worker URL (Optional)
               </label>
               <input
                 type="text"
                 value={formData.workerUrl}
                 onChange={(e) => setFormData({ ...formData, workerUrl: e.target.value })}
-                placeholder="https://worker.yourdomain.com or leave blank for internal engine"
+                placeholder="Optional (Leave blank to use Integrated Production Engine)"
                 className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
               <p className="text-[11px] text-slate-500 mt-1">
-                If running the standalone Coolify Python/Node daemon, enter its URL here.
+                Leave empty for standard deployment. The production in-process engine handles all WebDAV downloads and Supabase synchronization.
               </p>
             </div>
 

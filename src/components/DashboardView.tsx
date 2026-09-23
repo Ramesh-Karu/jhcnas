@@ -14,7 +14,8 @@ import {
   ArrowLeftRight,
   ShieldCheck,
   Zap,
-  Activity
+  Activity,
+  Key
 } from 'lucide-react';
 import { 
   NextcloudConfig, 
@@ -22,7 +23,8 @@ import {
   SyncSettings, 
   NextcloudFile, 
   ImportLog, 
-  NavigationTab 
+  NavigationTab,
+  LiveSchedulerStatus 
 } from '../types';
 
 interface DashboardViewProps {
@@ -34,6 +36,8 @@ interface DashboardViewProps {
   onNavigate: (tab: NavigationTab) => void;
   onTriggerSync: () => void;
   isSyncing: boolean;
+  onOpenSecretsVault?: () => void;
+  schedulerStatus?: LiveSchedulerStatus;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -44,7 +48,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   importLogs,
   onNavigate,
   onTriggerSync,
-  isSyncing
+  isSyncing,
+  onOpenSecretsVault,
+  schedulerStatus,
 }) => {
   // Compute Dashboard Metrics
   const filesWaiting = files.filter(f => f.status === 'New' || f.status === 'Modified').length;
@@ -95,6 +101,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <ArrowLeftRight className="w-4 h-4 text-emerald-600" />
             <span>Two-Way Sync Hub</span>
           </button>
+          {onOpenSecretsVault && (
+            <button
+              id="btn-quick-secrets"
+              onClick={onOpenSecretsVault}
+              className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg font-semibold text-sm text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 shadow-2xs transition-colors"
+            >
+              <Key className="w-4 h-4 text-amber-500" />
+              <span>Secrets Vault</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -275,13 +291,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* Node 2: Coolify Worker */}
-          <div className="p-4 rounded-lg bg-blue-50/50 border border-blue-200 relative">
-            <div className="text-xs font-bold text-blue-600 uppercase tracking-wider">Engine</div>
-            <div className="font-semibold text-slate-900 mt-1">Coolify Worker</div>
-            <p className="text-xs text-slate-600 mt-1">Python, openpyxl, pandas transforms</p>
-            <div className="mt-3 inline-flex items-center text-xs text-blue-700 bg-blue-100/60 px-2 py-0.5 rounded font-mono">
-              Interval: {syncSettings.syncInterval}
+          {/* Node 2: Production Engine / Scheduler */}
+          <div className="p-4 rounded-lg bg-indigo-50/50 border border-indigo-200 relative">
+            <div className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Engine</div>
+            <div className="font-semibold text-slate-900 mt-1">
+              {schedulerStatus?.engineMode === 'EXTERNAL_WORKER_DAEMON' ? 'Worker Daemon' : 'Sync Pipeline Engine'}
+            </div>
+            <p className="text-xs text-slate-600 mt-1">
+              {schedulerStatus?.engineMode === 'EXTERNAL_WORKER_DAEMON'
+                ? `FastAPI remote daemon at ${schedulerStatus.workerEndpoint?.replace(/^https?:\/\//, '')}`
+                : 'Node.js production pipeline & XLSX parsing'}
+            </p>
+            <div className="mt-3 inline-flex items-center text-xs text-indigo-700 bg-indigo-100/60 px-2 py-0.5 rounded font-mono">
+              {schedulerStatus?.enabled
+                ? `Auto: ${schedulerStatus.intervalLabel}${schedulerStatus.secondsUntilNextRun !== null ? ` • in ${Math.ceil(schedulerStatus.secondsUntilNextRun / 60)}m` : ''}`
+                : 'Manual Trigger'}
             </div>
           </div>
 

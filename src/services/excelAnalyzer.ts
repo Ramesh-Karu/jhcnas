@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { WorkbookAnalysis, SheetAnalysis, MergedRange, SheetHeader } from '../types';
+import { WorkbookAnalysis, SheetAnalysis, MergedRange, SheetHeader, DataType } from '../types';
 
 export class ExcelAnalyzer {
   static async computeSHA256(data: ArrayBuffer): Promise<string> {
@@ -8,10 +8,26 @@ export class ExcelAnalyzer {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
+  static bufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
+    try {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    } catch (e) {
+      console.warn('Could not encode buffer to base64:', e);
+      return '';
+    }
+  }
+
   static parseBuffer(buffer: ArrayBuffer | Uint8Array, filename: string): { wb: XLSX.WorkBook; analysis: WorkbookAnalysis } {
-    const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
+    const wb = XLSX.read(buffer, { type: 'array', cellDates: true, cellNF: true });
     const fileSize = buffer.byteLength;
     const worksheets: SheetAnalysis[] = [];
+    const base64Data = this.bufferToBase64(buffer);
 
     for (const sheetName of wb.SheetNames) {
       const ws = wb.Sheets[sheetName];
@@ -26,7 +42,8 @@ export class ExcelAnalyzer {
       totalWorksheets: worksheets.length,
       worksheets,
       analyzedAt: new Date().toISOString(),
-      fileHash: '' // Will be populated with SHA-256
+      fileHash: '', // Will be populated with SHA-256
+      base64Data
     };
 
     return { wb, analysis };
@@ -48,13 +65,146 @@ export class ExcelAnalyzer {
     return null;
   }
 
-  static analyzeSheet(ws: XLSX.WorkSheet, sheetName: string): SheetAnalysis {
-    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-    const totalRows = range.e.r + 1;
-    const totalColumns = range.e.c + 1;
-    const usedRange = ws['!ref'] || 'A1';
+  // Automatic Data Type Inference Engine
+  static inferColumnDataType(values: any[]): {
+    dataType: DataType;
+    nullCount: number;
+    uniqueCount: number;
+    isCandidateKey: boolean;
+  } {
+    let nullCount = 0;
+    const nonNulls: any[] = [];
+    const uniqueSet = new Set<string>();
 
-    // 1. Process Merged Cells
+    for (const v of values) {
+      if (v === null || v === undefined || String(v).trim() === '') {
+        nullCount++;
+      } else {
+        const str = String(v).trim();
+        nonNulls.push(v);
+        uniqueSet.add(str.toLowerCase());
+      }
+    }
+
+    const totalCount = nonNulls.length;
+    if (totalCount === 0) {
+      return { dataType: 'text', nullCount, uniqueCount: 0, isCandidateKey: false };
+    }
+
+    let intCount = 0;
+    let decimalCount = 0;
+    let dateCount = 0;
+    let boolCount = 0;
+    let uuidCount = 0;
+
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const isoDateRegex = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/;
+    const dmyDateRegex = /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/;
+
+    for (const v of nonNulls) {
+      if (v instanceof Date && !isNaN(v.getTime())) {
+        dateCount++;
+        continue;
+      }
+
+      const str = String(v).trim();
+
+      // Boolean
+      const lower = str.toLowerCase();
+      if (['true', 'false', 'yes', 'no', 'y', 'n', 't', 'f'].includes(lower)) {
+        boolCount++;
+        continue;
+      }
+
+      // UUID
+      if (uuidRegex.test(str)) {
+        uuidCount++;
+        continue;
+      }
+
+      // Date string or Excel date serial
+      if (isoDateRegex.test(str) || dmyDateRegex.test(str)) {
+        const testD = new Date(str);
+        if (!isNaN(testD.getTime())) {
+          dateCount++;
+          continue;
+        }
+      }
+
+      // Number test
+      const cleanNumStr = str.replace(/[$,€£₹% ]/g, '').replace(/,/g, '');
+      const num = Number(cleanNumStr);
+      if (!isNaN(num) && cleanNumStr !== '') {
+        // Check if integer or decimal
+        if (Number.isInteger(num)) {
+          intCount++;
+        } else {
+          decimalCount++;
+        }
+        continue;
+      }
+    }
+
+    let dataType: DataType = 'text';
+    const threshold = totalCount * 0.8;
+
+    if (boolCount >= threshold) {
+      dataType = 'boolean';
+    } else if (dateCount >= threshold) {
+      dataType = 'date';
+    } else if (intCount >= threshold) {
+      dataType = 'integer';
+    } else if ((intCount + decimalCount) >= threshold) {
+      dataType = 'decimal';
+    } else {
+      dataType = 'text';
+    }
+
+    // High uniqueness indicates candidate primary/merge key
+    const isCandidateKey = nullCount === 0 && uniqueSet.size === totalCount && totalCount > 0;
+
+    return {
+      dataType,
+      nullCount,
+      uniqueCount: uniqueSet.size,
+      isCandidateKey
+    };
+  }
+
+  static analyzeSheet(
+    ws: XLSX.WorkSheet,
+    sheetName: string,
+    headerRowOverride?: number,
+    dataStartRowOverride?: number
+  ): SheetAnalysis {
+    // 1. Scan actual cell keys to find the true bounds of the sheet (not just !ref)
+    let minR = 0, maxR = 0, minC = 0, maxC = 0;
+    let foundCells = false;
+
+    for (const k of Object.keys(ws)) {
+      if (k.startsWith('!')) continue;
+      foundCells = true;
+      try {
+        const cell = XLSX.utils.decode_cell(k);
+        if (cell.r > maxR) maxR = cell.r;
+        if (cell.c > maxC) maxC = cell.c;
+      } catch {}
+    }
+
+    if (ws['!ref']) {
+      try {
+        const refRange = XLSX.utils.decode_range(ws['!ref']);
+        maxR = Math.max(maxR, refRange.e.r);
+        maxC = Math.max(maxC, refRange.e.c);
+        foundCells = true;
+      } catch {}
+    }
+
+    const totalRows = foundCells ? maxR + 1 : 1;
+    const totalColumns = foundCells ? maxC + 1 : 1;
+    const usedRange = ws['!ref'] || `A1:${XLSX.utils.encode_col(maxC)}${maxR + 1}`;
+
+    // 2. Process Merged Cells
     const rawMerges: XLSX.Range[] = ws['!merges'] || [];
     const mergedRanges: MergedRange[] = [];
 
@@ -65,7 +215,6 @@ export class ExcelAnalyzer {
       const endRow = m.e.r + 1;
       const rangeStr = `${startCol}${startRow}:${endCol}${endRow}`;
 
-      // Get value from top-left cell
       const cellAddress = XLSX.utils.encode_cell(m.s);
       const cell = ws[cellAddress];
       const value = cell ? String(cell.v || cell.w || '') : '';
@@ -91,21 +240,37 @@ export class ExcelAnalyzer {
       });
     }
 
-    // 2. Scan Rows to detect titles, section headings, empty rows, candidate headers
+    // 3. Scan top rows (rows 1-15) to detect candidate headers
     const emptyRows: number[] = [];
     const titleRows: { row: number; text: string }[] = [];
     const sectionHeadings: { row: number; text: string; range: string }[] = [];
-    const candidateHeaders: { row: number; headers: string[]; confidence: number }[] = [];
+    const candidateHeaders: { row: number; headers: string[]; confidence: number; score: number }[] = [];
 
-    const scanLimit = Math.min(totalRows, 100);
+    const headerKeywords = ['name', 'id', 'user', 'code', 'date', 'dob', 'class', 'grade', 'status', 'email', 'phone', 'number', 'roll', 'index', 'gender', 'mark', 'score', 'address'];
+
+    const scanLimit = Math.min(totalRows, 20);
     for (let r = 0; r < scanLimit; r++) {
       const rowNumber = r + 1;
       const rowValues: string[] = [];
+      let textCount = 0;
+      let numCount = 0;
+      let keywordHits = 0;
+      const uniqueHeaders = new Set<string>();
 
       for (let c = 0; c < totalColumns; c++) {
         const val = this.getResolvedCellValue(ws, r, c, rawMerges);
         if (val !== null && val !== undefined && String(val).trim() !== '') {
-          rowValues.push(String(val).trim());
+          const str = String(val).trim();
+          rowValues.push(str);
+          uniqueHeaders.add(str.toLowerCase());
+
+          const isNum = !isNaN(Number(str.replace(/[,%$ ]/g, '')));
+          if (isNum) numCount++;
+          else textCount++;
+
+          if (headerKeywords.some(kw => str.toLowerCase().includes(kw))) {
+            keywordHits++;
+          }
         }
       }
 
@@ -114,107 +279,142 @@ export class ExcelAnalyzer {
         continue;
       }
 
-      // Check if row matches a merged range
+      // Check if merged title banner
       const matchingMerge = mergedRanges.find(m => m.startRow <= rowNumber && rowNumber <= m.endRow);
-
-      if (rowValues.length === 1 && matchingMerge) {
+      if (rowValues.length <= 2 && matchingMerge) {
         if (matchingMerge.type === 'title') {
           titleRows.push({ row: rowNumber, text: matchingMerge.value });
+          continue;
         } else if (matchingMerge.type === 'section_heading') {
           sectionHeadings.push({ row: rowNumber, text: matchingMerge.value, range: matchingMerge.range });
+          continue;
         }
-      } else if (rowValues.length >= 1) {
-        // High string density indicates headers
-        const stringCount = rowValues.filter(v => isNaN(Number(v))).length;
-        const confidence = stringCount / rowValues.length;
-        if (confidence >= 0.4 || rowNumber === 1) {
-          candidateHeaders.push({
-            row: rowNumber,
-            headers: rowValues,
-            confidence: Number(confidence.toFixed(2))
-          });
-        }
+      }
+
+      // Header scoring formula:
+      // High unique text headers + keyword presence - pure numbers - depth penalty
+      const confidence = rowValues.length > 0 ? textCount / rowValues.length : 0;
+      const score = (uniqueHeaders.size * 3) + (keywordHits * 4) + (textCount * 2) - (numCount * 2.5) - (r * 1.5);
+
+      if (uniqueHeaders.size >= 1 && (confidence >= 0.3 || rowNumber <= 3)) {
+        candidateHeaders.push({
+          row: rowNumber,
+          headers: rowValues,
+          confidence: Number(confidence.toFixed(2)),
+          score
+        });
       }
     }
 
-    // Determine Best Header Row (prefer row with highest non-empty string count)
-    let detectedHeaderRow = 1;
-    if (candidateHeaders.length > 0) {
-      // Find candidate with maximum header count
-      const best = [...candidateHeaders].sort((a, b) => b.headers.length - a.headers.length || a.row - b.row)[0];
+    // Determine Best Header Row (prefer highest score or manual override)
+    let detectedHeaderRow = headerRowOverride && headerRowOverride >= 1 ? headerRowOverride : 1;
+    if (!headerRowOverride && candidateHeaders.length > 0) {
+      const best = [...candidateHeaders].sort((a, b) => b.score - a.score)[0];
       detectedHeaderRow = best.row;
-    } else if (totalRows > 0) {
-      detectedHeaderRow = 1;
     }
 
-    // Determine Data Start Row
-    let detectedDataStartRow = detectedHeaderRow + 1;
+    // Determine Data Start Row (default to detectedHeaderRow + 1)
+    let detectedDataStartRow = dataStartRowOverride && dataStartRowOverride > detectedHeaderRow
+      ? dataStartRowOverride
+      : detectedHeaderRow + 1;
+
     while (emptyRows.includes(detectedDataStartRow) && detectedDataStartRow < totalRows) {
       detectedDataStartRow++;
     }
 
-    // Prune blank trailing columns
+    // 4. Extract Headers at detectedHeaderRow
+    // Scan all columns up to totalColumns
     const headerR = detectedHeaderRow - 1;
-    let lastNonEmptyCol = -1;
+    let lastActiveCol = -1;
+
+    // First pass to find the true last active column with either a header or data
     for (let c = totalColumns - 1; c >= 0; c--) {
-      const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
-      let hasData = false;
-      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 20); r++) {
-        if (this.getResolvedCellValue(ws, r, c, rawMerges) !== null) {
-          hasData = true;
+      const hVal = this.getResolvedCellValue(ws, headerR, c, rawMerges);
+      let colHasData = false;
+      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 25); r++) {
+        const dVal = this.getResolvedCellValue(ws, r, c, rawMerges);
+        if (dVal !== null && dVal !== undefined && String(dVal).trim() !== '') {
+          colHasData = true;
           break;
         }
       }
-      if ((val !== null && String(val).trim() !== '') || hasData) {
-        lastNonEmptyCol = c;
+      if ((hVal !== null && String(hVal).trim() !== '') || colHasData) {
+        lastActiveCol = c;
         break;
       }
     }
 
-    const effectiveColCount = lastNonEmptyCol >= 0 ? lastNonEmptyCol + 1 : totalColumns;
-
-    // Extract Headers at detectedHeaderRow with merged cell resolution
+    const effectiveColCount = lastActiveCol >= 0 ? lastActiveCol + 1 : totalColumns;
     const headers: SheetHeader[] = [];
+
+    // 5. Build Headers and Auto-Detect Data Types
     for (let c = 0; c < effectiveColCount; c++) {
       const colLetter = XLSX.utils.encode_col(c);
       const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
-      const name = val !== null && val !== undefined && String(val).trim() !== '' 
-        ? String(val).trim() 
+      let name = val !== null && val !== undefined && String(val).trim() !== ''
+        ? String(val).trim()
         : `Column_${colLetter}`;
 
-      // Sample a couple values for this column with merged cell resolution
+      // Clean header name from newlines/tabs
+      name = name.replace(/[\r\n\t]+/g, ' ').trim();
+
+      // Sample values from data rows for this column
       const sampleValues: string[] = [];
-      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 8); r++) {
+      const rawSampleList: any[] = [];
+      const sampleLimit = Math.min(totalRows, detectedDataStartRow + 100);
+
+      for (let r = detectedDataStartRow - 1; r < sampleLimit; r++) {
         const scVal = this.getResolvedCellValue(ws, r, c, rawMerges);
         if (scVal !== null && scVal !== undefined && String(scVal).trim() !== '') {
-          sampleValues.push(String(scVal));
+          rawSampleList.push(scVal);
+          if (sampleValues.length < 8) {
+            sampleValues.push(String(scVal));
+          }
         }
       }
+
+      // Run Automated Type Inference
+      const { dataType, nullCount, uniqueCount, isCandidateKey } = this.inferColumnDataType(rawSampleList);
+
+      // Check if header name hints at candidate key (id, username, code, roll)
+      const nameNorm = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const keyHints = ['id', 'username', 'user', 'code', 'index', 'rollnumber', 'studentid', 'indexnumber'];
+      const hasKeyHint = keyHints.some(k => nameNorm.includes(k));
 
       headers.push({
         colLetter,
         colIndex: c + 1,
         name,
-        sampleValues
+        sampleValues,
+        inferredType: dataType,
+        nullCount,
+        uniqueCount,
+        isCandidateKey: isCandidateKey || (c === 0 && hasKeyHint)
       });
     }
 
-    // Extract Sample Rows (first 6 rows of data) with resolved merged cells
+    // 6. Extract Sample Rows (up to 1500 rows for complete dry-run and sync preview)
     const sampleRows: { rowNumber: number; data: Record<string, any> }[] = [];
-    const sampleLimit = Math.min(totalRows, detectedDataStartRow + 7);
+    const maxSampleRows = Math.min(totalRows, detectedDataStartRow + 1500);
 
-    for (let r = detectedDataStartRow - 1; r < sampleLimit; r++) {
+    for (let r = detectedDataStartRow - 1; r < maxSampleRows; r++) {
       const rowNumber = r + 1;
       if (emptyRows.includes(rowNumber)) continue;
 
       const rowData: Record<string, any> = {};
       let hasData = false;
 
-      for (let c = 0; c < totalColumns; c++) {
+      for (let c = 0; c < effectiveColCount; c++) {
         const colLetter = XLSX.utils.encode_col(c);
         const val = this.getResolvedCellValue(ws, r, c, rawMerges);
         rowData[colLetter] = val !== null && val !== undefined ? val : '';
-        if (val) hasData = true;
+        const hName = headers[c]?.name;
+        if (hName) {
+          rowData[hName] = val !== null && val !== undefined ? val : '';
+        }
+        if (val !== null && val !== undefined && String(val).trim() !== '') {
+          hasData = true;
+        }
       }
 
       if (hasData) {
@@ -225,12 +425,16 @@ export class ExcelAnalyzer {
     return {
       sheetName,
       totalRows,
-      totalColumns,
+      totalColumns: effectiveColCount,
       usedRange,
       mergedRanges,
       detectedHeaderRow,
       detectedDataStartRow,
-      candidateHeaderRows: candidateHeaders,
+      candidateHeaderRows: candidateHeaders.map(ch => ({
+        row: ch.row,
+        headers: ch.headers,
+        confidence: ch.confidence
+      })),
       titleRows,
       sectionHeadings,
       emptyRowsCount: emptyRows.length,
@@ -247,9 +451,25 @@ export class ExcelAnalyzer {
     dataEndRow?: number,
     sectionHeadingTargetCol?: string
   ): { records: Record<string, any>[]; headers: SheetHeader[] } {
-    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-    const totalCols = range.e.c + 1;
-    const maxRow = dataEndRow ? Math.min(range.e.r + 1, dataEndRow) : range.e.r + 1;
+    let maxR = 0, maxC = 0;
+    for (const k of Object.keys(ws)) {
+      if (k.startsWith('!')) continue;
+      try {
+        const cell = XLSX.utils.decode_cell(k);
+        if (cell.r > maxR) maxR = cell.r;
+        if (cell.c > maxC) maxC = cell.c;
+      } catch {}
+    }
+    if (ws['!ref']) {
+      try {
+        const r = XLSX.utils.decode_range(ws['!ref']);
+        maxR = Math.max(maxR, r.e.r);
+        maxC = Math.max(maxC, r.e.c);
+      } catch {}
+    }
+
+    const totalCols = maxC + 1;
+    const maxRow = dataEndRow ? Math.min(maxR + 1, dataEndRow) : maxR + 1;
 
     // Detect section headings from merges
     const rawMerges = ws['!merges'] || [];
@@ -274,7 +494,9 @@ export class ExcelAnalyzer {
     for (let c = 0; c < totalCols; c++) {
       const colLetter = XLSX.utils.encode_col(c);
       const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
-      const name = val !== null && val !== undefined && String(val).trim() !== '' ? String(val).trim() : `Col_${colLetter}`;
+      const name = val !== null && val !== undefined && String(val).trim() !== ''
+        ? String(val).trim().replace(/[\r\n\t]+/g, ' ')
+        : `Column_${colLetter}`;
       colIndexToName[c] = name;
       headers.push({ colLetter, colIndex: c + 1, name, sampleValues: [] });
     }
@@ -285,7 +507,6 @@ export class ExcelAnalyzer {
     for (let r = dataStartRow - 1; r < maxRow; r++) {
       const rowNumber = r + 1;
 
-      // Check if this row is a section heading banner
       if (sectionHeadingsMap[rowNumber]) {
         currentSectionHeading = sectionHeadingsMap[rowNumber];
         continue;
@@ -304,11 +525,11 @@ export class ExcelAnalyzer {
 
         rowObj[colLetter] = val;
         rowObj[`header_${colIndexToName[c]}`] = val;
+        rowObj[colIndexToName[c]] = val;
       }
 
       if (!hasData) continue;
 
-      // Downward propagation of merged section heading
       if (sectionHeadingTargetCol && currentSectionHeading) {
         rowObj['__sectionHeading'] = currentSectionHeading;
       }
