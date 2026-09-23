@@ -6,6 +6,7 @@ export type NavigationTab =
   | 'analyzer'
   | 'mappings'
   | 'import'
+  | 'twoway'
   | 'history'
   | 'errors'
   | 'logs'
@@ -43,7 +44,9 @@ export interface NextcloudConfig {
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
-  serviceRoleKey: string;
+  serviceKey: string;
+  /** @deprecated Backward compatibility alias for serviceKey */
+  serviceRoleKey?: string;
   isConnected: boolean;
   lastChecked?: string;
   statusMessage?: string;
@@ -130,6 +133,12 @@ export interface ColumnMapping {
   validationRegex?: string;
 }
 
+export type TableSyncPolicy = 
+  | 'BIDIRECTIONAL'  // Both platforms can edit; unilateral changes auto-sync; collisions pause
+  | 'EXCEL_TO_DB'    // Nextcloud Excel is the Master Source; pushes to Supabase; Supabase cannot overwrite Excel
+  | 'DB_TO_EXCEL'    // Supabase DB is the Master Source; live DB pushes to Excel; Excel cannot overwrite DB
+  | 'READ_ONLY';     // Audit only; neither platform is modified
+
 export interface WorksheetMapping {
   id: string;
   workbookName: string;
@@ -140,6 +149,7 @@ export interface WorksheetMapping {
   dataEndRow?: number;
   sectionHeadingTargetCol?: string; // e.g. 'class' for A3:H3 CLASS 10A
   enabled: boolean;
+  syncPolicy?: TableSyncPolicy; // Per-table authority rule
   columns: ColumnMapping[];
 }
 
@@ -222,3 +232,78 @@ export interface LogMessage {
   component: 'WebDAV' | 'Worker' | 'Parser' | 'Supabase' | 'MappingEngine';
   message: string;
 }
+
+export type ConflictResolutionChoice = 'excel' | 'supabase' | 'custom_merge';
+
+export type SyncRecordState = 
+  | 'IN_SYNC' 
+  | 'EXCEL_ONLY' 
+  | 'SUPABASE_ONLY' 
+  | 'AUTO_PUSH_TO_DB'     // Edited ONLY in Nextcloud Excel -> Auto-sync to DB (0 clicks)
+  | 'AUTO_PUSH_TO_EXCEL'  // Edited ONLY in Supabase DB -> Auto-sync to Nextcloud (0 clicks)
+  | 'POLICY_BLOCKED'      // Edits blocked because table is configured for opposite authority
+  | 'CONFLICT'            // Edited in BOTH at the same time -> True collision, requires approval
+  | 'RESOLVED';
+
+export interface ConflictFieldDiff {
+  supabaseColumn: string;
+  excelHeader: string;
+  excelColumn: string;
+  excelValue: any;
+  supabaseValue: any;
+  selectedSource: 'excel' | 'supabase';
+}
+
+export interface SyncBaselineRecord {
+  recordKey: string;      // e.g. "students:STU-1002"
+  tableName: string;
+  primaryKeyCol: string;
+  primaryKeyValue: string;
+  excelHash: string;
+  supabaseHash: string;
+  lastSyncedAt: string;
+  syncedValues: Record<string, any>;
+}
+
+export interface SyncConflictRecord {
+  id: string;
+  worksheetName: string;
+  tableName: string;
+  primaryKeyCol: string;
+  primaryKeyValue: string;
+  detectedAt: string;
+  state: SyncRecordState;
+  tableSyncPolicy?: TableSyncPolicy;
+  policyNotice?: string;
+  changeOrigin?: 'EXCEL_ONLY_EDIT' | 'SUPABASE_ONLY_EDIT' | 'CONCURRENT_COLLISION' | 'NEW_IN_EXCEL' | 'NEW_IN_SUPABASE' | 'IDENTICAL';
+  autoApplyReason?: string;
+  excelRowNumber?: number;
+  fieldDiffs: ConflictFieldDiff[];
+  excelFullRecord: Record<string, any>;
+  supabaseFullRecord: Record<string, any>;
+  resolutionChoice?: ConflictResolutionChoice;
+  resolvedAt?: string;
+  resolutionNote?: string;
+}
+
+export interface TwoWaySyncResult {
+  timestamp: string;
+  filename: string;
+  totalRecordsCompared: number;
+  inSyncCount: number;
+  autoPushToDbCount: number;
+  autoPushToExcelCount: number;
+  policyBlockedCount: number;
+  excelOnlyCount: number;
+  supabaseOnlyCount: number;
+  conflictCount: number;
+  records: SyncConflictRecord[];
+}
+
+export interface TwoWaySyncSettings {
+  autoPushNonConflicting: boolean;
+  defaultConflictResolution: 'manual' | 'excel_wins' | 'supabase_wins';
+  createBackupBeforeExcelWrite: boolean;
+  backupFolder: string;
+}
+

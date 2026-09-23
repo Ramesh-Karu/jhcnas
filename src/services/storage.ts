@@ -7,10 +7,35 @@ import {
   WorksheetMapping, 
   ImportLog, 
   ImportAuditError, 
-  LogMessage 
+  LogMessage,
+  SyncConflictRecord,
+  SyncBaselineRecord,
+  TwoWaySyncSettings
 } from '../types';
-import { createComplexSampleWorkbook, getDefaultSampleMappings } from './sampleWorkbook';
+import { createComplexSampleWorkbook, getDefaultSampleMappings, getSampleInitialDatabaseState } from './sampleWorkbook';
 import { ExcelAnalyzer } from './excelAnalyzer';
+
+function safeRangeToString(val: any): string {
+  if (!val) return 'A1';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object' && 's' in val && 'e' in val) {
+    const colToLetter = (c: number) => {
+      let temp = c;
+      let letter = '';
+      while (temp >= 0) {
+        letter = String.fromCharCode((temp % 26) + 65) + letter;
+        temp = Math.floor(temp / 26) - 1;
+      }
+      return letter || 'A';
+    };
+    const sCol = colToLetter(val.s?.c ?? 0);
+    const sRow = (val.s?.r ?? 0) + 1;
+    const eCol = colToLetter(val.e?.c ?? 0);
+    const eRow = (val.e?.r ?? 0) + 1;
+    return `${sCol}${sRow}:${eCol}${eRow}`;
+  }
+  return String(val);
+}
 
 const STORAGE_KEYS = {
   NEXTCLOUD: 'nes_nextcloud_config',
@@ -23,6 +48,9 @@ const STORAGE_KEYS = {
   IMPORT_ERRORS: 'nes_import_errors',
   WORKER_LOGS: 'nes_worker_logs',
   DB_STATE: 'nes_db_state',
+  CONFLICTS: 'nes_sync_conflicts',
+  SYNC_BASELINES: 'nes_sync_baselines',
+  TWOWAY_SETTINGS: 'nes_twoway_settings',
   SAMPLE_LOADED: 'nes_sample_loaded_v1'
 };
 
@@ -31,13 +59,17 @@ export class StorageService {
     const raw = localStorage.getItem(STORAGE_KEYS.NEXTCLOUD);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw);
+        const parsed: NextcloudConfig = JSON.parse(raw);
         if (parsed.url === 'https://cloud.internal.truenas.net' || !parsed.url) {
           parsed.url = 'https://cloud.jhcnexus.space';
           parsed.webdavUrl = 'https://cloud.jhcnexus.space/remote.php/dav/files/truenas_admin/';
           parsed.username = 'truenas_admin';
           parsed.appPassword = 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT';
-          this.saveNextcloudConfig(parsed);
+        }
+        // Do not keep unverified fake connected status
+        if (parsed.isConnected && !parsed.lastChecked) {
+          parsed.isConnected = false;
+          parsed.statusMessage = 'Unverified. Click Test Nextcloud Connection to verify live access.';
         }
         return parsed;
       } catch {}
@@ -48,9 +80,9 @@ export class StorageService {
       username: 'truenas_admin',
       appPassword: 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT',
       sourceFolder: '/ExcelImports',
-      isConnected: true,
-      lastChecked: new Date().toISOString(),
-      statusMessage: 'Connected to Nextcloud via WebDAV (cloud.jhcnexus.space)'
+      isConnected: false,
+      lastChecked: undefined,
+      statusMessage: 'Unverified. Click Test Connection to verify live WebDAV access.'
     };
   }
 
@@ -60,14 +92,39 @@ export class StorageService {
 
   static getSupabaseConfig(): SupabaseConfig {
     const raw = localStorage.getItem(STORAGE_KEYS.SUPABASE);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        const parsed: SupabaseConfig = JSON.parse(raw);
+        // Handle migration from legacy serviceRoleKey to serviceKey
+        if (parsed.serviceRoleKey && !parsed.serviceKey) {
+          parsed.serviceKey = parsed.serviceRoleKey;
+        } else if (!parsed.serviceKey) {
+          parsed.serviceKey = '';
+        }
+        // Clean out any fake dummy/placeholder credentials
+        if (!parsed.url || parsed.url.includes('dbsync-prod.supabase.co') || parsed.anonKey?.includes('sample_anon_key')) {
+          parsed.url = '';
+          parsed.anonKey = '';
+          parsed.serviceKey = '';
+          parsed.serviceRoleKey = '';
+          parsed.isConnected = false;
+          parsed.lastChecked = undefined;
+          parsed.statusMessage = 'Not connected. Enter your Supabase Project URL and API Key to connect.';
+          this.saveSupabaseConfig(parsed);
+        } else if (!parsed.url || (!parsed.anonKey && !parsed.serviceKey)) {
+          parsed.isConnected = false;
+          parsed.statusMessage = 'Not connected. Missing Supabase credentials.';
+        }
+        return parsed;
+      } catch {}
+    }
     return {
-      url: 'https://dbsync-prod.supabase.co',
-      anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyZWYiOiJkYnN5bmMtcHJvZCIsInJvbGUiOiJhbm9uIn0.sample_anon_key',
-      serviceRoleKey: '••••••••••••••••••••••••••••••••••••••••••••••',
-      isConnected: true,
-      lastChecked: new Date().toISOString(),
-      statusMessage: 'Connected to Supabase PostgreSQL (Schema verified)'
+      url: '',
+      anonKey: '',
+      serviceKey: '',
+      isConnected: false,
+      lastChecked: undefined,
+      statusMessage: 'Not connected. Enter your Supabase Project URL and API Key to connect.'
     };
   }
 
@@ -150,7 +207,36 @@ export class StorageService {
 
   static getCurrentAnalysis(): WorkbookAnalysis | null {
     const raw = localStorage.getItem(STORAGE_KEYS.CURRENT_ANALYSIS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.worksheets)) {
+          let modified = false;
+          parsed.worksheets.forEach((ws: any) => {
+            if (typeof ws.usedRange !== 'string') {
+              ws.usedRange = safeRangeToString(ws.usedRange);
+              modified = true;
+            }
+            if (Array.isArray(ws.mergedRanges)) {
+              ws.mergedRanges.forEach((mr: any) => {
+                if (typeof mr.range !== 'string') {
+                  mr.range = safeRangeToString(mr.range);
+                  modified = true;
+                }
+                if (typeof mr.value === 'object' && mr.value !== null) {
+                  mr.value = JSON.stringify(mr.value);
+                  modified = true;
+                }
+              });
+            }
+          });
+          if (modified) {
+            this.saveCurrentAnalysis(parsed);
+          }
+        }
+        return parsed;
+      } catch {}
+    }
     return null;
   }
 
@@ -212,12 +298,66 @@ export class StorageService {
     localStorage.setItem(STORAGE_KEYS.DB_STATE, JSON.stringify(state));
   }
 
+  static getConflicts(): SyncConflictRecord[] {
+    const raw = localStorage.getItem(STORAGE_KEYS.CONFLICTS);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+    return [];
+  }
+
+  static saveConflicts(conflicts: SyncConflictRecord[]): void {
+    localStorage.setItem(STORAGE_KEYS.CONFLICTS, JSON.stringify(conflicts));
+  }
+
+  static getSyncBaselines(): Record<string, SyncBaselineRecord> {
+    const raw = localStorage.getItem(STORAGE_KEYS.SYNC_BASELINES);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+    return {};
+  }
+
+  static saveSyncBaselines(baselines: Record<string, SyncBaselineRecord>): void {
+    localStorage.setItem(STORAGE_KEYS.SYNC_BASELINES, JSON.stringify(baselines));
+  }
+
+  static updateSyncBaseline(recordKey: string, baseline: SyncBaselineRecord): void {
+    const current = this.getSyncBaselines();
+    current[recordKey] = baseline;
+    this.saveSyncBaselines(current);
+  }
+
+  static getTwoWaySyncSettings(): TwoWaySyncSettings {
+    const raw = localStorage.getItem(STORAGE_KEYS.TWOWAY_SETTINGS);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+    return {
+      autoPushNonConflicting: true, // Default to true: automatic bi-directional sync without manual clicks
+      defaultConflictResolution: 'manual', // True concurrent conflicts require manual decision
+      createBackupBeforeExcelWrite: true,
+      backupFolder: 'Sync_Backups'
+    };
+  }
+
+  static saveTwoWaySyncSettings(settings: TwoWaySyncSettings): void {
+    localStorage.setItem(STORAGE_KEYS.TWOWAY_SETTINGS, JSON.stringify(settings));
+  }
+
   static loadSampleData(): void {
     const sample = createComplexSampleWorkbook();
     const { analysis } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);
     analysis.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     this.saveCurrentAnalysis(analysis);
     this.saveMappings(getDefaultSampleMappings(sample.filename));
+    this.saveDatabaseState(getSampleInitialDatabaseState());
     localStorage.setItem(STORAGE_KEYS.SAMPLE_LOADED, 'true');
   }
 
@@ -228,10 +368,15 @@ export class StorageService {
     localStorage.removeItem(STORAGE_KEYS.IMPORT_ERRORS);
     localStorage.removeItem(STORAGE_KEYS.WORKER_LOGS);
     localStorage.removeItem(STORAGE_KEYS.DB_STATE);
+    localStorage.removeItem(STORAGE_KEYS.CONFLICTS);
     localStorage.removeItem(STORAGE_KEYS.SAMPLE_LOADED);
   }
 
   static initSampleIfNeeded(): void {
-    // In production mode, leave empty until user configures or uploads files
+    const isLoaded = localStorage.getItem(STORAGE_KEYS.SAMPLE_LOADED);
+    const existingDb = this.getDatabaseState();
+    if (!isLoaded || Object.keys(existingDb).length === 0) {
+      this.loadSampleData();
+    }
   }
 }

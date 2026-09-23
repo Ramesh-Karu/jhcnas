@@ -296,53 +296,79 @@ app.post('/api/nextcloud/fetch-and-parse', async (req, res) => {
 
     for (const sheetName of wb.SheetNames) {
       const ws = wb.Sheets[sheetName];
-      const range = ws['!ref'] || 'A1:A1';
+      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+      const totalRows = range.e.r + 1;
+      const totalColumns = range.e.c + 1;
       const merges = ws['!merges'] || [];
 
-      // Convert sheet to json with headers
-      const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      const totalRows = rows.length;
-      const totalColumns = rows[0]?.length || 0;
+      const usedRangeStr = ws['!ref'] || `${XLSX.utils.encode_col(range.s.c)}${range.s.r + 1}:${XLSX.utils.encode_col(range.e.c)}${range.e.r + 1}`;
 
-      // Extract detected headers
+      // Helper to resolve merged cells value
+      const getResolvedVal = (r: number, c: number) => {
+        const direct = ws[XLSX.utils.encode_cell({ r, c })];
+        if (direct && direct.v !== undefined && direct.v !== null && String(direct.v).trim() !== '') {
+          return direct.w !== undefined ? direct.w : direct.v;
+        }
+        const m = merges.find((m: any) => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
+        if (m) {
+          const orig = ws[XLSX.utils.encode_cell(m.s)];
+          if (orig && orig.v !== undefined && orig.v !== null) {
+            return orig.w !== undefined ? orig.w : orig.v;
+          }
+        }
+        return '';
+      };
+
+      // Extract detected headers (Row 0 / Row 1 in 1-based indexing)
       const detectedHeaderRow = 1;
       const detectedDataStartRow = 2;
 
-      const headers = (rows[0] || []).map((headerVal, idx) => {
-        const colLetter = XLSX.utils.encode_col(idx);
-        const sampleValues = rows.slice(1, 6).map((r) => String(r[idx] ?? ''));
-        return {
+      const headers = [];
+      for (let c = 0; c < totalColumns; c++) {
+        const colLetter = XLSX.utils.encode_col(c);
+        const headerVal = getResolvedVal(0, c);
+        const name = String(headerVal || `Column ${colLetter}`).trim();
+        const sampleValues = [];
+        for (let r = 1; r < Math.min(totalRows, 7); r++) {
+          sampleValues.push(String(getResolvedVal(r, c)));
+        }
+        headers.push({
           colLetter,
-          colIndex: idx,
-          name: String(headerVal || `Column ${colLetter}`).trim(),
+          colIndex: c + 1,
+          name,
           sampleValues,
-        };
-      });
+        });
+      }
 
-      // Sample rows
-      const sampleRows = rows.slice(1, 15).map((r, rIdx) => {
+      // Sample rows with resolved merged cells
+      const sampleRows = [];
+      for (let r = 1; r < Math.min(totalRows, 15); r++) {
         const rowData: Record<string, any> = {};
         headers.forEach((h, hIdx) => {
-          rowData[h.name || h.colLetter] = r[hIdx] ?? '';
+          const val = getResolvedVal(r, hIdx);
+          rowData[h.colLetter] = val;
+          if (h.name) {
+            rowData[h.name] = val;
+          }
         });
-        return {
-          rowNumber: rIdx + 2,
+        sampleRows.push({
+          rowNumber: r + 1,
           data: rowData,
-        };
-      });
+        });
+      }
 
       worksheets.push({
         sheetName,
         totalRows,
         totalColumns,
-        usedRange: range,
-        mergedRanges: merges.map((m) => ({
+        usedRange: usedRangeStr,
+        mergedRanges: merges.map((m: any) => ({
           range: `${XLSX.utils.encode_col(m.s.c)}${m.s.r + 1}:${XLSX.utils.encode_col(m.e.c)}${m.e.r + 1}`,
           startCol: XLSX.utils.encode_col(m.s.c),
           endCol: XLSX.utils.encode_col(m.e.c),
           startRow: m.s.r + 1,
           endRow: m.e.r + 1,
-          value: String(ws[XLSX.utils.encode_cell(m.s)]?.v || ''),
+          value: String(ws[XLSX.utils.encode_cell(m.s)]?.w ?? ws[XLSX.utils.encode_cell(m.s)]?.v ?? ''),
           type: 'data_span',
         })),
         detectedHeaderRow,
@@ -410,6 +436,219 @@ app.post('/api/nextcloud/upload-file', async (req, res) => {
         error: `Nextcloud upload failed with HTTP ${putRes.status}: ${putRes.statusText}`,
       });
     }
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 6. Live Supabase Connection Test & PostgreSQL Schema Validation
+app.post('/api/supabase/test-connection', async (req, res) => {
+  try {
+    const { url, anonKey, serviceKey, serviceRoleKey } = req.body;
+    if (!url || typeof url !== 'string' || !url.trim()) {
+      return res.status(400).json({
+        success: false,
+        isConnected: false,
+        error: 'Supabase Project URL is required (e.g. https://your-project.supabase.co).',
+        checks: { hostReachability: false, authValid: false, schemaDetected: false },
+      });
+    }
+
+    const key = (serviceKey && serviceKey.trim()) || (serviceRoleKey && serviceRoleKey.trim()) || (anonKey && anonKey.trim());
+    if (!key) {
+      return res.status(400).json({
+        success: false,
+        isConnected: false,
+        error: 'Supabase API Key (Anon Key or Service Key) is required to authenticate.',
+        checks: { hostReachability: false, authValid: false, schemaDetected: false },
+      });
+    }
+
+    const cleanUrl = url.trim().replace(/\/+$/, '');
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      return res.status(400).json({
+        success: false,
+        isConnected: false,
+        error: 'Supabase URL must start with https:// or http://',
+        checks: { hostReachability: false, authValid: false, schemaDetected: false },
+      });
+    }
+
+    const startTime = Date.now();
+    const restEndpoint = `${cleanUrl}/rest/v1/`;
+
+    let response: Response;
+    try {
+      response = await fetch(restEndpoint, {
+        method: 'GET',
+        headers: {
+          'apikey': key,
+          'Authorization': `Bearer ${key}`,
+          'Accept': 'application/openapi+json, application/json',
+        },
+      });
+    } catch (netErr: any) {
+      return res.status(502).json({
+        success: false,
+        isConnected: false,
+        latencyMs: Date.now() - startTime,
+        error: `Could not reach Supabase host at ${cleanUrl}: ${netErr.message}`,
+        checks: { hostReachability: false, authValid: false, schemaDetected: false },
+      });
+    }
+
+    const latencyMs = Date.now() - startTime;
+
+    if (response.status === 401 || response.status === 403) {
+      const errText = await response.text().catch(() => '');
+      return res.status(401).json({
+        success: false,
+        isConnected: false,
+        latencyMs,
+        error: `Authentication failed (HTTP ${response.status}). The provided API key is invalid for project ${cleanUrl}. ${errText}`,
+        checks: { hostReachability: true, authValid: false, schemaDetected: false },
+      });
+    }
+
+    if (!response.ok && response.status !== 200 && response.status !== 204) {
+      const errText = await response.text().catch(() => '');
+      return res.status(response.status).json({
+        success: false,
+        isConnected: false,
+        latencyMs,
+        error: `Supabase returned HTTP ${response.status} (${response.statusText}): ${errText}`,
+        checks: { hostReachability: true, authValid: false, schemaDetected: false },
+      });
+    }
+
+    // Parse OpenAPI schema to discover available tables
+    let discoveredTables: string[] = [];
+    try {
+      const schemaData = await response.json();
+      if (schemaData.definitions) {
+        discoveredTables = Object.keys(schemaData.definitions);
+      } else if (schemaData.paths) {
+        discoveredTables = Object.keys(schemaData.paths)
+          .map((p) => p.replace(/^\//, ''))
+          .filter((p) => !p.startsWith('rpc/'));
+      }
+    } catch {
+      // JSON parse might fail if not openapi, but status was 200 OK
+    }
+
+    const expectedTables = ['sync_settings', 'workbooks', 'worksheet_mappings', 'column_mappings', 'import_logs', 'import_errors', 'sync_conflicts'];
+    const matchingExpected = expectedTables.filter((t) => discoveredTables.includes(t));
+    const schemaDetected = matchingExpected.length > 0;
+
+    let hostName = cleanUrl;
+    try {
+      hostName = new URL(cleanUrl).hostname;
+    } catch {}
+
+    return res.json({
+      success: true,
+      isConnected: true,
+      latencyMs,
+      tablesCount: discoveredTables.length,
+      tables: discoveredTables,
+      matchingSyncTables: matchingExpected,
+      checks: {
+        hostReachability: true,
+        authValid: true,
+        schemaDetected,
+      },
+      message: schemaDetected
+        ? `Successfully connected to Supabase PostgreSQL at ${hostName} (${latencyMs}ms). Verified ${matchingExpected.length} sync schema tables.`
+        : `Successfully authenticated with Supabase PostgreSQL at ${hostName} (${latencyMs}ms). Note: Sync schema not yet created. Run the migration SQL in the SQL tab.`,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, isConnected: false, error: error.message });
+  }
+});
+
+// 7. Live Supabase Fetch Table Records
+app.post('/api/supabase/fetch-table', async (req, res) => {
+  try {
+    const { url, anonKey, serviceKey, serviceRoleKey, tableName, limit } = req.body;
+    if (!url || (!anonKey && !serviceKey && !serviceRoleKey) || !tableName) {
+      return res.status(400).json({ success: false, error: 'url, API key, and tableName are required' });
+    }
+
+    const key = (serviceKey && serviceKey.trim()) || (serviceRoleKey && serviceRoleKey.trim()) || (anonKey && anonKey.trim());
+    const cleanUrl = url.trim().replace(/\/+$/, '');
+    const maxLimit = Math.min(Number(limit) || 50, 200);
+    const queryUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}?select=*&limit=${maxLimit}`;
+
+    const fetchRes = await fetch(queryUrl, {
+      method: 'GET',
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
+        'Range': `0-${maxLimit - 1}`,
+      },
+    });
+
+    if (!fetchRes.ok) {
+      const errText = await fetchRes.text().catch(() => '');
+      return res.status(fetchRes.status).json({
+        success: false,
+        error: `Supabase query failed with HTTP ${fetchRes.status}: ${errText}`,
+      });
+    }
+
+    const data = await fetchRes.json();
+    return res.json({
+      success: true,
+      tableName,
+      count: Array.isArray(data) ? data.length : 0,
+      rows: Array.isArray(data) ? data : [],
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 8. Live Supabase Upsert Records
+app.post('/api/supabase/upsert-records', async (req, res) => {
+  try {
+    const { url, anonKey, serviceKey, serviceRoleKey, tableName, records, onConflict } = req.body;
+    if (!url || (!anonKey && !serviceKey && !serviceRoleKey) || !tableName || !Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ success: false, error: 'url, API key, tableName, and records array are required' });
+    }
+
+    const key = (serviceKey && serviceKey.trim()) || (serviceRoleKey && serviceRoleKey.trim()) || (anonKey && anonKey.trim());
+    const cleanUrl = url.trim().replace(/\/+$/, '');
+    let upsertUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+    if (onConflict) {
+      upsertUrl += `?on_conflict=${encodeURIComponent(onConflict)}`;
+    }
+
+    const upsertRes = await fetch(upsertUrl, {
+      method: 'POST',
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates, return=representation',
+      },
+      body: JSON.stringify(records),
+    });
+
+    if (!upsertRes.ok) {
+      const errText = await upsertRes.text().catch(() => '');
+      return res.status(upsertRes.status).json({
+        success: false,
+        error: `Supabase upsert failed with HTTP ${upsertRes.status}: ${errText}`,
+      });
+    }
+
+    const data = await upsertRes.json().catch(() => []);
+    return res.json({
+      success: true,
+      tableName,
+      upsertedCount: records.length,
+      records: data,
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }

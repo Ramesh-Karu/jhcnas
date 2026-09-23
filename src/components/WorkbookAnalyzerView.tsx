@@ -12,12 +12,36 @@ import {
   Info,
   ChevronRight,
   Sliders,
-  Play
+  Play,
+  BookOpen,
+  Search
 } from 'lucide-react';
 import { WorkbookAnalysis, SheetAnalysis, NavigationTab, WorksheetMapping, NextcloudConfig } from '../types';
 import { ExcelAnalyzer } from '../services/excelAnalyzer';
 import { createComplexSampleWorkbook } from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
+
+const formatDisplayRange = (r: any): string => {
+  if (!r) return 'A1';
+  if (typeof r === 'string') return r;
+  if (typeof r === 'object' && 's' in r && 'e' in r) {
+    const colToLetter = (c: number) => {
+      let temp = c;
+      let letter = '';
+      while (temp >= 0) {
+        letter = String.fromCharCode((temp % 26) + 65) + letter;
+        temp = Math.floor(temp / 26) - 1;
+      }
+      return letter || 'A';
+    };
+    const sCol = colToLetter(r.s?.c ?? 0);
+    const sRow = (r.s?.r ?? 0) + 1;
+    const eCol = colToLetter(r.e?.c ?? 0);
+    const eRow = (r.e?.r ?? 0) + 1;
+    return `${sCol}${sRow}:${eCol}${eRow}`;
+  }
+  return String(r);
+};
 
 interface WorkbookAnalyzerViewProps {
   currentAnalysis: WorkbookAnalysis | null;
@@ -39,6 +63,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   nextcloudConfig
 }) => {
   const [selectedSheetIndex, setSelectedSheetIndex] = useState<number>(0);
+  const [sheetSearch, setSheetSearch] = useState<string>('');
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isFetchingNextcloud, setIsFetchingNextcloud] = useState<boolean>(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
@@ -50,6 +75,10 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     parsed.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     return parsed;
   })();
+
+  const filteredWorksheetIndices = analysis.worksheets
+    .map((ws, idx) => ({ ws, idx }))
+    .filter(({ ws }) => ws.sheetName.toLowerCase().includes(sheetSearch.toLowerCase()));
 
   const activeSheet: SheetAnalysis = analysis.worksheets[selectedSheetIndex] || analysis.worksheets[0];
 
@@ -192,23 +221,80 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
         </div>
       )}
 
+      {/* Multi-Sheet Workbook Toolbar */}
+      <div className="bg-white rounded-xl p-3.5 border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center space-x-2.5">
+          <div className="p-1.5 rounded-lg bg-purple-50 text-purple-600">
+            <BookOpen className="w-4 h-4" />
+          </div>
+          <div className="text-xs font-semibold text-slate-900 flex items-center space-x-2">
+            <span>Workbook Tabs ({analysis.worksheets.length})</span>
+            <span className="text-[11px] text-slate-500 font-normal">
+              Viewing sheet {selectedSheetIndex + 1} of {analysis.worksheets.length}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          {analysis.worksheets.length > 3 && (
+            <>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+                <input
+                  type="text"
+                  placeholder="Filter sheets..."
+                  value={sheetSearch}
+                  onChange={(e) => setSheetSearch(e.target.value)}
+                  className="pl-8 pr-2.5 py-1 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-1 focus:ring-purple-500 w-36"
+                />
+              </div>
+
+              <select
+                value={selectedSheetIndex}
+                onChange={(e) => setSelectedSheetIndex(Number(e.target.value))}
+                className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 bg-white text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+                {analysis.worksheets.map((ws, idx) => (
+                  <option key={ws.sheetName} value={idx}>
+                    {idx + 1}. {ws.sheetName} ({ws.totalRows}r)
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+
+          <button
+            onClick={() => onNavigate('mappings')}
+            className="px-3 py-1 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-700 hover:bg-emerald-100 text-xs font-medium flex items-center space-x-1"
+          >
+            <span>Manage All Mappings</span>
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+
       {/* Worksheet Tabs Navigation */}
       <div className="flex border-b border-slate-200 overflow-x-auto space-x-2 pb-0.5">
-        {analysis.worksheets.map((ws, idx) => (
+        {filteredWorksheetIndices.map(({ ws, idx }) => (
           <button
             key={ws.sheetName}
             id={`sheet-tab-${idx}`}
             onClick={() => setSelectedSheetIndex(idx)}
-            className={`px-4 py-2.5 rounded-t-lg text-sm font-medium whitespace-nowrap transition-all border-b-2 ${
+            className={`px-4 py-2.5 rounded-t-lg text-sm font-medium whitespace-nowrap transition-all border-b-2 flex items-center space-x-2 ${
               selectedSheetIndex === idx
                 ? 'border-purple-600 text-purple-700 bg-purple-50/50 font-semibold'
                 : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'
             }`}
           >
             <span>{ws.sheetName}</span>
-            <span className="ml-2 text-xs px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-600 font-mono">
+            <span className="text-xs px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-600 font-mono">
               {ws.totalRows}r
             </span>
+            {ws.mergedRanges.length > 0 && (
+              <span className="text-[10px] px-1 py-0.2 rounded bg-emerald-100 text-emerald-800 font-semibold">
+                {ws.mergedRanges.length}m
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -235,11 +321,14 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
               </div>
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                 <div className="text-slate-500 font-medium">Used Range</div>
-                <div className="text-sm font-mono font-bold text-slate-900 mt-0.5">{activeSheet.usedRange}</div>
+                <div className="text-sm font-mono font-bold text-slate-900 mt-0.5">{formatDisplayRange(activeSheet.usedRange)}</div>
               </div>
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                <div className="text-slate-500 font-medium">Empty Rows</div>
-                <div className="text-sm font-mono font-bold text-slate-900 mt-0.5">{activeSheet.emptyRowsCount}</div>
+              <div className="p-3 rounded-lg bg-emerald-50/70 border border-emerald-200">
+                <div className="text-emerald-700 font-medium">Merged Cells</div>
+                <div className="text-sm font-bold text-emerald-950 mt-0.5 flex items-center space-x-1">
+                  <span>{activeSheet.mergedRanges.length} ranges</span>
+                  <span className="text-[10px] text-emerald-700 font-normal">(Resolved)</span>
+                </div>
               </div>
             </div>
 
@@ -302,17 +391,17 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                 {activeSheet.mergedRanges.map((mr, i) => (
                   <div key={i} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
                     <div className="flex items-center justify-between font-mono font-semibold text-slate-900">
-                      <span>{mr.range}</span>
+                      <span>{formatDisplayRange(mr.range)}</span>
                       <span className={`text-[10px] px-2 py-0.2 rounded-full uppercase ${
                         mr.type === 'title' ? 'bg-blue-100 text-blue-800' :
                         mr.type === 'section_heading' ? 'bg-purple-100 text-purple-800' :
                         'bg-slate-200 text-slate-700'
                       }`}>
-                        {mr.type.replace('_', ' ')}
+                        {String(mr.type || '').replace('_', ' ')}
                       </span>
                     </div>
                     <div className="text-slate-700 mt-1 font-sans truncate">
-                      "{mr.value}"
+                      "{typeof mr.value === 'object' && mr.value !== null ? JSON.stringify(mr.value) : String(mr.value ?? '')}"
                     </div>
                     <div className="text-[11px] text-slate-500 mt-0.5">
                       {mr.type === 'title' && 'Treated as non-data Title/Header'}
@@ -348,10 +437,18 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
 
           {/* Sample Data Grid */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
-                Sample Rows Preview (Data start: Row {activeSheet.detectedDataStartRow})
-              </span>
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center space-x-2">
+                <span className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
+                  Sample Rows Preview (Data start: Row {activeSheet.detectedDataStartRow})
+                </span>
+                {activeSheet.mergedRanges.length > 0 && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-medium flex items-center space-x-1">
+                    <Check className="w-3 h-3 text-emerald-600" />
+                    <span>{activeSheet.mergedRanges.length} Merges Forward-Resolved</span>
+                  </span>
+                )}
+              </div>
               <button
                 onClick={() => onNavigate('mappings')}
                 className="text-xs font-semibold text-purple-700 hover:text-purple-900 flex items-center space-x-1"
@@ -378,11 +475,18 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                   {activeSheet.sampleRows.map((sr) => (
                     <tr key={sr.rowNumber} className="hover:bg-slate-50 transition-colors">
                       <td className="px-3 py-2 text-slate-400">{sr.rowNumber}</td>
-                      {activeSheet.headers.map((h) => (
-                        <td key={h.colLetter} className="px-3 py-2 whitespace-nowrap text-slate-800">
-                          {sr.data[h.colLetter] ? String(sr.data[h.colLetter]) : <span className="text-slate-300">-</span>}
-                        </td>
-                      ))}
+                      {activeSheet.headers.map((h) => {
+                        const rawCell = sr.data[h.colLetter] !== undefined ? sr.data[h.colLetter] : sr.data[h.name];
+                        return (
+                          <td key={h.colLetter} className="px-3 py-2 whitespace-nowrap text-slate-800">
+                            {rawCell !== undefined && rawCell !== null && rawCell !== '' ? (
+                              typeof rawCell === 'object' ? JSON.stringify(rawCell) : String(rawCell)
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>

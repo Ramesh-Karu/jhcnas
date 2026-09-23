@@ -11,6 +11,7 @@ import {
   Play, 
   FileSpreadsheet, 
   ArrowRight,
+  ArrowLeftRight,
   ShieldCheck,
   Zap,
   Activity
@@ -81,10 +82,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <button
             id="btn-quick-dryrun"
             onClick={() => onNavigate('import')}
-            className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors"
+            className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg font-medium text-sm text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors"
           >
             <Play className="w-4 h-4 text-slate-600" />
-            <span>Interactive Dry Run</span>
+            <span>Dry Run</span>
+          </button>
+          <button
+            id="btn-quick-twoway"
+            onClick={() => onNavigate('twoway')}
+            className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg font-semibold text-sm text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors"
+          >
+            <ArrowLeftRight className="w-4 h-4 text-emerald-600" />
+            <span>Two-Way Sync Hub</span>
           </button>
         </div>
       </div>
@@ -92,37 +101,67 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* 8 Required Dashboard Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Nextcloud Status */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs hover:border-slate-300 transition-colors">
+        <div 
+          onClick={() => onNavigate('nextcloud')}
+          className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs hover:border-slate-300 transition-colors cursor-pointer"
+          title="Click to manage Nextcloud WebDAV configuration"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Nextcloud Status</span>
-            <div className={`p-2 rounded-lg ${nextcloud.isConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+            <div className={`p-2 rounded-lg ${nextcloud.isConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
               <Cloud className="w-5 h-5" />
             </div>
           </div>
           <div className="mt-3">
-            <div className="text-xl font-bold text-slate-900">
-              {nextcloud.isConnected ? 'Connected' : 'Disconnected'}
+            <div className={`text-xl font-bold ${nextcloud.isConnected ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {nextcloud.isConnected ? 'Connected' : 'Unverified'}
             </div>
             <p className="text-xs text-slate-500 mt-1 truncate" title={nextcloud.webdavUrl}>
-              TrueNAS SCALE • {nextcloud.sourceFolder}
+              {nextcloud.isConnected 
+                ? `TrueNAS SCALE • ${nextcloud.sourceFolder}` 
+                : 'Click to test live WebDAV connection'}
             </p>
           </div>
         </div>
 
         {/* Card 2: Supabase Status */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs hover:border-slate-300 transition-colors">
+        <div 
+          onClick={() => onNavigate('supabase')}
+          className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs hover:border-slate-300 transition-colors cursor-pointer"
+          title="Click to configure Supabase credentials"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Supabase Status</span>
-            <div className={`p-2 rounded-lg ${supabase.isConnected ? 'bg-teal-50 text-teal-600' : 'bg-rose-50 text-rose-600'}`}>
+            <div className={`p-2 rounded-lg ${
+              supabase.isConnected 
+                ? 'bg-teal-50 text-teal-600' 
+                : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                  ? 'bg-slate-100 text-slate-400'
+                  : 'bg-rose-50 text-rose-600'
+            }`}>
               <Database className="w-5 h-5" />
             </div>
           </div>
           <div className="mt-3">
-            <div className="text-xl font-bold text-slate-900">
-              {supabase.isConnected ? 'Healthy' : 'Auth Required'}
+            <div className={`text-xl font-bold ${
+              supabase.isConnected 
+                ? 'text-teal-700' 
+                : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                  ? 'text-slate-600'
+                  : 'text-rose-600'
+            }`}>
+              {supabase.isConnected 
+                ? 'Connected' 
+                : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                  ? 'Not Configured'
+                  : 'Disconnected'}
             </div>
             <p className="text-xs text-slate-500 mt-1 truncate">
-              PostgreSQL • Schema v1.0 Installed
+              {supabase.isConnected 
+                ? 'PostgreSQL Live Verified' 
+                : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                  ? 'Click to enter project URL & API key'
+                  : 'Connection test unverified or failed'}
             </p>
           </div>
         </div>

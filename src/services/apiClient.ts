@@ -1,4 +1,20 @@
-import { NextcloudConfig, NextcloudFile, WorkbookAnalysis } from '../types';
+import { NextcloudConfig, SupabaseConfig, NextcloudFile, WorkbookAnalysis } from '../types';
+
+export interface SupabaseTestResult {
+  success: boolean;
+  isConnected: boolean;
+  latencyMs?: number;
+  tablesCount?: number;
+  tables?: string[];
+  matchingSyncTables?: string[];
+  checks: {
+    hostReachability: boolean;
+    authValid: boolean;
+    schemaDetected: boolean;
+  };
+  message?: string;
+  error?: string;
+}
 
 export class ApiClient {
   static async testNextcloudConnection(config: NextcloudConfig): Promise<{
@@ -116,6 +132,36 @@ export class ApiClient {
     }
   }
 
+  static async uploadExcelFile(
+    config: NextcloudConfig,
+    filename: string,
+    base64Content: string,
+    folder?: string
+  ): Promise<{
+    success: boolean;
+    message?: string;
+    uploadUrl?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/nextcloud/upload-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          username: config.username,
+          appPassword: config.appPassword,
+          filename,
+          base64Content,
+          folder: folder || config.sourceFolder,
+        }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
   static async createNextcloudFolder(config: NextcloudConfig, folderName: string): Promise<{
     success: boolean;
     message?: string;
@@ -130,6 +176,94 @@ export class ApiClient {
           username: config.username,
           appPassword: config.appPassword,
           folderName,
+        }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async testSupabaseConnection(config: SupabaseConfig): Promise<SupabaseTestResult> {
+    try {
+      const res = await fetch('/api/supabase/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey || config.serviceRoleKey,
+        }),
+      });
+
+      const data = await res.json();
+      return data;
+    } catch (e: any) {
+      return {
+        success: false,
+        isConnected: false,
+        checks: {
+          hostReachability: false,
+          authValid: false,
+          schemaDetected: false,
+        },
+        error: `Network error connecting to backend: ${e.message}`,
+      };
+    }
+  }
+
+  static async fetchSupabaseTable(
+    config: SupabaseConfig,
+    tableName: string,
+    limit: number = 50
+  ): Promise<{
+    success: boolean;
+    tableName?: string;
+    count?: number;
+    rows?: any[];
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/supabase/fetch-table', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey || config.serviceRoleKey,
+          tableName,
+          limit,
+        }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async upsertSupabaseRecords(
+    config: SupabaseConfig,
+    tableName: string,
+    records: any[],
+    onConflict?: string
+  ): Promise<{
+    success: boolean;
+    tableName?: string;
+    upsertedCount?: number;
+    records?: any[];
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/supabase/upsert-records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey || config.serviceRoleKey,
+          tableName,
+          records,
+          onConflict,
         }),
       });
       return await res.json();

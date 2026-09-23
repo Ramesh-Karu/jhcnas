@@ -51,6 +51,36 @@ class ExcelParser:
             "worksheets": worksheets_analysis
         }
 
+    def _build_merged_cell_map(self, ws: openpyxl.worksheet.worksheet.Worksheet) -> Dict[Tuple[int, int], Any]:
+        """
+        Builds a coordinate-to-value map for every cell covered by a merged range.
+        This ensures that 'slave' merged cells (which openpyxl returns as None)
+        inherit the true value of the top-left origin cell!
+        """
+        merged_map: Dict[Tuple[int, int], Any] = {}
+        for mr in ws.merged_cells.ranges:
+            top_left_cell = ws.cell(row=mr.min_row, column=mr.min_col)
+            val = top_left_cell.value
+            if val is not None:
+                val_clean = str(val).strip() if isinstance(val, str) else val
+                for r in range(mr.min_row, mr.max_row + 1):
+                    for c in range(mr.min_col, mr.max_col + 1):
+                        merged_map[(r, c)] = val_clean
+        return merged_map
+
+    @staticmethod
+    def _get_resolved_cell_value(
+        ws: openpyxl.worksheet.worksheet.Worksheet,
+        row: int,
+        col: int,
+        merged_map: Dict[Tuple[int, int], Any]
+    ) -> Any:
+        """Returns the cell value, resolving merged cells if openpyxl returns None."""
+        val = ws.cell(row=row, column=col).value
+        if val is not None and str(val).strip() != "":
+            return str(val).strip() if isinstance(val, str) else val
+        return merged_map.get((row, col), None)
+
     def _analyze_single_sheet(self, ws: openpyxl.worksheet.worksheet.Worksheet) -> Dict[str, Any]:
         max_row = ws.max_row or 0
         max_col = ws.max_column or 0
@@ -59,6 +89,8 @@ class ExcelParser:
         for mr in ws.merged_cells.ranges:
             merged_ranges.append(str(mr))
 
+        merged_map = self._build_merged_cell_map(ws)
+
         # Scan rows to detect empty rows, titles, section headings, and candidate header rows
         row_analyses = []
         empty_rows = []
@@ -66,10 +98,10 @@ class ExcelParser:
         section_headings = []
         candidate_headers = []
 
-        # Sample data up to first 50 rows for performance and deep inspection
+        # Sample data up to first 100 rows for performance and deep inspection
         scan_limit = min(max_row, 100)
         for r in range(1, scan_limit + 1):
-            cell_values = [ws.cell(row=r, column=c).value for c in range(1, max_col + 1)]
+            cell_values = [self._get_resolved_cell_value(ws, r, c, merged_map) for c in range(1, max_col + 1)]
             non_empty = [v for v in cell_values if v is not None and str(v).strip() != ""]
             
             if len(non_empty) == 0:
@@ -111,10 +143,10 @@ class ExcelParser:
         while data_start_row in empty_rows and data_start_row < max_row:
             data_start_row += 1
 
-        # Read actual headers at best_header_row
+        # Read actual headers at best_header_row with merged cell resolution
         headers = []
         for c in range(1, max_col + 1):
-            val = ws.cell(row=best_header_row, column=c).value
+            val = self._get_resolved_cell_value(ws, best_header_row, c, merged_map)
             h_name = str(val).strip() if val is not None else f"Column_{get_column_letter(c)}"
             headers.append({
                 "col_letter": get_column_letter(c),
@@ -122,7 +154,7 @@ class ExcelParser:
                 "name": h_name
             })
 
-        # Fetch preview sample rows (5-10 rows)
+        # Fetch preview sample rows (5-10 rows) with resolved merged cells
         sample_rows = []
         sample_limit = min(max_row, data_start_row + 8)
         for r in range(data_start_row, sample_limit + 1):
@@ -131,7 +163,7 @@ class ExcelParser:
             row_dict = {}
             for c in range(1, max_col + 1):
                 col_letter = get_column_letter(c)
-                val = ws.cell(row=r, column=c).value
+                val = self._get_resolved_cell_value(ws, r, c, merged_map)
                 row_dict[col_letter] = str(val) if val is not None else ""
             sample_rows.append({"row_number": r, "data": row_dict})
 
@@ -141,6 +173,7 @@ class ExcelParser:
             "total_columns": max_col,
             "used_range": f"A1:{get_column_letter(max_col)}{max_row}" if max_row and max_col else "Empty",
             "merged_ranges": merged_ranges,
+            "has_merged_cells": len(merged_ranges) > 0,
             "detected_header_row": best_header_row,
             "detected_data_start_row": data_start_row,
             "candidate_header_rows": candidate_headers,
@@ -160,9 +193,9 @@ class ExcelParser:
         section_heading_target_col: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
-        Extracts structured records with intelligent merged-section propagation.
-        If a merged cell like 'A3:H3 = CLASS 10A' precedes data rows, the value 'CLASS 10A'
-        is automatically captured and assigned to records beneath it under the section_heading_target_col!
+        Extracts structured records with full merged-cell resolution and section propagation.
+        - Vertical merges (e.g. A4:A8 'Department A') are resolved for EVERY row in the range.
+        - Full-width banner merges (e.g. A3:H3 'CLASS 10A') are assigned to records beneath them.
         """
         wb = openpyxl.load_workbook(self.file_path, data_only=True)
         if worksheet_name not in wb.sheetnames:
@@ -173,16 +206,19 @@ class ExcelParser:
         max_row = data_end_row if data_end_row else (ws.max_row or 0)
         max_col = ws.max_column or 0
 
-        # Build column map from header_row
+        # Build merged cells map for this sheet
+        merged_map = self._build_merged_cell_map(ws)
+
+        # Build column map from header_row with resolved cell values
         col_headers: Dict[int, str] = {}
         for c in range(1, max_col + 1):
-            val = ws.cell(row=header_row, column=c).value
+            val = self._get_resolved_cell_value(ws, header_row, c, merged_map)
             if val is not None and str(val).strip():
                 col_headers[c] = str(val).strip()
             else:
                 col_headers[c] = f"Col_{get_column_letter(c)}"
 
-        # Identify all merged section headings in the sheet
+        # Identify all wide merged section headings in the sheet
         merged_sections: Dict[int, str] = {} # row -> heading text
         for mr in ws.merged_cells.ranges:
             if (mr.max_col - mr.min_col + 1) >= max(2, max_col // 2):
@@ -194,16 +230,16 @@ class ExcelParser:
         current_section_value = None
 
         for r in range(data_start_row, max_row + 1):
-            # Check if this row is a new section heading
+            # Check if this row is a new section heading banner
             if r in merged_sections:
                 current_section_value = merged_sections[r]
                 continue
 
-            # Read all cell values in this row
+            # Read all cell values in this row with merged cell resolution
             row_data = {}
             has_content = False
             for c in range(1, max_col + 1):
-                val = ws.cell(row=r, column=c).value
+                val = self._get_resolved_cell_value(ws, r, c, merged_map)
                 col_letter = get_column_letter(c)
                 header_name = col_headers.get(c, f"Col_{col_letter}")
                 

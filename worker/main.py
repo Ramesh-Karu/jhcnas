@@ -122,16 +122,30 @@ def run_synchronization_cycle(dry_run: bool = False, specific_file: Optional[str
 
                 # Active worksheet mappings
                 active_mappings = {}
+                has_configured_mappings = False
                 if wb_config and wb_config.get("worksheet_mappings"):
+                    has_configured_mappings = True
                     for wm in wb_config["worksheet_mappings"]:
                         if wm.get("enabled", True):
                             active_mappings[wm["worksheet_name"]] = wm
 
                 # Step 6: Process Each Worksheet
+                sheets_synced_count = 0
                 for ws_info in analysis["worksheets"]:
                     sheet_name = ws_info["sheet_name"]
                     wm = active_mappings.get(sheet_name)
 
+                    # Multi-sheet protection: If workbook has explicit mappings, ONLY process active mapped sheets!
+                    if has_configured_mappings and not wm:
+                        print(f"[Worker] Skipping sheet '{sheet_name}' in '{file_name}' (unmapped or sync disabled).")
+                        continue
+
+                    # Skip empty sheets (e.g. cover sheets, chart sheets, or empty tabs)
+                    if ws_info.get("total_rows", 0) <= 1 or not ws_info.get("headers"):
+                        print(f"[Worker] Skipping empty or headerless sheet '{sheet_name}'.")
+                        continue
+
+                    sheets_synced_count += 1
                     # Default fallback parameters if unmapped
                     header_row = wm.get("header_row", ws_info["detected_header_row"]) if wm else ws_info["detected_header_row"]
                     data_start = wm.get("data_start_row", ws_info["detected_data_start_row"]) if wm else ws_info["detected_data_start_row"]

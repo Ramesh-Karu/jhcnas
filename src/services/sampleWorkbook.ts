@@ -124,6 +124,7 @@ export function getDefaultSampleMappings(workbookName: string = "students_comple
       dataStartRow: 6,
       sectionHeadingTargetCol: "class",
       enabled: true,
+      syncPolicy: "EXCEL_TO_DB", // Nextcloud Excel Master -> Pushes to Supabase
       columns: [
         { id: "cm-1", excelColumn: "A", excelHeader: "Student ID", supabaseColumn: "student_number", dataType: "text", required: true, uniqueKey: true, transformation: "normalize_id" },
         { id: "cm-2", excelColumn: "B", excelHeader: "Student Name", supabaseColumn: "name", dataType: "text", required: true, uniqueKey: false, transformation: "trim" },
@@ -142,6 +143,7 @@ export function getDefaultSampleMappings(workbookName: string = "students_comple
       headerRow: 1,
       dataStartRow: 2,
       enabled: true,
+      syncPolicy: "DB_TO_EXCEL", // Supabase DB Master (teachers mark in app) -> Mirrors to Excel
       columns: [
         { id: "cm-8", excelColumn: "A", excelHeader: "Student ID", supabaseColumn: "student_number", dataType: "text", required: true, uniqueKey: true, transformation: "normalize_id" },
         { id: "cm-9", excelColumn: "B", excelHeader: "Date", supabaseColumn: "attendance_date", dataType: "date", required: true, uniqueKey: true, transformation: "parse_date" },
@@ -157,6 +159,7 @@ export function getDefaultSampleMappings(workbookName: string = "students_comple
       headerRow: 1,
       dataStartRow: 2,
       enabled: true,
+      syncPolicy: "BIDIRECTIONAL", // Collaborative: Both sides can edit
       columns: [
         { id: "cm-12", excelColumn: "A", excelHeader: "Student ID", supabaseColumn: "student_number", dataType: "text", required: true, uniqueKey: true, transformation: "normalize_id" },
         { id: "cm-13", excelColumn: "B", excelHeader: "Sport Name", supabaseColumn: "sport_name", dataType: "text", required: true, uniqueKey: true, transformation: "trim" },
@@ -172,6 +175,7 @@ export function getDefaultSampleMappings(workbookName: string = "students_comple
       headerRow: 1,
       dataStartRow: 2,
       enabled: true,
+      syncPolicy: "EXCEL_TO_DB", // Nextcloud Excel Master (Nurse clinic records)
       columns: [
         { id: "cm-16", excelColumn: "A", excelHeader: "Student ID", supabaseColumn: "student_number", dataType: "text", required: true, uniqueKey: true, transformation: "normalize_id" },
         { id: "cm-17", excelColumn: "B", excelHeader: "Blood Group", supabaseColumn: "blood_group", dataType: "text", required: false, uniqueKey: false, transformation: "trim" },
@@ -188,6 +192,7 @@ export function getDefaultSampleMappings(workbookName: string = "students_comple
       headerRow: 1,
       dataStartRow: 2,
       enabled: true,
+      syncPolicy: "DB_TO_EXCEL", // Supabase DB Master (Exam portal) -> Mirrors to Excel
       columns: [
         { id: "cm-21", excelColumn: "A", excelHeader: "Student ID", supabaseColumn: "student_number", dataType: "text", required: true, uniqueKey: true, transformation: "normalize_id" },
         { id: "cm-22", excelColumn: "B", excelHeader: "Term", supabaseColumn: "term", dataType: "text", required: true, uniqueKey: true, transformation: "trim" },
@@ -199,4 +204,129 @@ export function getDefaultSampleMappings(workbookName: string = "students_comple
       ]
     }
   ];
+}
+
+export function getSampleInitialDatabaseState(): Record<string, any[]> {
+  return {
+    students: [
+      {
+        student_number: "STU-1001",
+        name: "Alice Smith",
+        gender: "Female",
+        dob: "2008-04-12",
+        phone: "+1 555-019-2831",
+        emergency_contact: "+1 555 019 9999",
+        status: "Active",
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1002",
+        name: "Bob Jones",
+        gender: "Male",
+        dob: "2008-09-21",
+        phone: "+1 (555) 999-1122", // Different from Excel!
+        emergency_contact: "+1 555 018 8888",
+        status: "Active",
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1003",
+        name: "Charlie Davis",
+        gender: "Male",
+        dob: "2007-12-05",
+        phone: "555-017-3311",
+        emergency_contact: "555-017-0000",
+        status: "Active",
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1004",
+        name: "Diana Prince",
+        gender: "Female",
+        dob: "2008-06-18",
+        phone: "+1 (555) 016-5544",
+        emergency_contact: "+1 555 016 7777",
+        status: "Active",
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1005",
+        name: "Ethan Hunt",
+        gender: "Male",
+        dob: "2008-01-30",
+        phone: "+1 (555) 015-6677",
+        emergency_contact: "+1 555 015 2222",
+        status: "On Medical Leave", // Different from Excel!
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1006",
+        name: "Fiona Gallagher",
+        gender: "Female",
+        dob: "2008-11-14",
+        phone: "+1 (555) 014-9988",
+        emergency_contact: "+1 555 014 3333",
+        status: "Active",
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1007",
+        name: "George Clark",
+        gender: "Male",
+        dob: "2008-03-08",
+        phone: "+1 (555) 013-1122",
+        emergency_contact: "+1 555 013 4444",
+        status: "Active",
+        class: "CLASS 10A"
+      },
+      {
+        student_number: "STU-1008",
+        name: "Hannah Abbott",
+        gender: "Female",
+        dob: "2008-07-22",
+        phone: "+1 (555) 012-7788",
+        emergency_contact: "+1 555 012 5555",
+        status: "Active",
+        class: "CLASS 10B"
+      },
+      {
+        student_number: "STU-1009",
+        name: "Ian Malcolm",
+        gender: "Male",
+        dob: "2007-10-15",
+        phone: "+1 555-888-0000", // Different from Excel!
+        emergency_contact: "+1 555 011 6666",
+        status: "Active",
+        class: "CLASS 10B"
+      },
+      {
+        student_number: "STU-1010",
+        name: "Julia Roberts",
+        gender: "Female",
+        dob: "2008-02-19",
+        phone: "+1 (555) 010-5566",
+        emergency_contact: "+1 555 010 7777",
+        status: "Active",
+        class: "CLASS 10B"
+      },
+      {
+        // Exists in Supabase, but NOT in Excel!
+        student_number: "STU-2001",
+        name: "Marcus Aurelius",
+        gender: "Male",
+        dob: "2007-04-26",
+        phone: "+1 (555) 777-3322",
+        emergency_contact: "+1 555 777 9999",
+        status: "Active",
+        class: "CLASS 10B"
+      }
+    ],
+    attendance: [
+      { student_number: "STU-1001", attendance_date: "2025-09-15", status: "Present", remarks: "On time" },
+      { student_number: "STU-1002", attendance_date: "2025-09-15", status: "Absent", remarks: "Excused medical leave" }
+    ],
+    results: [
+      { student_number: "STU-1001", term: "Term 1", mathematics: 92, science: 88, english: 95, total_score: 275, grade: "A" }
+    ]
+  };
 }

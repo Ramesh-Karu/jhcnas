@@ -57,17 +57,33 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-xs">
               <Cloud className={`w-3.5 h-3.5 ${nextcloud.isConnected ? 'text-emerald-600' : 'text-amber-500'}`} />
               <span className="text-slate-600 font-medium">TrueNAS WebDAV:</span>
-              <span className={nextcloud.isConnected ? 'text-emerald-700 font-semibold' : 'text-amber-600'}>
-                {nextcloud.isConnected ? 'Active' : 'Offline'}
+              <span className={nextcloud.isConnected ? 'text-emerald-700 font-semibold' : 'text-amber-600 font-medium'}>
+                {nextcloud.isConnected ? 'Connected' : 'Unverified'}
               </span>
             </div>
 
             {/* Supabase Status */}
             <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-xs">
-              <Database className={`w-3.5 h-3.5 ${supabase.isConnected ? 'text-emerald-600' : 'text-rose-500'}`} />
+              <Database className={`w-3.5 h-3.5 ${
+                supabase.isConnected 
+                  ? 'text-teal-600' 
+                  : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                    ? 'text-slate-400' 
+                    : 'text-rose-500'
+              }`} />
               <span className="text-slate-600 font-medium">Supabase:</span>
-              <span className={supabase.isConnected ? 'text-emerald-700 font-semibold' : 'text-rose-600'}>
-                {supabase.isConnected ? 'Ready' : 'Check Key'}
+              <span className={
+                supabase.isConnected 
+                  ? 'text-teal-700 font-semibold' 
+                  : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                    ? 'text-slate-500 font-medium' 
+                    : 'text-rose-600 font-medium'
+              }>
+                {supabase.isConnected 
+                  ? 'Connected' 
+                  : (!supabase.url || (!supabase.anonKey && !supabase.serviceKey && !supabase.serviceRoleKey))
+                    ? 'Not Configured' 
+                    : 'Disconnected'}
               </span>
             </div>
 

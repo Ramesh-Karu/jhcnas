@@ -15,10 +15,13 @@ import {
   ImportLog, 
   ImportAuditError, 
   LogMessage, 
-  SheetAnalysis 
+  SheetAnalysis,
+  SyncConflictRecord
 } from './types';
 import { StorageService } from './services/storage';
 import { ApiClient } from './services/apiClient';
+import { TwoWaySyncEngine } from './services/twoWaySyncEngine';
+import { createComplexSampleWorkbook } from './services/sampleWorkbook';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -28,6 +31,7 @@ import { ExcelFilesView } from './components/ExcelFilesView';
 import { WorkbookAnalyzerView } from './components/WorkbookAnalyzerView';
 import { MappingsView } from './components/MappingsView';
 import { ImportDryRunView } from './components/ImportDryRunView';
+import { TwoWaySyncView } from './components/TwoWaySyncView';
 import { ImportHistoryView } from './components/ImportHistoryView';
 import { ErrorsView } from './components/ErrorsView';
 import { LogsView } from './components/LogsView';
@@ -36,12 +40,6 @@ import { AiAssistantModal } from './components/AiAssistantModal';
 import { SampleWorkbookModal } from './components/SampleWorkbookModal';
 
 export default function App() {
-  // Initialize sample data on first visit & load real files from Nextcloud
-  useEffect(() => {
-    StorageService.initSampleIfNeeded();
-    handleFetchNextcloudFiles();
-  }, []);
-
   const handleFetchNextcloudFiles = async () => {
     try {
       const res = await ApiClient.listNextcloudFiles(nextcloud);
@@ -66,8 +64,31 @@ export default function App() {
   const [importErrors, setImportErrors] = useState<ImportAuditError[]>(() => StorageService.getImportErrors());
   const [workerLogs, setWorkerLogs] = useState<LogMessage[]>(() => StorageService.getWorkerLogs());
   const [databaseState, setDatabaseState] = useState<Record<string, any[]>>(() => StorageService.getDatabaseState());
+  const [conflicts, setConflicts] = useState<SyncConflictRecord[]>(() => StorageService.getConflicts());
 
-  // Modal State
+  // Initialize sample data on first visit & load real files from Nextcloud
+  useEffect(() => {
+    StorageService.initSampleIfNeeded();
+    handleFetchNextcloudFiles();
+
+    // Check if conflicts need initialization
+    const stored = StorageService.getConflicts();
+    if (stored.length === 0) {
+      try {
+        const sample = createComplexSampleWorkbook();
+        const diffs = TwoWaySyncEngine.detectTwoWayDiffs(
+          sample.workbook,
+          'students_complex.xlsx',
+          StorageService.getMappings(),
+          StorageService.getDatabaseState()
+        );
+        setConflicts(diffs.records);
+        StorageService.saveConflicts(diffs.records);
+      } catch (e) {
+        console.warn('Initial diff scan notice:', e);
+      }
+    }
+  }, []);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isSampleModalOpen, setIsSampleModalOpen] = useState(false);
   const [aiTargetSheet, setAiTargetSheet] = useState<SheetAnalysis | null>(null);
@@ -149,6 +170,12 @@ export default function App() {
     setFiles(StorageService.getFiles());
     setImportLogs(StorageService.getImportLogs());
     setDatabaseState(StorageService.getDatabaseState());
+    setConflicts(StorageService.getConflicts());
+  };
+
+  const handleUpdateConflicts = (newConflicts: SyncConflictRecord[]) => {
+    setConflicts(newConflicts);
+    StorageService.saveConflicts(newConflicts);
   };
 
   const handleTriggerSync = async () => {
@@ -274,6 +301,7 @@ export default function App() {
           onSelectTab={setCurrentTab}
           errorCount={importErrors.length}
           filesWaitingCount={files.filter(f => f.status === 'New' || f.status === 'Modified').length}
+          conflictCount={conflicts.filter(c => c.state === 'CONFLICT').length}
         />
 
         {/* Content Viewport */}
@@ -334,6 +362,7 @@ export default function App() {
               onSaveMappings={handleSaveMappings}
               onNavigate={setCurrentTab}
               onOpenAiAssistant={() => handleOpenAiAssistant()}
+              currentAnalysis={currentAnalysis}
             />
           )}
 
@@ -345,6 +374,20 @@ export default function App() {
               onUpdateDatabase={handleUpdateDatabase}
               onAddImportLog={handleAddImportLog}
               onNavigate={setCurrentTab}
+            />
+          )}
+
+          {currentTab === 'twoway' && (
+            <TwoWaySyncView
+              currentAnalysis={currentAnalysis}
+              mappings={mappings}
+              databaseState={databaseState}
+              nextcloudConfig={nextcloud}
+              supabaseConfig={supabase}
+              onUpdateDatabase={handleUpdateDatabase}
+              onNavigate={setCurrentTab}
+              conflicts={conflicts}
+              onUpdateConflicts={handleUpdateConflicts}
             />
           )}
 

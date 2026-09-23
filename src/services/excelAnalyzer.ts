@@ -32,6 +32,22 @@ export class ExcelAnalyzer {
     return { wb, analysis };
   }
 
+  static getResolvedCellValue(ws: XLSX.WorkSheet, r: number, c: number, rawMerges: XLSX.Range[]): any {
+    const directCell = ws[XLSX.utils.encode_cell({ r, c })];
+    if (directCell && directCell.v !== undefined && directCell.v !== null && String(directCell.v).trim() !== '') {
+      return directCell.w !== undefined ? directCell.w : directCell.v;
+    }
+    // Check if covered by any merged cell range
+    const matchingMerge = rawMerges.find(m => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
+    if (matchingMerge) {
+      const originCell = ws[XLSX.utils.encode_cell(matchingMerge.s)];
+      if (originCell && originCell.v !== undefined && originCell.v !== null) {
+        return originCell.w !== undefined ? originCell.w : originCell.v;
+      }
+    }
+    return null;
+  }
+
   static analyzeSheet(ws: XLSX.WorkSheet, sheetName: string): SheetAnalysis {
     const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
     const totalRows = range.e.r + 1;
@@ -39,7 +55,7 @@ export class ExcelAnalyzer {
     const usedRange = ws['!ref'] || 'A1';
 
     // 1. Process Merged Cells
-    const rawMerges = ws['!merges'] || [];
+    const rawMerges: XLSX.Range[] = ws['!merges'] || [];
     const mergedRanges: MergedRange[] = [];
 
     for (const m of rawMerges) {
@@ -87,9 +103,9 @@ export class ExcelAnalyzer {
       const rowValues: string[] = [];
 
       for (let c = 0; c < totalColumns; c++) {
-        const cell = ws[XLSX.utils.encode_cell({ r, c })];
-        if (cell && cell.v !== undefined && String(cell.v).trim() !== '') {
-          rowValues.push(String(cell.w || cell.v).trim());
+        const val = this.getResolvedCellValue(ws, r, c, rawMerges);
+        if (val !== null && val !== undefined && String(val).trim() !== '') {
+          rowValues.push(String(val).trim());
         }
       }
 
@@ -135,20 +151,22 @@ export class ExcelAnalyzer {
       detectedDataStartRow++;
     }
 
-    // Extract Headers at detectedHeaderRow
+    // Extract Headers at detectedHeaderRow with merged cell resolution
     const headers: SheetHeader[] = [];
     const headerR = detectedHeaderRow - 1;
     for (let c = 0; c < totalColumns; c++) {
       const colLetter = XLSX.utils.encode_col(c);
-      const cell = ws[XLSX.utils.encode_cell({ r: headerR, c })];
-      const name = cell && cell.v !== undefined ? String(cell.w || cell.v).trim() : `Column_${colLetter}`;
+      const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
+      const name = val !== null && val !== undefined && String(val).trim() !== '' 
+        ? String(val).trim() 
+        : `Column_${colLetter}`;
 
-      // Sample a couple values for this column
+      // Sample a couple values for this column with merged cell resolution
       const sampleValues: string[] = [];
       for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 4); r++) {
-        const sc = ws[XLSX.utils.encode_cell({ r, c })];
-        if (sc && sc.v !== undefined) {
-          sampleValues.push(String(sc.w || sc.v));
+        const scVal = this.getResolvedCellValue(ws, r, c, rawMerges);
+        if (scVal !== null && scVal !== undefined) {
+          sampleValues.push(String(scVal));
         }
       }
 
@@ -160,7 +178,7 @@ export class ExcelAnalyzer {
       });
     }
 
-    // Extract Sample Rows (first 6 rows of data)
+    // Extract Sample Rows (first 6 rows of data) with resolved merged cells
     const sampleRows: { rowNumber: number; data: Record<string, any> }[] = [];
     const sampleLimit = Math.min(totalRows, detectedDataStartRow + 7);
 
@@ -173,9 +191,8 @@ export class ExcelAnalyzer {
 
       for (let c = 0; c < totalColumns; c++) {
         const colLetter = XLSX.utils.encode_col(c);
-        const cell = ws[XLSX.utils.encode_cell({ r, c })];
-        const val = cell && cell.v !== undefined ? (cell.w || cell.v) : '';
-        rowData[colLetter] = val;
+        const val = this.getResolvedCellValue(ws, r, c, rawMerges);
+        rowData[colLetter] = val !== null && val !== undefined ? val : '';
         if (val) hasData = true;
       }
 
@@ -235,8 +252,8 @@ export class ExcelAnalyzer {
 
     for (let c = 0; c < totalCols; c++) {
       const colLetter = XLSX.utils.encode_col(c);
-      const cell = ws[XLSX.utils.encode_cell({ r: headerR, c })];
-      const name = cell && cell.v !== undefined ? String(cell.w || cell.v).trim() : `Col_${colLetter}`;
+      const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
+      const name = val !== null && val !== undefined && String(val).trim() !== '' ? String(val).trim() : `Col_${colLetter}`;
       colIndexToName[c] = name;
       headers.push({ colLetter, colIndex: c + 1, name, sampleValues: [] });
     }
@@ -247,7 +264,7 @@ export class ExcelAnalyzer {
     for (let r = dataStartRow - 1; r < maxRow; r++) {
       const rowNumber = r + 1;
 
-      // Check if this row is a section heading
+      // Check if this row is a section heading banner
       if (sectionHeadingsMap[rowNumber]) {
         currentSectionHeading = sectionHeadingsMap[rowNumber];
         continue;
@@ -258,10 +275,9 @@ export class ExcelAnalyzer {
 
       for (let c = 0; c < totalCols; c++) {
         const colLetter = XLSX.utils.encode_col(c);
-        const cell = ws[XLSX.utils.encode_cell({ r, c })];
-        const val = cell && cell.v !== undefined ? (cell.w !== undefined ? cell.w : cell.v) : null;
+        const val = this.getResolvedCellValue(ws, r, c, rawMerges);
 
-        if (val !== null && String(val).trim() !== '') {
+        if (val !== null && val !== undefined && String(val).trim() !== '') {
           hasData = true;
         }
 

@@ -64,11 +64,24 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
     });
 
     if (isHealthy) {
+      let host = formData.url;
+      try {
+        host = new URL(formData.url).hostname;
+      } catch {}
       const updated = { 
         ...formData, 
         isConnected: true, 
         lastChecked: new Date().toISOString(), 
-        statusMessage: `Connected to Nextcloud (${realResult.checks.details?.versionstring || 'v34'}) at ${new URL(formData.url).hostname}` 
+        statusMessage: `Connected to Nextcloud (${realResult.checks.details?.versionstring || 'v34'}) at ${host}` 
+      };
+      setFormData(updated);
+      onSaveConfig(updated);
+    } else {
+      const updated = {
+        ...formData,
+        isConnected: false,
+        lastChecked: new Date().toISOString(),
+        statusMessage: realResult.error || 'Connection test failed. Verify WebDAV credentials.'
       };
       setFormData(updated);
       onSaveConfig(updated);

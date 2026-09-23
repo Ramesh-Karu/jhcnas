@@ -7,6 +7,7 @@ import {
   Microscope, 
   GitFork, 
   PlaySquare, 
+  ArrowLeftRight,
   History, 
   AlertTriangle, 
   Terminal, 
@@ -19,13 +20,15 @@ interface SidebarProps {
   onSelectTab: (tab: NavigationTab) => void;
   errorCount: number;
   filesWaitingCount: number;
+  conflictCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentTab,
   onSelectTab,
   errorCount,
-  filesWaitingCount
+  filesWaitingCount,
+  conflictCount = 0
 }) => {
   const navItems = [
     { id: 'dashboard' as NavigationTab, label: 'Dashboard', icon: LayoutDashboard },
@@ -41,6 +44,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'analyzer' as NavigationTab, label: 'Workbook Analyzer', icon: Microscope },
     { id: 'mappings' as NavigationTab, label: 'Mappings', icon: GitFork },
     { id: 'import' as NavigationTab, label: 'Import & Dry Run', icon: PlaySquare },
+    { 
+      id: 'twoway' as NavigationTab, 
+      label: 'Two-Way Sync', 
+      icon: ArrowLeftRight,
+      badge: conflictCount > 0 ? conflictCount : undefined,
+      badgeColor: 'bg-amber-500 text-white animate-pulse'
+    },
     { id: 'history' as NavigationTab, label: 'Import History', icon: History },
     { 
       id: 'errors' as NavigationTab, 
