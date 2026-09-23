@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Data Validation Engine.
 Ensures records meet all constraints before writing to Supabase.

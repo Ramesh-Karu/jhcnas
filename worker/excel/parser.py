@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Advanced Excel Workbook Parser with openpyxl & pandas.
 Specialized for complex real-world workbooks:

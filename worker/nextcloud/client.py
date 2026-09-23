@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Nextcloud WebDAV Client for TrueNAS SCALE integration.
 Handles connection testing, file listing, SHA-256 calculation, and streaming download.
@@ -5,7 +6,7 @@ Handles connection testing, file listing, SHA-256 calculation, and streaming dow
 import hashlib
 import os
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import requests
 
 class NextcloudClient:

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Mapping and Transformation Engine.
 Reads dynamic mapping configurations from Supabase and transforms raw Excel rows into structured database records.

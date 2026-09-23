@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Supabase PostgreSQL Client with Upsert, Dry Run, and Schema Management.
 Uses Supabase Service Role credentials securely in the background worker.

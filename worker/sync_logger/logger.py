@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Import Logging and Error Auditing Module.
 Maintains tamper-proof sync history in Supabase import_logs and import_errors tables.

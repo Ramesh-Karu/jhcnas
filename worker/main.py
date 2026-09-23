@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Nextcloud Excel Sync - Background Worker Service
 Deploys on Coolify to handle scheduled Nextcloud WebDAV polling, Excel workbook analysis,
@@ -7,7 +8,7 @@ import os
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union, Tuple, Set
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
