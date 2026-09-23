@@ -205,7 +205,12 @@ export class StorageService {
     localStorage.setItem(STORAGE_KEYS.FILES, JSON.stringify(files));
   }
 
+  private static _cachedAnalysis: WorkbookAnalysis | null = null;
+
   static getCurrentAnalysis(): WorkbookAnalysis | null {
+    if (this._cachedAnalysis) {
+      return this._cachedAnalysis;
+    }
     const raw = localStorage.getItem(STORAGE_KEYS.CURRENT_ANALYSIS);
     if (raw) {
       try {
@@ -234,6 +239,7 @@ export class StorageService {
             this.saveCurrentAnalysis(parsed);
           }
         }
+        this._cachedAnalysis = parsed;
         return parsed;
       } catch {}
     }
@@ -241,10 +247,19 @@ export class StorageService {
   }
 
   static saveCurrentAnalysis(analysis: WorkbookAnalysis | null): void {
+    this._cachedAnalysis = analysis;
     if (!analysis) {
       localStorage.removeItem(STORAGE_KEYS.CURRENT_ANALYSIS);
     } else {
-      localStorage.setItem(STORAGE_KEYS.CURRENT_ANALYSIS, JSON.stringify(analysis));
+      try {
+        localStorage.setItem(STORAGE_KEYS.CURRENT_ANALYSIS, JSON.stringify(analysis));
+      } catch (quotaErr) {
+        console.warn('LocalStorage quota exceeded for analysis with base64Data, saving metadata only to localStorage:', quotaErr);
+        try {
+          const stripped = { ...analysis, base64Data: undefined };
+          localStorage.setItem(STORAGE_KEYS.CURRENT_ANALYSIS, JSON.stringify(stripped));
+        } catch {}
+      }
     }
   }
 

@@ -73,6 +73,33 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
         console.warn('Could not parse base64Data as workbook:', e);
       }
     }
+
+    // If analysis has worksheets with parsed sample/all rows, synthesize workbook from all rows
+    if (currentAnalysis?.worksheets && currentAnalysis.worksheets.length > 0) {
+      const syntheticWb = XLSX.utils.book_new();
+      let hasAnySheet = false;
+      for (const ws of currentAnalysis.worksheets) {
+        if (ws.sampleRows && ws.sampleRows.length > 0) {
+          hasAnySheet = true;
+          const rows: any[][] = [];
+          const headerNames = ws.headers.map(h => h.name || h.colLetter);
+          rows.push(headerNames);
+          for (const sr of ws.sampleRows) {
+            const r: any[] = [];
+            for (const h of ws.headers) {
+              r.push(sr.data[h.colLetter] ?? sr.data[h.name] ?? '');
+            }
+            rows.push(r);
+          }
+          const sheet = XLSX.utils.aoa_to_sheet(rows);
+          XLSX.utils.book_append_sheet(syntheticWb, sheet, ws.sheetName);
+        }
+      }
+      if (hasAnySheet) {
+        return syntheticWb;
+      }
+    }
+
     const sample = createComplexSampleWorkbook();
     return sample.workbook;
   };
@@ -144,30 +171,58 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
       currentAnalysis
     );
 
-    // If Supabase is connected, write to Supabase directly
+    // If Supabase is connected, sanitize and write clean records directly to Supabase PostgREST
     let supabaseWriteNotice = '';
+    let supabaseSuccessCount = 0;
+    const supabaseErrors: string[] = [];
+
     if (supabaseConfig?.url && (supabaseConfig.anonKey || supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey)) {
       try {
         for (const wm of mappings) {
           if (!wm.enabled) continue;
-          const recordsToUpsert = capturedDbRecords[wm.supabaseTable] || databaseState[wm.supabaseTable] || [];
-          if (recordsToUpsert.length > 0) {
-            const conflictKey = wm.columns.find(c => c.uniqueKey)?.supabaseColumn || 'username';
+          const rawRecords = capturedDbRecords[wm.supabaseTable] || databaseState[wm.supabaseTable] || [];
+          if (rawRecords.length > 0) {
+            // ONLY send mapped Supabase columns to avoid PostgREST rejecting extra metadata
+            const allowedCols = new Set(wm.columns.map(c => c.supabaseColumn));
+            if (wm.sectionHeadingTargetCol) {
+              allowedCols.add(wm.sectionHeadingTargetCol);
+            }
+
+            const cleanRecordsForSupabase = rawRecords.map(r => {
+              const clean: Record<string, any> = {};
+              for (const col of allowedCols) {
+                if (r[col] !== undefined) {
+                  clean[col] = r[col];
+                }
+              }
+              return clean;
+            }).filter(r => Object.keys(r).length > 0);
+
+            if (cleanRecordsForSupabase.length === 0) continue;
+
+            const uniqueKeyCol = wm.columns.find(c => c.uniqueKey)?.supabaseColumn;
             const upRes = await ApiClient.upsertSupabaseRecords(
               supabaseConfig,
               wm.supabaseTable,
-              recordsToUpsert,
-              conflictKey
+              cleanRecordsForSupabase,
+              uniqueKeyCol
             );
+
             if (upRes.success) {
-              supabaseWriteNotice += ` Merged ${recordsToUpsert.length} records into 'public.${wm.supabaseTable}' (on conflict: ${conflictKey}).`;
+              supabaseSuccessCount += cleanRecordsForSupabase.length;
+              supabaseWriteNotice += ` Synced ${cleanRecordsForSupabase.length} rows to '${wm.supabaseTable}'.`;
+              // Fetch latest live rows from Supabase to update local UI databaseState
+              const latest = await ApiClient.fetchSupabaseTableRows(supabaseConfig, wm.supabaseTable, 100);
+              if (latest.success && latest.rows) {
+                onUpdateDatabase(wm.supabaseTable, latest.rows);
+              }
             } else {
-              supabaseWriteNotice += ` [Supabase note: ${upRes.error || 'Check permissions'}]`;
+              supabaseErrors.push(`${wm.supabaseTable}: ${upRes.error || 'Check table schema'}`);
             }
           }
         }
       } catch (err: any) {
-        supabaseWriteNotice = ` (Local DB synced; Supabase notice: ${err.message})`;
+        supabaseErrors.push(err.message);
       }
     }
 
@@ -175,10 +230,18 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
     onAddImportLog(log, errors);
     setIsImporting(false);
-    setImportNotice({
-      success: true,
-      message: `Production Import completed! ${log.rowsInserted} records inserted, ${log.rowsUpdated} records merged/updated, ${log.rowsFailed} failed.${supabaseWriteNotice}`
-    });
+
+    if (supabaseErrors.length > 0) {
+      setImportNotice({
+        success: false,
+        message: `Import processed locally, but Supabase reported issues: ${supabaseErrors.join(' | ')}. Please check the Supabase Schema tab to verify tables exist.`
+      });
+    } else {
+      setImportNotice({
+        success: true,
+        message: `Production Import completed! ${log.rowsInserted} records inserted, ${log.rowsUpdated} records merged/updated, ${log.rowsFailed} failed.${supabaseWriteNotice || (supabaseSuccessCount > 0 ? ` (Synced ${supabaseSuccessCount} rows to Supabase)` : '')}`
+      });
+    }
 
     // Re-run dry run to show updated status
     const updatedResult = DryRunEngine.executeDryRun(wb, filename, mappings, capturedDbRecords, currentAnalysis);
@@ -306,6 +369,31 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                 {dryRunResult.failedRows === 0 ? 'Zero errors!' : 'Integrity protection'}
               </span>
             </div>
+          </div>
+
+          {/* Action callout after dry-run metrics */}
+          <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-blue-50 border border-emerald-200 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                  Simulation Ready: {dryRunResult.validRows} Record{dryRunResult.validRows === 1 ? '' : 's'} Verified
+                </h4>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Dry run is a simulation. Click below to commit and sync all verified records directly into your Supabase database.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleExecuteImport}
+              disabled={isImporting || dryRunResult.validRows === 0}
+              className="inline-flex items-center space-x-2 px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-bold text-white shadow-2xs transition-all hover:scale-[1.02] shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <Play className={`w-3.5 h-3.5 ${isImporting ? 'animate-spin' : ''}`} />
+              <span>{isImporting ? 'Writing to Supabase...' : 'Push & Apply to Supabase Now'}</span>
+            </button>
           </div>
 
           {/* Worksheet Level Breakdown */}

@@ -916,24 +916,64 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
 
     const key = (serviceKey && serviceKey.trim()) || (serviceRoleKey && serviceRoleKey.trim()) || (anonKey && anonKey.trim());
     const cleanUrl = url.trim().replace(/\/+$/, '');
+
+    // Strip internal metadata keys (e.g. __updated_at, __source_file, __rowNumber)
+    const cleanedRecords = records.map((r: any) => {
+      const clean: Record<string, any> = {};
+      for (const [k, v] of Object.entries(r)) {
+        if (!k.startsWith('__')) {
+          clean[k] = v;
+        }
+      }
+      return clean;
+    });
+
     let upsertUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}`;
     if (onConflict) {
       upsertUrl += `?on_conflict=${encodeURIComponent(onConflict)}`;
     }
 
-    const upsertRes = await fetch(upsertUrl, {
+    let upsertRes = await fetch(upsertUrl, {
       method: 'POST',
       headers: {
         'apikey': key,
         'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates, return=representation',
+        'Prefer': onConflict ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
       },
-      body: JSON.stringify(records),
+      body: JSON.stringify(cleanedRecords),
     });
 
     if (!upsertRes.ok) {
       const errText = await upsertRes.text().catch(() => '');
+      
+      // If failed due to ON CONFLICT missing unique constraint in Supabase, retry as regular INSERT
+      if (onConflict && (errText.includes('ON CONFLICT') || errText.includes('constraint') || upsertRes.status === 400)) {
+        console.warn(`[Supabase Upsert] on_conflict=${onConflict} rejected, retrying with standard insert: ${errText}`);
+        const fallbackUrl = `${cleanUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+        const fallbackRes = await fetch(fallbackUrl, {
+          method: 'POST',
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation',
+          },
+          body: JSON.stringify(cleanedRecords),
+        });
+
+        if (fallbackRes.ok) {
+          const data = await fallbackRes.json().catch(() => []);
+          return res.json({
+            success: true,
+            tableName,
+            upsertedCount: cleanedRecords.length,
+            records: data,
+            note: `Successfully inserted into public.${tableName} (on_conflict '${onConflict}' bypassed).`,
+          });
+        }
+      }
+
       return res.status(upsertRes.status).json({
         success: false,
         error: `Supabase upsert failed with HTTP ${upsertRes.status}: ${errText}`,
@@ -944,7 +984,7 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
     return res.json({
       success: true,
       tableName,
-      upsertedCount: records.length,
+      upsertedCount: cleanedRecords.length,
       records: data,
     });
   } catch (error: any) {
@@ -978,7 +1018,7 @@ async function executeFullPipelineCore(params: {
   const user = nextcloud.username || 'truenas_admin';
   const pass = nextcloud.appPassword;
   const folder = (nextcloud.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
-  const filename = targetFilename || 'students.xlsx';
+  let filename = targetFilename || (Array.isArray(mappings) && mappings[0]?.workbookName) || 'students.xlsx';
 
   const supUrl = supabase.url.trim().replace(/\/+$/, '');
   const supKey = (supabase.serviceKey && supabase.serviceKey.trim()) || 
@@ -990,14 +1030,59 @@ async function executeFullPipelineCore(params: {
   }
 
   // Step 1: Download Workbook from Nextcloud WebDAV
-  const targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${filename}`;
+  let targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${filename}`;
   const authHeader = `Basic ${getBasicAuth(user, pass)}`;
 
-  const fileRes = await fetch(targetUrl, {
+  let fileRes = await fetch(targetUrl, {
     method: 'GET',
     headers: { Authorization: authHeader },
     signal: AbortSignal.timeout(15000),
   });
+
+  // If specified file not found (404), discover available Excel files in the folder via PROPFIND
+  if (!fileRes.ok && fileRes.status === 404) {
+    try {
+      const folderUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`;
+      const propfindRes = await fetch(folderUrl, {
+        method: 'PROPFIND',
+        headers: {
+          Authorization: authHeader,
+          Depth: '1',
+          'Content-Type': 'application/xml',
+        },
+        body: `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:displayname />
+    <d:getcontenttype />
+  </d:prop>
+</d:propfind>`,
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (propfindRes.ok) {
+        const xml = await propfindRes.text();
+        const hrefMatches = xml.match(/<d:href>([^<]+)<\/d:href>/gi) || [];
+        for (const hm of hrefMatches) {
+          const rawHref = hm.replace(/<\/?d:href>/gi, '').trim();
+          const decoded = decodeURIComponent(rawHref);
+          const fname = decoded.split('/').pop() || '';
+          if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
+            filename = fname;
+            targetUrl = rawHref.startsWith('http') ? rawHref : `${host}${rawHref}`;
+            fileRes = await fetch(targetUrl, {
+              method: 'GET',
+              headers: { Authorization: authHeader },
+              signal: AbortSignal.timeout(15000),
+            });
+            if (fileRes.ok) break;
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('Auto-discovery of Excel files on 404 failed:', e.message);
+    }
+  }
 
   if (!fileRes.ok) {
     throw new Error(`Could not fetch ${filename} from Nextcloud WebDAV (${targetUrl}): HTTP ${fileRes.status} ${fileRes.statusText}`);
@@ -1138,17 +1223,36 @@ async function executeFullPipelineCore(params: {
       upsertUrl += `?on_conflict=${encodeURIComponent(uniqueCol)}`;
     }
 
-    const upsertRes = await fetch(upsertUrl, {
+    let upsertRes = await fetch(upsertUrl, {
       method: 'POST',
       headers: {
         'apikey': supKey,
         'Authorization': `Bearer ${supKey}`,
         'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates, return=representation',
+        'Prefer': uniqueCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
       },
       body: JSON.stringify(recordsToUpsert),
       signal: AbortSignal.timeout(15000),
     });
+
+    if (!upsertRes.ok && uniqueCol) {
+      const errText = await upsertRes.text().catch(() => '');
+      if (errText.includes('ON CONFLICT') || errText.includes('constraint') || upsertRes.status === 400) {
+        console.warn(`[Sync Core] Upsert on_conflict=${uniqueCol} failed for ${targetTable}, retrying direct insert: ${errText}`);
+        const fallbackUrl = `${supUrl}/rest/v1/${encodeURIComponent(targetTable)}`;
+        upsertRes = await fetch(fallbackUrl, {
+          method: 'POST',
+          headers: {
+            'apikey': supKey,
+            'Authorization': `Bearer ${supKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation',
+          },
+          body: JSON.stringify(recordsToUpsert),
+          signal: AbortSignal.timeout(15000),
+        });
+      }
+    }
 
     if (!upsertRes.ok) {
       const errText = await upsertRes.text().catch(() => '');
@@ -1196,10 +1300,10 @@ async function executeFullPipelineCore(params: {
 
 // Production In-Process Sync Scheduler
 class ProductionScheduler {
-  private enabled: boolean = false;
+  private enabled: boolean = true;
   private intervalMinutes: number = 15;
   private intervalLabel: string = '15m';
-  private state: 'IDLE' | 'SYNCING' | 'SCHEDULED' | 'DISABLED' | 'ERROR' = 'DISABLED';
+  private state: 'IDLE' | 'SYNCING' | 'SCHEDULED' | 'DISABLED' | 'ERROR' = 'SCHEDULED';
   private engineMode: 'INTEGRATED_PRODUCTION_ENGINE' | 'EXTERNAL_WORKER_DAEMON' = 'INTEGRATED_PRODUCTION_ENGINE';
   private workerUrl: string = '';
   private lastRunAt: string | null = null;
@@ -1208,7 +1312,30 @@ class ProductionScheduler {
   private cachedNextcloud: any = null;
   private cachedSupabase: any = null;
   private cachedMappings: any[] = [];
-  private timer: NodeJS.Timeout | null = null;
+  private tickInterval: NodeJS.Timeout | null = null;
+
+  constructor() {
+    // Persistent heartbeat tick every 2.5 seconds
+    this.tickInterval = setInterval(() => {
+      this.tick();
+    }, 2500);
+
+    const initialIntervalMs = this.intervalMinutes * 60 * 1000;
+    this.nextRunAt = new Date(Date.now() + initialIntervalMs).toISOString();
+  }
+
+  private tick() {
+    if (!this.enabled || this.state === 'SYNCING') return;
+
+    if (this.nextRunAt) {
+      const now = Date.now();
+      const targetTime = new Date(this.nextRunAt).getTime();
+      if (now >= targetTime) {
+        console.log(`[Scheduler Tick] Triggering auto-sync at scheduled time: ${this.nextRunAt}`);
+        this.triggerSync(false);
+      }
+    }
+  }
 
   public getStatus() {
     let secondsUntilNextRun: number | null = null;
@@ -1239,6 +1366,10 @@ class ProductionScheduler {
     mappings?: any[];
     workerUrl?: string;
   }) {
+    const prevMinutes = this.intervalMinutes;
+    const prevEnabled = this.enabled;
+    const prevLabel = this.intervalLabel;
+
     if (config.nextcloud) this.cachedNextcloud = config.nextcloud;
     if (config.supabase) this.cachedSupabase = config.supabase;
     if (Array.isArray(config.mappings)) this.cachedMappings = config.mappings;
@@ -1266,21 +1397,17 @@ class ProductionScheduler {
       this.enabled = config.enabled;
     }
 
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+    const intervalChanged = prevMinutes !== this.intervalMinutes || prevLabel !== this.intervalLabel;
+    const enabledChanged = prevEnabled !== this.enabled;
 
     if (this.enabled) {
       this.state = 'SCHEDULED';
-      const intervalMs = this.intervalMinutes * 60 * 1000;
-      this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-
-      this.timer = setInterval(() => {
-        this.triggerSync(false);
-      }, intervalMs);
-
-      console.log(`[Scheduler] Activated: Next run in ${this.intervalMinutes}m at ${this.nextRunAt}`);
+      // ONLY reset nextRunAt if interval changed, enabled was toggled from off to on, or nextRunAt is missing/expired!
+      if (!this.nextRunAt || intervalChanged || (enabledChanged && !prevEnabled) || Date.now() > new Date(this.nextRunAt).getTime()) {
+        const intervalMs = this.intervalMinutes * 60 * 1000;
+        this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+        console.log(`[Scheduler] Next run set to: in ${this.intervalMinutes}m at ${this.nextRunAt}`);
+      }
     } else {
       this.state = 'DISABLED';
       this.nextRunAt = null;

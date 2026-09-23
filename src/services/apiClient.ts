@@ -120,6 +120,7 @@ export class ApiClient {
         worksheets: data.worksheets,
         analyzedAt: data.analyzedAt,
         fileHash: data.fileHash,
+        base64Data: data.base64Data,
       };
 
       return {
@@ -302,6 +303,7 @@ export class ApiClient {
         worksheets: data.worksheets,
         analyzedAt: data.analyzedAt,
         fileHash: data.fileHash,
+        base64Data: data.base64Data,
       };
 
       return {

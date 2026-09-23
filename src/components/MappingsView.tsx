@@ -96,6 +96,14 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     fetchSupabaseSchema();
   }, [fetchSupabaseSchema]);
 
+  // Keep currentMappings in sync when mappings prop updates
+  useEffect(() => {
+    setCurrentMappings(mappings);
+    if (mappings.length > 0 && (!activeSheetId || !mappings.some(m => m.id === activeSheetId))) {
+      setActiveSheetId(mappings[0].id);
+    }
+  }, [mappings]);
+
   // Keep activeSheetId valid if currentMappings changes
   useEffect(() => {
     if (currentMappings.length > 0 && !currentMappings.some(m => m.id === activeSheetId)) {
@@ -132,6 +140,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     if (!activeMapping) return;
     const updated = currentMappings.map(m => m.id === activeMapping.id ? { ...m, ...updates } : m);
     setCurrentMappings(updated);
+    onSaveMappings(updated);
   };
 
   const handleToggleActiveMappingEnabled = () => {
@@ -161,7 +170,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 
     // Build fresh mappings ONLY for the active workbook sheets
     const newMappings: WorksheetMapping[] = currentAnalysis.worksheets.map((ws, sIdx) => {
-      const targetTable = supabaseTables.some(t => t.name === 'students') ? 'students' : ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sheet_data';
+      const cleanWsName = ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sheet_data';
+      const targetTable = supabaseTables.some(t => t.name === cleanWsName) 
+        ? cleanWsName 
+        : (supabaseTables[0]?.name || cleanWsName);
       const matchedTable = supabaseTables.find(t => t.name === targetTable);
 
       const columns: ColumnMapping[] = ws.headers.map((h, idx) => {
@@ -738,9 +750,29 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                 />
               )}
 
-              <div className="flex items-center space-x-3 text-[11px] text-slate-500 pt-1">
-                <span>Header Row: <strong>{activeMapping.headerRow}</strong></span>
-                <span>Data Start Row: <strong>{activeMapping.dataStartRow}</strong></span>
+              <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-600 pt-1">
+                <label className="flex items-center space-x-1.5">
+                  <span className="font-semibold text-slate-700">Header Row:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={activeMapping.headerRow || 1}
+                    onChange={(e) => handleUpdateActiveMapping({ headerRow: parseInt(e.target.value) || 1 })}
+                    className="w-14 px-2 py-0.5 rounded border border-slate-300 bg-white font-bold font-mono text-center text-xs focus:ring-1 focus:ring-emerald-500"
+                  />
+                </label>
+                <label className="flex items-center space-x-1.5">
+                  <span className="font-semibold text-slate-700">Data Start Row:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={activeMapping.dataStartRow || 2}
+                    onChange={(e) => handleUpdateActiveMapping({ dataStartRow: parseInt(e.target.value) || 2 })}
+                    className="w-14 px-2 py-0.5 rounded border border-slate-300 bg-white font-bold font-mono text-center text-xs focus:ring-1 focus:ring-emerald-500"
+                  />
+                </label>
               </div>
             </div>
 
