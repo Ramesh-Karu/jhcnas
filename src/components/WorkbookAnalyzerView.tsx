@@ -51,6 +51,7 @@ interface WorkbookAnalyzerViewProps {
   activeMappings: WorksheetMapping[];
   onUpdateMappingHeaderDataRow: (sheetName: string, headerRow: number, dataStartRow: number) => void;
   nextcloudConfig?: NextcloudConfig;
+  onSaveMappings?: (mappings: WorksheetMapping[]) => void;
 }
 
 export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
@@ -60,13 +61,17 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   onOpenAiAssistant,
   activeMappings,
   onUpdateMappingHeaderDataRow,
-  nextcloudConfig
+  nextcloudConfig,
+  onSaveMappings
 }) => {
   const [selectedSheetIndex, setSelectedSheetIndex] = useState<number>(0);
   const [sheetSearch, setSheetSearch] = useState<string>('');
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isFetchingNextcloud, setIsFetchingNextcloud] = useState<boolean>(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
+  const [showPasteModal, setShowPasteModal] = useState<boolean>(false);
+  const [pastedContent, setPastedContent] = useState<string>('');
+  const [targetTableNameInput, setTargetTableNameInput] = useState<string>('students');
 
   // Fallback / initialization with sample if null
   const analysis = currentAnalysis || (() => {
@@ -91,6 +96,8 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     if (activeSheet) {
       setManualHeaderRow(activeSheet.detectedHeaderRow);
       setManualDataStartRow(activeSheet.detectedDataStartRow);
+      const safeName = activeSheet.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'students';
+      setTargetTableNameInput(safeName);
     }
   }, [activeSheet?.sheetName]);
 
@@ -106,11 +113,93 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
       parsed.fileHash = sha256;
       onAnalysisUpdate(parsed);
       setSelectedSheetIndex(0);
+      setSaveSuccessNotice(`Successfully parsed ${file.name} with ${parsed.worksheets.length} sheets and real columns!`);
+      setTimeout(() => setSaveSuccessNotice(null), 4000);
     } catch (err) {
       console.error('Error parsing uploaded Excel file:', err);
     } finally {
       setIsUploading(false);
     }
+  };
+
+  const handleParsePastedData = async () => {
+    if (!pastedContent.trim()) return;
+    setIsUploading(true);
+    try {
+      const res = await ApiClient.parseRawExcelOrCsv({
+        rawText: pastedContent,
+        filename: 'pasted_students.csv'
+      });
+
+      if (res.success && res.analysis) {
+        onAnalysisUpdate(res.analysis);
+        setSelectedSheetIndex(0);
+        setShowPasteModal(false);
+        setPastedContent('');
+        setSaveSuccessNotice(`Successfully extracted columns from pasted table data!`);
+        setTimeout(() => setSaveSuccessNotice(null), 4000);
+      } else {
+        alert('Failed to parse pasted text: ' + (res.error || 'Unknown format'));
+      }
+    } catch (e: any) {
+      alert('Error parsing raw data: ' + e.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleRouteSheetToTable = () => {
+    if (!activeSheet) return;
+    const targetTable = targetTableNameInput.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'students';
+
+    const columns = activeSheet.headers.map((h, idx) => {
+      const cleanName = h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || `col_${h.colLetter.toLowerCase()}`;
+      const isUnique = idx === 0 || cleanName === 'username' || cleanName.includes('id') || cleanName.includes('index');
+      const isDate = cleanName.includes('dob') || cleanName.includes('date');
+      const isNumber = cleanName.includes('class') || cleanName.includes('mark') || cleanName.includes('score');
+
+      return {
+        id: `cm-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
+        excelColumn: h.colLetter,
+        excelHeader: h.name,
+        supabaseColumn: cleanName,
+        dataType: (isDate ? 'date' : isNumber ? 'integer' : 'text') as any,
+        required: isUnique,
+        uniqueKey: isUnique,
+        transformation: (isDate ? 'parse_date' : isNumber ? 'parse_number' : 'trim') as any,
+      };
+    });
+
+    const newMapping: WorksheetMapping = {
+      id: `wm-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      workbookName: analysis.filename,
+      worksheetName: activeSheet.sheetName,
+      supabaseTable: targetTable,
+      headerRow: manualHeaderRow,
+      dataStartRow: manualDataStartRow,
+      enabled: true,
+      syncPolicy: 'EXCEL_TO_DB',
+      columns,
+    };
+
+    const existingIdx = activeMappings.findIndex(m => m.worksheetName.toLowerCase() === activeSheet.sheetName.toLowerCase());
+    let updated: WorksheetMapping[];
+    if (existingIdx >= 0) {
+      updated = [...activeMappings];
+      updated[existingIdx] = { ...updated[existingIdx], supabaseTable: targetTable, headerRow: manualHeaderRow, dataStartRow: manualDataStartRow, columns };
+    } else {
+      updated = [...activeMappings, newMapping];
+    }
+
+    if (onSaveMappings) {
+      onSaveMappings(updated);
+    }
+
+    setSaveSuccessNotice(`Routed worksheet '${activeSheet.sheetName}' to PostgreSQL table 'public.${targetTable}' with ${columns.length} columns!`);
+    setTimeout(() => {
+      setSaveSuccessNotice(null);
+      onNavigate('mappings');
+    }, 1200);
   };
 
   const handleFetchFromNextcloud = async () => {
@@ -189,15 +278,24 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
             </button>
           )}
 
+          <button
+            id="btn-paste-raw-table"
+            onClick={() => setShowPasteModal(true)}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 shadow-2xs transition-colors"
+          >
+            <Table className="w-3.5 h-3.5 text-slate-500" />
+            <span>Paste CSV / Table</span>
+          </button>
+
           <label 
             id="btn-upload-excel"
             className="cursor-pointer inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 shadow-2xs transition-colors"
           >
             <Upload className="w-3.5 h-3.5 text-slate-500" />
-            <span>{isUploading ? 'Parsing...' : 'Upload Excel (.xlsx/.xlsm)'}</span>
+            <span>{isUploading ? 'Parsing...' : 'Upload Excel (.xlsx/.csv)'}</span>
             <input 
               type="file" 
-              accept=".xlsx,.xlsm,.xls" 
+              accept=".xlsx,.xlsm,.xls,.csv" 
               onChange={handleFileUpload} 
               className="hidden" 
             />
@@ -377,6 +475,52 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
             </div>
           </div>
 
+          {/* Quick Route to Supabase Table Card */}
+          <div className="bg-white rounded-xl p-5 border border-emerald-200 shadow-2xs space-y-3 bg-emerald-50/20">
+            <div className="flex items-center space-x-2 text-emerald-800">
+              <Table className="w-4 h-4 text-emerald-600" />
+              <h3 className="text-sm font-bold">Route Sheet to Supabase Table</h3>
+            </div>
+            <p className="text-xs text-slate-600">
+              Directly bind <strong>{activeSheet.sheetName}</strong> ({activeSheet.headers.length} detected columns) to a PostgreSQL table:
+            </p>
+
+            <div className="space-y-2">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1 uppercase">Target PostgreSQL Table</label>
+                <input
+                  type="text"
+                  value={targetTableNameInput}
+                  onChange={(e) => setTargetTableNameInput(e.target.value)}
+                  placeholder="e.g. students"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
+                />
+              </div>
+
+              <div className="flex items-center space-x-1">
+                {['students', 'attendance', 'grades'].map((tbl) => (
+                  <button
+                    key={tbl}
+                    type="button"
+                    onClick={() => setTargetTableNameInput(tbl)}
+                    className="text-[10px] px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-100 text-slate-700"
+                  >
+                    {tbl}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                id="btn-route-sheet-now"
+                onClick={handleRouteSheetToTable}
+                className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-2xs transition-colors flex items-center justify-center space-x-1.5"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Save Mapping & Route Table</span>
+              </button>
+            </div>
+          </div>
+
           {/* Merged Cells Intelligence Card (Section 7) */}
           <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs space-y-3">
             <h3 className="text-sm font-semibold text-slate-900 flex items-center space-x-2">
@@ -495,6 +639,56 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Raw CSV / Table Data Paste Modal */}
+      {showPasteModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-2">
+                <Table className="w-5 h-5 text-purple-600" />
+                <h3 className="text-base font-bold text-slate-900">Paste Raw CSV or Tab-Separated Table Data</h3>
+              </div>
+              <button
+                onClick={() => setShowPasteModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Paste your student table (CSV or copy-pasted spreadsheet cells) to instantly extract real columns (e.g. <code>username, fullName, indexNumber, dob, class, division, password, email</code>).
+            </p>
+
+            <textarea
+              rows={8}
+              value={pastedContent}
+              onChange={(e) => setPastedContent(e.target.value)}
+              placeholder={"username,fullName,email,indexNumber,dob,class,division,password\nstu001,John Doe,john@example.com,IDX101,2008-04-12,10,A,pass123\nstu002,Jane Smith,jane@example.com,IDX102,2008-07-25,10,B,pass456"}
+              className="w-full p-3 font-mono text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 text-slate-800"
+            />
+
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowPasteModal(false)}
+                className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleParsePastedData}
+                disabled={!pastedContent.trim() || isUploading}
+                className="px-5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-semibold text-white shadow-2xs transition-colors disabled:opacity-50"
+              >
+                {isUploading ? 'Parsing Columns...' : 'Extract Real Columns & Analyze'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

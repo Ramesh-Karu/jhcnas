@@ -271,4 +271,102 @@ export class ApiClient {
       return { success: false, error: e.message };
     }
   }
+
+  static async parseRawExcelOrCsv(params: {
+    base64Data?: string;
+    rawText?: string;
+    filename?: string;
+  }): Promise<{
+    success: boolean;
+    analysis?: WorkbookAnalysis;
+    base64Data?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/excel/parse-raw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        return { success: false, error: data.error };
+      }
+
+      const analysis: WorkbookAnalysis = {
+        filename: data.filename,
+        fileSize: data.fileSize,
+        fileSizeFormatted: data.fileSizeFormatted,
+        totalWorksheets: data.totalWorksheets,
+        worksheets: data.worksheets,
+        analyzedAt: data.analyzedAt,
+        fileHash: data.fileHash,
+      };
+
+      return {
+        success: true,
+        analysis,
+        base64Data: data.base64Data,
+      };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async executeFullPipelineSync(params: {
+    nextcloud: NextcloudConfig;
+    supabase: SupabaseConfig;
+    mappings: any[];
+    targetFilename?: string;
+  }): Promise<{
+    success: boolean;
+    filename?: string;
+    fileHash?: string;
+    totalInserted?: number;
+    totalUpdated?: number;
+    totalFailed?: number;
+    syncResults?: any[];
+    errors?: any[];
+    executedAt?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/sync/execute-full-pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async getWorkerDiagnostics(params: {
+    nextcloud: NextcloudConfig;
+    supabase: SupabaseConfig;
+    workerUrl?: string;
+  }): Promise<{
+    success: boolean;
+    diagnostics?: {
+      timestamp: string;
+      nextcloud: { reachable: boolean; status: string; details?: any; latencyMs?: number };
+      supabase: { reachable: boolean; status: string; tablesCount?: number; tables?: string[]; latencyMs?: number };
+      workerService: { reachable: boolean; status: string; endpoint: string; latencyMs?: number };
+      allSystemsReady: boolean;
+    };
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/worker/diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
 }

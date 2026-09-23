@@ -123,11 +123,11 @@ export class ExcelAnalyzer {
         } else if (matchingMerge.type === 'section_heading') {
           sectionHeadings.push({ row: rowNumber, text: matchingMerge.value, range: matchingMerge.range });
         }
-      } else if (rowValues.length >= 2) {
+      } else if (rowValues.length >= 1) {
         // High string density indicates headers
         const stringCount = rowValues.filter(v => isNaN(Number(v))).length;
         const confidence = stringCount / rowValues.length;
-        if (confidence >= 0.6) {
+        if (confidence >= 0.4 || rowNumber === 1) {
           candidateHeaders.push({
             row: rowNumber,
             headers: rowValues,
@@ -137,10 +137,12 @@ export class ExcelAnalyzer {
       }
     }
 
-    // Determine Best Header Row
+    // Determine Best Header Row (prefer row with highest non-empty string count)
     let detectedHeaderRow = 1;
     if (candidateHeaders.length > 0) {
-      detectedHeaderRow = candidateHeaders[0].row;
+      // Find candidate with maximum header count
+      const best = [...candidateHeaders].sort((a, b) => b.headers.length - a.headers.length || a.row - b.row)[0];
+      detectedHeaderRow = best.row;
     } else if (totalRows > 0) {
       detectedHeaderRow = 1;
     }
@@ -151,10 +153,29 @@ export class ExcelAnalyzer {
       detectedDataStartRow++;
     }
 
+    // Prune blank trailing columns
+    const headerR = detectedHeaderRow - 1;
+    let lastNonEmptyCol = -1;
+    for (let c = totalColumns - 1; c >= 0; c--) {
+      const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
+      let hasData = false;
+      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 20); r++) {
+        if (this.getResolvedCellValue(ws, r, c, rawMerges) !== null) {
+          hasData = true;
+          break;
+        }
+      }
+      if ((val !== null && String(val).trim() !== '') || hasData) {
+        lastNonEmptyCol = c;
+        break;
+      }
+    }
+
+    const effectiveColCount = lastNonEmptyCol >= 0 ? lastNonEmptyCol + 1 : totalColumns;
+
     // Extract Headers at detectedHeaderRow with merged cell resolution
     const headers: SheetHeader[] = [];
-    const headerR = detectedHeaderRow - 1;
-    for (let c = 0; c < totalColumns; c++) {
+    for (let c = 0; c < effectiveColCount; c++) {
       const colLetter = XLSX.utils.encode_col(c);
       const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
       const name = val !== null && val !== undefined && String(val).trim() !== '' 
@@ -163,9 +184,9 @@ export class ExcelAnalyzer {
 
       // Sample a couple values for this column with merged cell resolution
       const sampleValues: string[] = [];
-      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 4); r++) {
+      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 8); r++) {
         const scVal = this.getResolvedCellValue(ws, r, c, rawMerges);
-        if (scVal !== null && scVal !== undefined) {
+        if (scVal !== null && scVal !== undefined && String(scVal).trim() !== '') {
           sampleValues.push(String(scVal));
         }
       }

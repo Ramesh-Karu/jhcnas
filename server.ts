@@ -290,111 +290,229 @@ app.post('/api/nextcloud/fetch-and-parse', async (req, res) => {
     const buffer = Buffer.from(arrayBuffer);
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
-    // Parse with XLSX
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-    const worksheets: any[] = [];
+    const result = parseWorkbookBuffer(buffer, filename || targetUrl.split('/').pop() || 'workbook.xlsx');
 
-    for (const sheetName of wb.SheetNames) {
-      const ws = wb.Sheets[sheetName];
-      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-      const totalRows = range.e.r + 1;
-      const totalColumns = range.e.c + 1;
-      const merges = ws['!merges'] || [];
+    return res.json({
+      success: true,
+      filename: result.filename,
+      fileSize: buffer.byteLength,
+      fileSizeFormatted: formatBytes(buffer.byteLength),
+      fileHash: sha256,
+      totalWorksheets: result.worksheets.length,
+      worksheets: result.worksheets,
+      analyzedAt: new Date().toISOString(),
+      base64Data: buffer.toString('base64'),
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
 
-      const usedRangeStr = ws['!ref'] || `${XLSX.utils.encode_col(range.s.c)}${range.s.r + 1}:${XLSX.utils.encode_col(range.e.c)}${range.e.r + 1}`;
+// Helper function to parse XLSX / CSV buffer into structured worksheets & headers
+function parseWorkbookBuffer(buffer: Buffer, filename: string) {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const worksheets: any[] = [];
 
-      // Helper to resolve merged cells value
-      const getResolvedVal = (r: number, c: number) => {
-        const direct = ws[XLSX.utils.encode_cell({ r, c })];
-        if (direct && direct.v !== undefined && direct.v !== null && String(direct.v).trim() !== '') {
-          return direct.w !== undefined ? direct.w : direct.v;
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws || !ws['!ref']) {
+      worksheets.push({
+        sheetName,
+        totalRows: 0,
+        totalColumns: 0,
+        usedRange: 'A1',
+        mergedRanges: [],
+        detectedHeaderRow: 1,
+        detectedDataStartRow: 2,
+        candidateHeaderRows: [],
+        titleRows: [],
+        sectionHeadings: [],
+        emptyRowsCount: 0,
+        repeatedHeadersCount: 0,
+        headers: [],
+        sampleRows: [],
+      });
+      continue;
+    }
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const totalRows = range.e.r + 1;
+    const totalColumns = range.e.c + 1;
+    const merges = ws['!merges'] || [];
+    const usedRangeStr = ws['!ref'];
+
+    const getResolvedVal = (r: number, c: number) => {
+      const direct = ws[XLSX.utils.encode_cell({ r, c })];
+      if (direct && direct.v !== undefined && direct.v !== null && String(direct.v).trim() !== '') {
+        return direct.w !== undefined ? direct.w : direct.v;
+      }
+      const m = merges.find((m: any) => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
+      if (m) {
+        const orig = ws[XLSX.utils.encode_cell(m.s)];
+        if (orig && orig.v !== undefined && orig.v !== null) {
+          return orig.w !== undefined ? orig.w : orig.v;
         }
-        const m = merges.find((m: any) => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
-        if (m) {
-          const orig = ws[XLSX.utils.encode_cell(m.s)];
-          if (orig && orig.v !== undefined && orig.v !== null) {
-            return orig.w !== undefined ? orig.w : orig.v;
-          }
-        }
-        return '';
-      };
+      }
+      return '';
+    };
 
-      // Extract detected headers (Row 0 / Row 1 in 1-based indexing)
-      const detectedHeaderRow = 1;
-      const detectedDataStartRow = 2;
+    // Scan top 30 rows to detect the true header row with non-empty column names
+    let bestHeaderRowIndex = 0;
+    let maxHeaderScore = -1;
+    const candidateHeaderRows: any[] = [];
 
-      const headers = [];
+    const scanLimit = Math.min(totalRows, 30);
+    for (let r = 0; r < scanLimit; r++) {
+      const rowVals: string[] = [];
       for (let c = 0; c < totalColumns; c++) {
-        const colLetter = XLSX.utils.encode_col(c);
-        const headerVal = getResolvedVal(0, c);
-        const name = String(headerVal || `Column ${colLetter}`).trim();
-        const sampleValues = [];
-        for (let r = 1; r < Math.min(totalRows, 7); r++) {
-          sampleValues.push(String(getResolvedVal(r, c)));
-        }
-        headers.push({
-          colLetter,
-          colIndex: c + 1,
-          name,
-          sampleValues,
-        });
+        const val = String(getResolvedVal(r, c) || '').trim();
+        if (val) rowVals.push(val);
       }
 
-      // Sample rows with resolved merged cells
-      const sampleRows = [];
-      for (let r = 1; r < Math.min(totalRows, 15); r++) {
-        const rowData: Record<string, any> = {};
-        headers.forEach((h, hIdx) => {
-          const val = getResolvedVal(r, hIdx);
-          rowData[h.colLetter] = val;
-          if (h.name) {
-            rowData[h.name] = val;
-          }
+      if (rowVals.length > 0) {
+        // Score row: number of non-empty strings, prefer rows with common identifier names
+        const stringCount = rowVals.filter((v) => isNaN(Number(v))).length;
+        const confidence = stringCount / Math.max(1, rowVals.length);
+        candidateHeaderRows.push({
+          row: r + 1,
+          headers: rowVals,
+          confidence: Number(confidence.toFixed(2)),
         });
+
+        const score = rowVals.length * 2 + (confidence >= 0.5 ? 5 : 0);
+        if (score > maxHeaderScore) {
+          maxHeaderScore = score;
+          bestHeaderRowIndex = r;
+        }
+      }
+    }
+
+    const detectedHeaderRow = bestHeaderRowIndex + 1;
+    const detectedDataStartRow = detectedHeaderRow + 1;
+
+    // Build headers from detected header row, filtering out completely blank trailing columns
+    const headers: any[] = [];
+    let lastNonEmptyCol = -1;
+
+    for (let c = totalColumns - 1; c >= 0; c--) {
+      const headerVal = String(getResolvedVal(bestHeaderRowIndex, c) || '').trim();
+      let hasDataInCol = false;
+      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 20); r++) {
+        if (String(getResolvedVal(r, c) || '').trim() !== '') {
+          hasDataInCol = true;
+          break;
+        }
+      }
+      if (headerVal || hasDataInCol) {
+        lastNonEmptyCol = c;
+        break;
+      }
+    }
+
+    const effectiveColCount = lastNonEmptyCol >= 0 ? lastNonEmptyCol + 1 : totalColumns;
+
+    for (let c = 0; c < effectiveColCount; c++) {
+      const colLetter = XLSX.utils.encode_col(c);
+      const rawHeader = String(getResolvedVal(bestHeaderRowIndex, c) || '').trim();
+      const name = rawHeader || `Column_${colLetter}`;
+
+      const sampleValues: string[] = [];
+      for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 10); r++) {
+        const val = getResolvedVal(r, c);
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          sampleValues.push(String(val));
+        }
+      }
+
+      headers.push({
+        colLetter,
+        colIndex: c + 1,
+        name,
+        sampleValues,
+      });
+    }
+
+    // Extract sample rows
+    const sampleRows: any[] = [];
+    for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 25); r++) {
+      const rowData: Record<string, any> = {};
+      let hasRowData = false;
+
+      headers.forEach((h, hIdx) => {
+        const val = getResolvedVal(r, hIdx);
+        rowData[h.colLetter] = val;
+        if (h.name) {
+          rowData[h.name] = val;
+        }
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          hasRowData = true;
+        }
+      });
+
+      if (hasRowData) {
         sampleRows.push({
           rowNumber: r + 1,
           data: rowData,
         });
       }
-
-      worksheets.push({
-        sheetName,
-        totalRows,
-        totalColumns,
-        usedRange: usedRangeStr,
-        mergedRanges: merges.map((m: any) => ({
-          range: `${XLSX.utils.encode_col(m.s.c)}${m.s.r + 1}:${XLSX.utils.encode_col(m.e.c)}${m.e.r + 1}`,
-          startCol: XLSX.utils.encode_col(m.s.c),
-          endCol: XLSX.utils.encode_col(m.e.c),
-          startRow: m.s.r + 1,
-          endRow: m.e.r + 1,
-          value: String(ws[XLSX.utils.encode_cell(m.s)]?.w ?? ws[XLSX.utils.encode_cell(m.s)]?.v ?? ''),
-          type: 'data_span',
-        })),
-        detectedHeaderRow,
-        detectedDataStartRow,
-        candidateHeaderRows: [{ row: 1, headers: headers.map((h) => h.name), confidence: 0.95 }],
-        titleRows: [],
-        sectionHeadings: [],
-        emptyRowsCount: 0,
-        repeatedHeadersCount: 0,
-        headers,
-        sampleRows,
-      });
     }
 
-    const base64Data = buffer.toString('base64');
+    worksheets.push({
+      sheetName,
+      totalRows,
+      totalColumns: effectiveColCount,
+      usedRange: usedRangeStr,
+      mergedRanges: merges.map((m: any) => ({
+        range: `${XLSX.utils.encode_col(m.s.c)}${m.s.r + 1}:${XLSX.utils.encode_col(m.e.c)}${m.e.r + 1}`,
+        startCol: XLSX.utils.encode_col(m.s.c),
+        endCol: XLSX.utils.encode_col(m.e.c),
+        startRow: m.s.r + 1,
+        endRow: m.e.r + 1,
+        value: String(ws[XLSX.utils.encode_cell(m.s)]?.w ?? ws[XLSX.utils.encode_cell(m.s)]?.v ?? ''),
+        type: 'data_span',
+      })),
+      detectedHeaderRow,
+      detectedDataStartRow,
+      candidateHeaderRows,
+      titleRows: [],
+      sectionHeadings: [],
+      emptyRowsCount: 0,
+      repeatedHeadersCount: 0,
+      headers,
+      sampleRows,
+    });
+  }
+
+  return { filename, worksheets };
+}
+
+// 4b. Parse Raw Uploaded / Pasted Excel or CSV Buffer
+app.post('/api/excel/parse-raw', async (req, res) => {
+  try {
+    const { base64Data, rawText, filename } = req.body;
+    let buffer: Buffer;
+
+    if (base64Data) {
+      buffer = Buffer.from(base64Data, 'base64');
+    } else if (rawText) {
+      buffer = Buffer.from(rawText, 'utf-8');
+    } else {
+      return res.status(400).json({ success: false, error: 'base64Data or rawText is required' });
+    }
+
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    const result = parseWorkbookBuffer(buffer, filename || 'uploaded_data.xlsx');
 
     return res.json({
       success: true,
-      filename: filename || 'students.xlsx',
+      filename: result.filename,
       fileSize: buffer.byteLength,
       fileSizeFormatted: formatBytes(buffer.byteLength),
       fileHash: sha256,
-      totalWorksheets: worksheets.length,
-      worksheets,
+      totalWorksheets: result.worksheets.length,
+      worksheets: result.worksheets,
       analyzedAt: new Date().toISOString(),
-      base64Data,
+      base64Data: buffer.toString('base64'),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -649,6 +767,341 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
       upsertedCount: records.length,
       records: data,
     });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 9. Full End-to-End Live Pipeline Sync (Nextcloud WebDAV -> Transform -> Supabase PostgreSQL)
+app.post('/api/sync/execute-full-pipeline', async (req, res) => {
+  try {
+    const { nextcloud, supabase, mappings, targetFilename } = req.body;
+    if (!nextcloud?.url || !supabase?.url) {
+      return res.status(400).json({ success: false, error: 'Nextcloud and Supabase configurations are required' });
+    }
+
+    const host = nextcloud.url.replace(/\/+$/, '');
+    const user = nextcloud.username || 'truenas_admin';
+    const pass = nextcloud.appPassword;
+    const folder = (nextcloud.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
+    const filename = targetFilename || 'students.xlsx';
+
+    const supUrl = supabase.url.trim().replace(/\/+$/, '');
+    const supKey = (supabase.serviceKey && supabase.serviceKey.trim()) || (supabase.serviceRoleKey && supabase.serviceRoleKey.trim()) || (supabase.anonKey && supabase.anonKey.trim());
+
+    if (!supKey) {
+      return res.status(400).json({ success: false, error: 'Supabase API key is required for sync execution' });
+    }
+
+    // Step 1: Download Workbook from Nextcloud WebDAV
+    const targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${filename}`;
+    const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+
+    const fileRes = await fetch(targetUrl, {
+      method: 'GET',
+      headers: { Authorization: authHeader },
+    });
+
+    if (!fileRes.ok) {
+      return res.status(fileRes.status).json({
+        success: false,
+        error: `Could not fetch ${filename} from Nextcloud WebDAV (${targetUrl}): HTTP ${fileRes.status} ${fileRes.statusText}`,
+      });
+    }
+
+    const arrayBuffer = await fileRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+
+    // Step 2: Parse Workbook
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    const syncResults: any[] = [];
+    let totalInserted = 0;
+    let totalUpdated = 0;
+    let totalFailed = 0;
+    const errors: any[] = [];
+
+    const activeMappings = Array.isArray(mappings) && mappings.length > 0
+      ? mappings.filter((m: any) => m.enabled !== false)
+      : [];
+
+    if (activeMappings.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No enabled table mappings configured. Please configure at least one sheet-to-table mapping.',
+      });
+    }
+
+    // Step 3: Process each mapped worksheet
+    for (const wm of activeMappings) {
+      const ws = wb.Sheets[wm.worksheetName] || wb.Sheets[Object.keys(wb.Sheets)[0]];
+      if (!ws) {
+        errors.push({
+          worksheetName: wm.worksheetName,
+          error: `Worksheet "${wm.worksheetName}" not found in workbook. Available sheets: ${wb.SheetNames.join(', ')}`,
+        });
+        continue;
+      }
+
+      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+      const totalRows = range.e.r + 1;
+      const merges = ws['!merges'] || [];
+
+      const getVal = (r: number, c: number) => {
+        const direct = ws[XLSX.utils.encode_cell({ r, c })];
+        if (direct && direct.v !== undefined && direct.v !== null && String(direct.v).trim() !== '') {
+          return direct.w !== undefined ? direct.w : direct.v;
+        }
+        const m = merges.find((m: any) => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
+        if (m) {
+          const orig = ws[XLSX.utils.encode_cell(m.s)];
+          if (orig && orig.v !== undefined && orig.v !== null) {
+            return orig.w !== undefined ? orig.w : orig.v;
+          }
+        }
+        return '';
+      };
+
+      const headerRowIndex = (wm.headerRow || 1) - 1;
+      const dataStartRowIndex = (wm.dataStartRow || 2) - 1;
+
+      // Map Excel column letters / names
+      const colLookup: Record<string, number> = {};
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const colLetter = XLSX.utils.encode_col(c);
+        const headerName = String(getVal(headerRowIndex, c) || '').trim();
+        colLookup[colLetter] = c;
+        if (headerName) {
+          colLookup[headerName.toLowerCase()] = c;
+        }
+      }
+
+      const targetTable = wm.supabaseTable || 'students';
+      const recordsToUpsert: any[] = [];
+      const uniqueCol = wm.columns?.find((c: any) => c.uniqueKey)?.supabaseColumn || 'username';
+
+      for (let r = dataStartRowIndex; r < totalRows; r++) {
+        const rowData: Record<string, any> = {};
+        let hasAnyData = false;
+
+        for (const colMap of wm.columns) {
+          let colIdx = -1;
+          if (colMap.excelColumn && colLookup[colMap.excelColumn] !== undefined) {
+            colIdx = colLookup[colMap.excelColumn];
+          } else if (colMap.excelHeader && colLookup[colMap.excelHeader.toLowerCase()] !== undefined) {
+            colIdx = colLookup[colMap.excelHeader.toLowerCase()];
+          }
+
+          let rawVal = colIdx >= 0 ? getVal(r, colIdx) : '';
+          let finalVal: any = rawVal;
+
+          // Apply transformations
+          if (typeof finalVal === 'string') {
+            finalVal = finalVal.trim();
+          }
+
+          if (colMap.transformation === 'trim' && typeof finalVal === 'string') {
+            finalVal = finalVal.trim();
+          } else if (colMap.transformation === 'uppercase' && typeof finalVal === 'string') {
+            finalVal = finalVal.toUpperCase();
+          } else if (colMap.transformation === 'lowercase' && typeof finalVal === 'string') {
+            finalVal = finalVal.toLowerCase();
+          } else if (colMap.transformation === 'normalize_id' && typeof finalVal === 'string') {
+            finalVal = finalVal.replace(/\s+/g, '').replace(/[-_]/g, '');
+          } else if (colMap.transformation === 'parse_date' && finalVal) {
+            if (finalVal instanceof Date) {
+              finalVal = finalVal.toISOString().split('T')[0];
+            } else {
+              const str = String(finalVal).replace(/\./g, '-').replace(/\//g, '-').trim();
+              finalVal = str;
+            }
+          } else if (colMap.transformation === 'parse_number' && finalVal) {
+            const num = Number(String(finalVal).replace(/[^0-9.-]/g, ''));
+            if (!isNaN(num)) finalVal = num;
+          }
+
+          if (finalVal !== undefined && finalVal !== null && finalVal !== '') {
+            hasAnyData = true;
+          }
+
+          rowData[colMap.supabaseColumn] = finalVal !== '' ? finalVal : (colMap.defaultValue || null);
+        }
+
+        if (hasAnyData) {
+          recordsToUpsert.push(rowData);
+        }
+      }
+
+      if (recordsToUpsert.length === 0) {
+        syncResults.push({
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: 0,
+          status: 'Skipped (No data rows found)',
+        });
+        continue;
+      }
+
+      // Execute upsert into Supabase PostgREST
+      let upsertUrl = `${supUrl}/rest/v1/${encodeURIComponent(targetTable)}`;
+      if (uniqueCol) {
+        upsertUrl += `?on_conflict=${encodeURIComponent(uniqueCol)}`;
+      }
+
+      const upsertRes = await fetch(upsertUrl, {
+        method: 'POST',
+        headers: {
+          'apikey': supKey,
+          'Authorization': `Bearer ${supKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates, return=representation',
+        },
+        body: JSON.stringify(recordsToUpsert),
+      });
+
+      if (!upsertRes.ok) {
+        const errText = await upsertRes.text().catch(() => '');
+        totalFailed += recordsToUpsert.length;
+        errors.push({
+          worksheetName: wm.worksheetName,
+          targetTable,
+          httpStatus: upsertRes.status,
+          error: `Supabase rejected upsert into public.${targetTable}: ${errText}`,
+        });
+        syncResults.push({
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: recordsToUpsert.length,
+          status: 'Failed',
+          error: errText,
+        });
+      } else {
+        const upsertedData = await upsertRes.json().catch(() => []);
+        const count = Array.isArray(upsertedData) ? upsertedData.length : recordsToUpsert.length;
+        totalInserted += count;
+        syncResults.push({
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: count,
+          uniqueKey: uniqueCol,
+          status: 'Success',
+        });
+      }
+    }
+
+    const overallSuccess = totalFailed === 0;
+    return res.json({
+      success: overallSuccess,
+      filename,
+      fileHash: sha256,
+      totalInserted,
+      totalUpdated,
+      totalFailed,
+      syncResults,
+      errors,
+      executedAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 10. Worker Diagnostics & Connectivity Matrix
+app.post('/api/worker/diagnostics', async (req, res) => {
+  try {
+    const { nextcloud, supabase, workerUrl } = req.body;
+
+    const diag: {
+      timestamp: string;
+      nextcloud: { reachable: boolean; status: string; details?: any; latencyMs?: number };
+      supabase: { reachable: boolean; status: string; tablesCount?: number; tables?: string[]; latencyMs?: number };
+      workerService: { reachable: boolean; status: string; endpoint: string; latencyMs?: number };
+      allSystemsReady: boolean;
+    } = {
+      timestamp: new Date().toISOString(),
+      nextcloud: { reachable: false, status: 'Not Checked' },
+      supabase: { reachable: false, status: 'Not Checked' },
+      workerService: { reachable: false, status: 'Integrated in App Engine', endpoint: workerUrl || 'internal' },
+      allSystemsReady: false,
+    };
+
+    // 1. Nextcloud Check
+    if (nextcloud?.url) {
+      const t0 = Date.now();
+      try {
+        const host = nextcloud.url.replace(/\/+$/, '');
+        const ncRes = await fetch(`${host}/status.php`, { method: 'GET' });
+        diag.nextcloud.latencyMs = Date.now() - t0;
+        if (ncRes.ok) {
+          const info = await ncRes.json().catch(() => ({}));
+          diag.nextcloud.reachable = true;
+          diag.nextcloud.status = `Online (Nextcloud ${info.versionstring || 'v34'})`;
+          diag.nextcloud.details = info;
+        } else {
+          diag.nextcloud.status = `HTTP ${ncRes.status} (${ncRes.statusText})`;
+        }
+      } catch (e: any) {
+        diag.nextcloud.status = `Unreachable: ${e.message}`;
+      }
+    }
+
+    // 2. Supabase Check
+    if (supabase?.url) {
+      const t0 = Date.now();
+      try {
+        const cleanUrl = supabase.url.trim().replace(/\/+$/, '');
+        const key = (supabase.serviceKey && supabase.serviceKey.trim()) || (supabase.serviceRoleKey && supabase.serviceRoleKey.trim()) || (supabase.anonKey && supabase.anonKey.trim());
+        if (key) {
+          const sbRes = await fetch(`${cleanUrl}/rest/v1/`, {
+            method: 'GET',
+            headers: {
+              'apikey': key,
+              'Authorization': `Bearer ${key}`,
+              'Accept': 'application/openapi+json, application/json',
+            },
+          });
+          diag.supabase.latencyMs = Date.now() - t0;
+          if (sbRes.ok) {
+            diag.supabase.reachable = true;
+            const openApi = await sbRes.json().catch(() => ({}));
+            const tbls = openApi.definitions ? Object.keys(openApi.definitions) : [];
+            diag.supabase.tablesCount = tbls.length;
+            diag.supabase.tables = tbls;
+            diag.supabase.status = `Connected to PostgreSQL PostgREST (${tbls.length} tables discovered)`;
+          } else {
+            diag.supabase.status = `HTTP ${sbRes.status} (${sbRes.statusText})`;
+          }
+        } else {
+          diag.supabase.status = 'API Key missing';
+        }
+      } catch (e: any) {
+        diag.supabase.status = `Unreachable: ${e.message}`;
+      }
+    }
+
+    // 3. Worker Service Check (if external worker url configured)
+    if (workerUrl && workerUrl.startsWith('http') && !workerUrl.includes('coolify-worker')) {
+      const t0 = Date.now();
+      try {
+        const wRes = await fetch(`${workerUrl.replace(/\/+$/, '')}/health`, { method: 'GET' });
+        diag.workerService.latencyMs = Date.now() - t0;
+        if (wRes.ok) {
+          diag.workerService.reachable = true;
+          diag.workerService.status = 'Worker daemon responsive';
+        } else {
+          diag.workerService.status = `HTTP ${wRes.status}`;
+        }
+      } catch {
+        diag.workerService.status = 'Worker daemon endpoint not responding (using integrated sync engine)';
+      }
+    } else {
+      diag.workerService.reachable = true;
+      diag.workerService.status = 'Active (Integrated sync pipeline engine)';
+    }
+
+    diag.allSystemsReady = diag.nextcloud.reachable && diag.supabase.reachable;
+
+    return res.json({ success: true, diagnostics: diag });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }

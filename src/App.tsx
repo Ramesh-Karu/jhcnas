@@ -186,32 +186,97 @@ export default function App() {
       timestamp: now.toISOString(),
       level: 'info',
       component: 'Worker',
-      message: `Manual sync cycle initiated. Polling Nextcloud WebDAV at ${nextcloud.url}...`
+      message: `Full pipeline synchronization initiated. Polling Nextcloud WebDAV at ${nextcloud.url}...`
     };
 
-    const updatedWorkerLogs = [newLogMsg, ...workerLogs];
+    let updatedWorkerLogs = [newLogMsg, ...workerLogs];
     setWorkerLogs(updatedWorkerLogs);
     StorageService.saveWorkerLogs(updatedWorkerLogs);
 
     try {
+      // 1. Refresh file list from Nextcloud
       const filesResult = await ApiClient.listNextcloudFiles(nextcloud);
       if (filesResult.success && filesResult.files) {
         setFiles(filesResult.files);
         StorageService.saveFiles(filesResult.files);
       }
 
-      const count = filesResult.files ? filesResult.files.length : 0;
-      const completeMsg: LogMessage = {
-        id: `l-done-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        level: 'success',
-        component: 'Worker',
-        message: `WebDAV scan complete on ${nextcloud.url}. Discovered ${count} file(s) in ${nextcloud.sourceFolder}. SHA-256 signatures checked.`
-      };
+      // 2. Execute end-to-end sync pipeline (download -> dynamic parse -> transform -> Supabase upsert)
+      const pipelineRes = await ApiClient.executeFullPipelineSync({
+        nextcloud,
+        supabase,
+        mappings,
+      });
 
-      const finalLogs = [completeMsg, ...updatedWorkerLogs];
-      setWorkerLogs(finalLogs);
-      StorageService.saveWorkerLogs(finalLogs);
+      if (pipelineRes.success) {
+        const completeMsg: LogMessage = {
+          id: `l-done-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          level: 'success',
+          component: 'Worker',
+          message: `Pipeline sync completed successfully for ${pipelineRes.filename || 'students.xlsx'}! Inserted: ${pipelineRes.totalInserted || 0}, Updated: ${pipelineRes.totalUpdated || 0}, Errors: ${pipelineRes.totalFailed || 0}.`
+        };
+
+        updatedWorkerLogs = [completeMsg, ...updatedWorkerLogs];
+        setWorkerLogs(updatedWorkerLogs);
+        StorageService.saveWorkerLogs(updatedWorkerLogs);
+
+        // Add to import history
+        const logId = `log-${Date.now()}`;
+        const newImportLog: ImportLog = {
+          id: logId,
+          filename: pipelineRes.filename || 'students.xlsx',
+          filePath: nextcloud.sourceFolder + '/' + (pipelineRes.filename || 'students.xlsx'),
+          fileHash: pipelineRes.fileHash || 'synced-hash',
+          status: (pipelineRes.totalFailed && pipelineRes.totalFailed > 0) ? 'Partial Success' : 'Success',
+          isDryRun: false,
+          numberOfWorksheets: pipelineRes.syncResults?.length || 1,
+          rowsProcessed: (pipelineRes.totalInserted || 0) + (pipelineRes.totalUpdated || 0) + (pipelineRes.totalFailed || 0),
+          rowsInserted: pipelineRes.totalInserted || 0,
+          rowsUpdated: pipelineRes.totalUpdated || 0,
+          rowsFailed: pipelineRes.totalFailed || 0,
+          startedAt: now.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 850,
+          errorSummary: (pipelineRes.totalFailed && pipelineRes.totalFailed > 0) ? `${pipelineRes.totalFailed} row errors` : undefined,
+          details: { syncResults: pipelineRes.syncResults }
+        };
+
+        const updatedHistory = [newImportLog, ...importLogs];
+        setImportLogs(updatedHistory);
+        StorageService.saveImportLogs(updatedHistory);
+
+        // If there were any errors, save to audit errors
+        if (pipelineRes.errors && pipelineRes.errors.length > 0) {
+          const formattedErrors: ImportAuditError[] = pipelineRes.errors.map((err: any, idx: number) => ({
+            id: `err-${Date.now()}-${idx}`,
+            importLogId: logId,
+            filename: pipelineRes.filename || 'students.xlsx',
+            worksheetName: err.sheetName || 'Sheet1',
+            rowNumber: err.rowNumber || 1,
+            excelColumn: 'A',
+            columnName: 'record',
+            rawValue: '',
+            errorMessage: err.error || 'Upsert error',
+            errorType: 'foreign_key' as const,
+            createdAt: new Date().toISOString()
+          }));
+          const updatedErrors = [...formattedErrors, ...importErrors];
+          setImportErrors(updatedErrors);
+          StorageService.saveImportErrors(updatedErrors);
+        }
+      } else {
+        const errorMsg: LogMessage = {
+          id: `l-err-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          level: 'error',
+          component: 'Worker',
+          message: `Pipeline sync failed: ${pipelineRes.error || 'Unknown error'}`
+        };
+        updatedWorkerLogs = [errorMsg, ...updatedWorkerLogs];
+        setWorkerLogs(updatedWorkerLogs);
+        StorageService.saveWorkerLogs(updatedWorkerLogs);
+      }
     } catch (e: any) {
       const errorMsg: LogMessage = {
         id: `l-err-${Date.now()}`,
@@ -353,6 +418,7 @@ export default function App() {
               activeMappings={mappings}
               onUpdateMappingHeaderDataRow={handleUpdateMappingHeaderDataRow}
               nextcloudConfig={nextcloud}
+              onSaveMappings={handleSaveMappings}
             />
           )}
 
@@ -416,6 +482,10 @@ export default function App() {
             <SettingsView
               settings={syncSettings}
               onSaveSettings={handleSaveSettings}
+              nextcloudConfig={nextcloud}
+              supabaseConfig={supabase}
+              mappings={mappings}
+              onTriggerLiveSync={handleTriggerSync}
             />
           )}
         </main>

@@ -466,13 +466,34 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
           <div>
-            <label className="block text-slate-600 mb-1 font-semibold uppercase tracking-wider">Target Supabase Table</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-slate-700 font-bold uppercase tracking-wider">Target Supabase Table</label>
+              <span className="text-[10px] text-emerald-600 font-medium">PostgreSQL</span>
+            </div>
             <input
               type="text"
               value={activeMapping.supabaseTable}
-              onChange={(e) => handleUpdateActiveMapping({ supabaseTable: e.target.value })}
-              className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+              onChange={(e) => handleUpdateActiveMapping({ supabaseTable: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') })}
+              placeholder="e.g. students"
+              className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono text-slate-800 font-semibold focus:ring-2 focus:ring-emerald-500 focus:outline-none"
             />
+            <div className="flex items-center space-x-1.5 mt-1.5">
+              <span className="text-[10px] text-slate-400">Route to:</span>
+              {['students', 'attendance', 'grades', 'users'].map((tbl) => (
+                <button
+                  key={tbl}
+                  type="button"
+                  onClick={() => handleUpdateActiveMapping({ supabaseTable: tbl })}
+                  className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                    activeMapping.supabaseTable === tbl
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold'
+                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  {tbl}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div>
@@ -484,6 +505,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               onChange={(e) => handleUpdateActiveMapping({ headerRow: Number(e.target.value) })}
               className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
             />
+            <p className="text-[10px] text-slate-400 mt-1">Excel row containing column headers</p>
           </div>
 
           <div>
@@ -495,6 +517,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               onChange={(e) => handleUpdateActiveMapping({ dataStartRow: Number(e.target.value) })}
               className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
             />
+            <p className="text-[10px] text-slate-400 mt-1">First row containing student/record data</p>
           </div>
 
           <div>
@@ -508,6 +531,89 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               onChange={(e) => handleUpdateActiveMapping({ sectionHeadingTargetCol: e.target.value || undefined })}
               className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
             />
+            <p className="text-[10px] text-slate-400 mt-1">Target column for merged banner labels</p>
+          </div>
+        </div>
+
+        {/* Quick Schema & Column Auto-Mapper Tools */}
+        <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center space-x-2 text-xs text-slate-700">
+            <span className="font-semibold text-slate-900">Auto-Mapping Helpers:</span>
+            <span className="text-slate-500">Quickly align columns with your actual Excel headers</span>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {currentAnalysis && (
+              <button
+                type="button"
+                onClick={() => {
+                  const ws = currentAnalysis.worksheets.find(w => w.sheetName.toLowerCase() === activeMapping.worksheetName.toLowerCase()) || currentAnalysis.worksheets[0];
+                  if (!ws || !ws.headers.length) {
+                    setSaveMessage('No headers found in current analysis for this sheet.');
+                    return;
+                  }
+
+                  const newCols: ColumnMapping[] = ws.headers.map((h, idx) => {
+                    const cleanName = h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || `col_${h.colLetter.toLowerCase()}`;
+                    const isId = idx === 0 || cleanName.includes('username') || cleanName.includes('id') || cleanName.includes('number') || cleanName.includes('index');
+                    const isDate = cleanName.includes('dob') || cleanName.includes('date');
+                    const isNumber = cleanName.includes('class') || cleanName.includes('score') || cleanName.includes('total') || cleanName.includes('mark');
+
+                    let trans: TransformationType = 'trim';
+                    if (isDate) trans = 'parse_date';
+                    else if (isNumber) trans = 'parse_number';
+                    else if (cleanName.includes('id') || cleanName.includes('index')) trans = 'normalize_id';
+
+                    return {
+                      id: `cm-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
+                      excelColumn: h.colLetter,
+                      excelHeader: h.name,
+                      supabaseColumn: cleanName,
+                      dataType: isDate ? 'date' : isNumber ? 'integer' : 'text',
+                      required: isId,
+                      uniqueKey: idx === 0 || cleanName === 'username' || cleanName === 'indexnumber',
+                      transformation: trans,
+                    };
+                  });
+
+                  handleUpdateActiveMapping({ columns: newCols });
+                  setSaveMessage(`Extracted and mapped ${newCols.length} columns directly from sheet '${ws.sheetName}'!`);
+                  setTimeout(() => setSaveMessage(null), 3500);
+                }}
+                className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-md bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs font-medium shadow-2xs transition-colors"
+                title="Populate columns using detected headers from analyzed Excel sheet"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Auto-Map from Analyzed Sheet ({currentAnalysis.filename})</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                const studentPresetCols: ColumnMapping[] = [
+                  { id: `cm-${Date.now()}-1`, excelColumn: 'A', excelHeader: 'username', supabaseColumn: 'username', dataType: 'text', required: true, uniqueKey: true, transformation: 'normalize_id' },
+                  { id: `cm-${Date.now()}-2`, excelColumn: 'B', excelHeader: 'fullName', supabaseColumn: 'full_name', dataType: 'text', required: true, uniqueKey: false, transformation: 'trim' },
+                  { id: `cm-${Date.now()}-3`, excelColumn: 'C', excelHeader: 'email', supabaseColumn: 'email', dataType: 'text', required: false, uniqueKey: false, transformation: 'trim' },
+                  { id: `cm-${Date.now()}-4`, excelColumn: 'D', excelHeader: 'indexNumber', supabaseColumn: 'index_number', dataType: 'text', required: false, uniqueKey: false, transformation: 'normalize_id' },
+                  { id: `cm-${Date.now()}-5`, excelColumn: 'E', excelHeader: 'dob', supabaseColumn: 'dob', dataType: 'date', required: false, uniqueKey: false, transformation: 'parse_date' },
+                  { id: `cm-${Date.now()}-6`, excelColumn: 'F', excelHeader: 'class', supabaseColumn: 'class', dataType: 'integer', required: false, uniqueKey: false, transformation: 'parse_number' },
+                  { id: `cm-${Date.now()}-7`, excelColumn: 'G', excelHeader: 'division', supabaseColumn: 'division', dataType: 'text', required: false, uniqueKey: false, transformation: 'trim' },
+                  { id: `cm-${Date.now()}-8`, excelColumn: 'H', excelHeader: 'password', supabaseColumn: 'password', dataType: 'text', required: false, uniqueKey: false, transformation: 'trim' },
+                ];
+                handleUpdateActiveMapping({
+                  supabaseTable: 'students',
+                  columns: studentPresetCols,
+                });
+                setSaveMessage('Applied Standard Student Roster Schema (8 columns with username as unique key).');
+                setTimeout(() => setSaveMessage(null), 3500);
+              }}
+              className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-medium shadow-2xs transition-colors"
+              title="Apply username, fullName, indexNumber, dob, class, division, password, email schema"
+            >
+              <Table className="w-3.5 h-3.5 text-blue-600" />
+              <span>Apply Student Roster Preset</span>
+            </button>
           </div>
         </div>
 
