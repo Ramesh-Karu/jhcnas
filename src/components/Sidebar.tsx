@@ -1,6 +1,7 @@
 import React from 'react';
 import { 
   LayoutDashboard, 
+  Activity,
   Cloud, 
   Database, 
   FileSpreadsheet, 
@@ -44,6 +45,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const navItems = [
     { id: 'dashboard' as NavigationTab, label: 'Dashboard', icon: LayoutDashboard },
+    { 
+      id: 'worker' as NavigationTab, 
+      label: 'Worker & Live Sync', 
+      icon: Activity,
+      badge: 'LIVE',
+      badgeColor: 'bg-emerald-500 text-white font-bold'
+    },
     { id: 'nextcloud' as NavigationTab, label: 'Nextcloud WebDAV', icon: Cloud },
     { id: 'supabase' as NavigationTab, label: 'Supabase PostgreSQL', icon: Database },
     { 

@@ -73,7 +73,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             Automated Nextcloud WebDAV document reader, merged-cell transformer, and Supabase PostgreSQL synchronizer.
           </p>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            id="btn-quick-worker"
+            onClick={() => onNavigate('worker')}
+            className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg font-bold text-sm text-white bg-slate-900 hover:bg-slate-800 shadow-2xs transition-colors"
+          >
+            <Activity className="w-4 h-4 text-emerald-400" />
+            <span>Worker Dashboard</span>
+          </button>
           <button
             id="btn-quick-sync"
             onClick={onTriggerSync}

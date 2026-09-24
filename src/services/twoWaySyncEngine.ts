@@ -234,9 +234,11 @@ export class TwoWaySyncEngine {
               supabaseFullRecord: dbRec
             });
           } else {
-            // Differences exist! Evaluate based on TableSyncPolicy
+            // Differences exist! Evaluate based on TableSyncPolicy and actual baseline or timestamps
             const excelChanged = baseline ? (excelHash !== baseline.excelHash) : true;
-            const dbChanged = baseline ? (dbHash !== baseline.supabaseHash) : (pkVal === 'STU-1002' || pkVal === 'STU-1005' || pkVal === 'STU-1009');
+            const dbChanged = baseline 
+              ? (dbHash !== baseline.supabaseHash) 
+              : Boolean(dbRec.updated_at && dbRec.created_at && dbRec.updated_at !== dbRec.created_at);
 
             if (tablePolicy === 'EXCEL_TO_DB') {
               // Nextcloud Excel is the Master Source of Truth for this table

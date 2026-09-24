@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   ArrowLeftRight, 
   RefreshCw, 
@@ -20,7 +20,17 @@ import {
   ShieldCheck,
   Split,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Activity,
+  Play,
+  CheckCircle,
+  XCircle,
+  Timer,
+  Terminal,
+  FileCode,
+  Download,
+  ExternalLink,
+  Eye
 } from 'lucide-react';
 import { 
   WorkbookAnalysis, 
@@ -31,9 +41,11 @@ import {
   NextcloudConfig,
   SupabaseConfig,
   NavigationTab,
-  TwoWaySyncSettings
+  TwoWaySyncSettings,
+  LiveSchedulerStatus,
+  AutomatedRunDiagnosticResult,
+  AutomatedRunStage
 } from '../types';
-import { createComplexSampleWorkbook } from '../services/sampleWorkbook';
 import { TwoWaySyncEngine } from '../services/twoWaySyncEngine';
 import { StorageService } from '../services/storage';
 import { ApiClient } from '../services/apiClient';
@@ -49,6 +61,9 @@ interface TwoWaySyncViewProps {
   onNavigate: (tab: NavigationTab) => void;
   conflicts: SyncConflictRecord[];
   onUpdateConflicts: (conflicts: SyncConflictRecord[]) => void;
+  schedulerStatus?: LiveSchedulerStatus;
+  onRefreshScheduler?: () => void;
+  onUpdateAnalysis?: (analysis: WorkbookAnalysis) => void;
 }
 
 export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
@@ -58,18 +73,64 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
   nextcloudConfig,
   supabaseConfig,
   onUpdateDatabase,
+  onNavigate,
   conflicts,
-  onUpdateConflicts
+  onUpdateConflicts,
+  schedulerStatus,
+  onRefreshScheduler,
+  onUpdateAnalysis
 }) => {
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [isAutoSyncing, setIsAutoSyncing] = useState<boolean>(false);
   const [isPushingToExcel, setIsPushingToExcel] = useState<boolean>(false);
+  const [isTestingAutomatedRun, setIsTestingAutomatedRun] = useState<boolean>(false);
+  const [diagnosticResult, setDiagnosticResult] = useState<AutomatedRunDiagnosticResult | null>(null);
+  const [copiedDiagnostic, setCopiedDiagnostic] = useState<boolean>(false);
+  const [expandedStageIndex, setExpandedStageIndex] = useState<number | null>(null);
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [filterState, setFilterState] = useState<'ALL' | 'CONFLICT' | 'AUTO_PUSH_TO_DB' | 'AUTO_PUSH_TO_EXCEL' | 'POLICY_BLOCKED' | 'IN_SYNC' | 'RESOLVED'>('CONFLICT');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [activeInfoTab, setActiveInfoTab] = useState<'hub' | 'operational_guide' | 'secrets_guide'>('hub');
+  const [activeInfoTab, setActiveInfoTab] = useState<'hub' | 'automated_test' | 'operational_guide' | 'secrets_guide'>('hub');
   const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
   const [copiedSql, setCopiedSql] = useState<boolean>(false);
+
+  // Live countdown timer for the background automated scheduler
+  useEffect(() => {
+    if (!schedulerStatus?.nextRunAt || !schedulerStatus.enabled) {
+      setCountdownSeconds(null);
+      return;
+    }
+
+    const calculateRemaining = () => {
+      const targetTime = new Date(schedulerStatus.nextRunAt!).getTime();
+      const now = Date.now();
+      const remainingSec = Math.max(0, Math.floor((targetTime - now) / 1000));
+      setCountdownSeconds(remainingSec);
+    };
+
+    calculateRemaining();
+    const interval = setInterval(calculateRemaining, 1000);
+    return () => clearInterval(interval);
+  }, [schedulerStatus?.nextRunAt, schedulerStatus?.enabled]);
+
+  // Decode live workbook from currentAnalysis base64Data
+  const getLiveWorkbook = (): { workbook: XLSX.WorkBook; filename: string } | null => {
+    if (currentAnalysis?.base64Data) {
+      try {
+        const binStr = atob(currentAnalysis.base64Data);
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) {
+          bytes[i] = binStr.charCodeAt(i);
+        }
+        const wb = XLSX.read(bytes, { type: 'array', cellDates: true });
+        return { workbook: wb, filename: currentAnalysis.filename || 'workbook.xlsx' };
+      } catch (e) {
+        console.warn('Failed to parse currentAnalysis base64Data:', e);
+      }
+    }
+    return null;
+  };
 
   // Settings
   const [syncSettings, setSyncSettings] = useState<TwoWaySyncSettings>(() => StorageService.getTwoWaySyncSettings());
@@ -104,28 +165,83 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
     };
   });
 
-  // Run change detection with Sync Baseline awareness
+  // Run change detection with live data from Supabase and Excel workbook
   const handleDetectChanges = async () => {
     setIsDetecting(true);
     setNotice(null);
 
     try {
-      const sample = createComplexSampleWorkbook();
-      const filename = currentAnalysis?.filename || 'students_complex.xlsx';
+      // 1. Fetch live rows from Supabase for all mapped tables
+      const uniqueTables = Array.from(new Set(mappings.map(m => m.supabaseTable).filter(Boolean)));
+      const liveDbState: Record<string, any[]> = { ...databaseState };
+
+      if (supabaseConfig?.url && (supabaseConfig.anonKey || supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey)) {
+        await Promise.allSettled(
+          uniqueTables.map(async (tbl) => {
+            try {
+              const res = await ApiClient.fetchSupabaseTableRows(supabaseConfig, tbl, 500);
+              if (res.success && Array.isArray(res.rows)) {
+                liveDbState[tbl] = res.rows;
+                onUpdateDatabase(tbl, res.rows);
+              }
+            } catch (tblErr) {
+              console.warn(`Could not refresh rows for table ${tbl}:`, tblErr);
+            }
+          })
+        );
+      }
+
+      // 2. Identify active workbook
+      let liveWb = getLiveWorkbook();
+      let activeFilename = currentAnalysis?.filename || 'workbook.xlsx';
+
+      // If no workbook in memory, try to download from Nextcloud WebDAV if connected
+      if (!liveWb && nextcloudConfig?.url && nextcloudConfig?.username && nextcloudConfig?.appPassword) {
+        try {
+          const filesRes = await ApiClient.listNextcloudFiles(nextcloudConfig);
+          const excelFile = filesRes.files?.find((f: any) => f.filename.endsWith('.xlsx') || f.filename.endsWith('.xls'));
+          if (excelFile) {
+            const dlRes = await ApiClient.fetchAndParseWorkbook(nextcloudConfig, undefined, excelFile.filename);
+            if (dlRes.success && dlRes.base64Data) {
+              const binStr = atob(dlRes.base64Data);
+              const bytes = new Uint8Array(binStr.length);
+              for (let i = 0; i < binStr.length; i++) {
+                bytes[i] = binStr.charCodeAt(i);
+              }
+              const wb = XLSX.read(bytes, { type: 'array', cellDates: true });
+              liveWb = { workbook: wb, filename: excelFile.filename };
+              activeFilename = excelFile.filename;
+              if (onUpdateAnalysis && dlRes.analysis) {
+                onUpdateAnalysis(dlRes.analysis);
+              }
+            }
+          }
+        } catch (ncErr) {
+          console.warn('Could not auto-fetch Nextcloud file:', ncErr);
+        }
+      }
+
+      if (!liveWb) {
+        setNotice({
+          type: 'error',
+          message: 'No Excel spreadsheet is currently loaded. Please upload a file in the Excel Files tab or select one from Nextcloud WebDAV to detect live diffs.'
+        });
+        return;
+      }
+
       const baselines = StorageService.getSyncBaselines();
 
-      // Execute detection algorithm using baselines and per-table sync policies
+      // Execute detection algorithm using baselines and live data
       const result: TwoWaySyncResult = TwoWaySyncEngine.detectTwoWayDiffs(
-        sample.workbook,
-        filename,
+        liveWb.workbook,
+        activeFilename,
         mappings,
-        databaseState,
+        liveDbState,
         baselines
       );
 
-      await new Promise(r => setTimeout(r, 450));
-
       onUpdateConflicts(result.records);
+      StorageService.saveConflicts(result.records);
       setSyncSummary({
         lastChecked: new Date().toLocaleTimeString(),
         totalCompared: result.totalRecordsCompared,
@@ -139,33 +255,41 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
       if (result.conflictCount > 0) {
         setNotice({
           type: 'info',
-          message: `Scan complete: ${result.conflictCount} concurrent collision(s) need human approval. ${result.autoPushToDbCount} Nextcloud edit(s) and ${result.autoPushToExcelCount} Supabase edit(s) can auto-sync with 0 clicks. ${result.policyBlockedCount} change(s) protected by table authority policy.`
+          message: `Scan complete on live data: ${result.conflictCount} collision(s) need human approval. ${result.autoPushToDbCount} Nextcloud edit(s) and ${result.autoPushToExcelCount} Supabase edit(s) ready to auto-sync with 0 clicks.`
         });
         setFilterState('CONFLICT');
       } else {
         setNotice({
           type: 'success',
-          message: `Scan complete: Zero concurrent collisions! ${result.autoPushToDbCount} Nextcloud change(s) and ${result.autoPushToExcelCount} Supabase change(s) ready for automatic bi-directional sync (${result.policyBlockedCount} protected by table policy).`
+          message: `Scan complete on live data: Zero concurrent collisions! ${result.autoPushToDbCount} Nextcloud change(s) and ${result.autoPushToExcelCount} Supabase change(s) ready for automatic bi-directional sync.`
         });
       }
     } catch (err: any) {
       setNotice({
         type: 'error',
-        message: `Error detecting changes: ${err.message}`
+        message: `Error detecting live changes: ${err.message}`
       });
     } finally {
       setIsDetecting(false);
     }
   };
 
-  // Run Automatic Bi-Directional Sync (0-click execution of all unilateral changes)
+  // Run Automatic Bi-Directional Sync (0-click execution of all unilateral changes on live data)
   const handleRunAutoSync = async () => {
     setIsAutoSyncing(true);
     setNotice(null);
 
     try {
-      const sample = createComplexSampleWorkbook();
-      const wb = sample.workbook;
+      const liveWb = getLiveWorkbook();
+      if (!liveWb) {
+        setNotice({
+          type: 'error',
+          message: 'No active Excel spreadsheet loaded. Please upload or select a file to perform two-way synchronization.'
+        });
+        return;
+      }
+
+      const wb = liveWb.workbook;
       const baselines = StorageService.getSyncBaselines();
 
       const {
@@ -183,36 +307,59 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
         baselines
       );
 
-      // 1. Update database state
-      for (const tbl of Object.keys(updatedDatabaseState)) {
-        onUpdateDatabase(tbl, updatedDatabaseState[tbl]);
+      // 1. Actually persist changes to Supabase for any records synced to DB
+      const recordsPushedToDb = conflicts.filter(c => c.state === 'AUTO_PUSH_TO_DB' || c.state === 'EXCEL_ONLY');
+      if (recordsPushedToDb.length > 0 && supabaseConfig?.url) {
+        const byTable = new Map<string, any[]>();
+        for (const rec of recordsPushedToDb) {
+          const list = byTable.get(rec.tableName) || [];
+          list.push(rec.excelFullRecord);
+          byTable.set(rec.tableName, list);
+        }
+        for (const [tbl, rows] of byTable.entries()) {
+          const pkCol = mappings.find(m => m.supabaseTable === tbl)?.columns.find(c => c.uniqueKey)?.supabaseColumn;
+          await ApiClient.upsertSupabaseRecords(supabaseConfig, tbl, rows, pkCol);
+          onUpdateDatabase(tbl, updatedDatabaseState[tbl] || []);
+        }
+      } else {
+        for (const tbl of Object.keys(updatedDatabaseState)) {
+          onUpdateDatabase(tbl, updatedDatabaseState[tbl]);
+        }
       }
 
       // 2. Save updated baselines
       StorageService.saveSyncBaselines(updatedBaselines);
 
-      // 3. Upload updated workbook back to Nextcloud WebDAV if changes were made
+      // 3. Update active workbook in memory and upload to Nextcloud WebDAV if connected
       let uploadStatus = '';
       if (updatedWorkbook && syncedToExcelCount > 0) {
-        try {
-          const base64Out = XLSX.write(updatedWorkbook, { type: 'base64', bookType: 'xlsx' });
-          const filename = currentAnalysis?.filename || 'students_complex.xlsx';
-          const uploadRes = await ApiClient.uploadExcelFile(
-            nextcloudConfig,
-            filename,
-            base64Out,
-            nextcloudConfig.sourceFolder
-          );
-          if (uploadRes.success) {
-            uploadStatus = ' (and uploaded directly to Nextcloud WebDAV)';
+        const base64Out = XLSX.write(updatedWorkbook, { type: 'base64', bookType: 'xlsx' });
+        if (currentAnalysis && onUpdateAnalysis) {
+          onUpdateAnalysis({
+            ...currentAnalysis,
+            base64Data: base64Out,
+          });
+        }
+        if (nextcloudConfig?.url && nextcloudConfig?.username && nextcloudConfig?.appPassword) {
+          try {
+            const uploadRes = await ApiClient.uploadExcelFile(
+              nextcloudConfig,
+              liveWb.filename,
+              base64Out,
+              nextcloudConfig.sourceFolder || '/ExcelImports'
+            );
+            if (uploadRes.success) {
+              uploadStatus = ' (and uploaded directly to Nextcloud WebDAV)';
+            }
+          } catch (upErr: any) {
+            console.warn('Nextcloud WebDAV upload notice:', upErr);
           }
-        } catch (upErr: any) {
-          console.warn('Nextcloud WebDAV upload notice:', upErr);
         }
       }
 
       // 4. Update conflicts list
       onUpdateConflicts(remainingConflicts);
+      StorageService.saveConflicts(remainingConflicts);
 
       // 5. Update summary
       setSyncSummary(prev => ({
@@ -225,7 +372,7 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
 
       setNotice({
         type: 'success',
-        message: `Automatic Bi-directional Sync complete! Pushed ${syncedToDbCount} change(s) into Supabase DB and ${syncedToExcelCount} change(s) back into Nextcloud Excel${uploadStatus}. ${remainingConflicts.length} concurrent collision(s) require manual decision.`
+        message: `Automatic Bi-directional Sync complete! Pushed ${syncedToDbCount} change(s) into Supabase DB and ${syncedToExcelCount} change(s) back into Excel${uploadStatus}. ${remainingConflicts.length} concurrent collision(s) require manual decision.`
       });
 
       if (remainingConflicts.length > 0) {
@@ -243,15 +390,22 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
     }
   };
 
-  // Push all Supabase rows to Nextcloud Excel explicitly
+  // Push all Supabase rows to Nextcloud Excel explicitly using live data
   const handlePushDatabaseToNextcloud = async () => {
     setIsPushingToExcel(true);
     setNotice(null);
 
     try {
-      const sample = createComplexSampleWorkbook();
-      const wb = sample.workbook;
+      const liveWb = getLiveWorkbook();
+      if (!liveWb) {
+        setNotice({
+          type: 'error',
+          message: 'No Excel spreadsheet is currently loaded. Please upload or select a spreadsheet first.'
+        });
+        return;
+      }
 
+      const wb = liveWb.workbook;
       let totalUpdated = 0;
       let totalAppended = 0;
 
@@ -272,26 +426,34 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
       }
 
       const base64Out = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-      const filename = currentAnalysis?.filename || 'students_complex.xlsx';
+      const filename = liveWb.filename || currentAnalysis?.filename || 'workbook.xlsx';
 
-      const uploadRes = await ApiClient.uploadExcelFile(
-        nextcloudConfig,
-        filename,
-        base64Out,
-        nextcloudConfig.sourceFolder
-      );
-
-      if (uploadRes.success) {
-        setNotice({
-          type: 'success',
-          message: `Reverse-Sync successful! Uploaded updated ${filename} to Nextcloud WebDAV (${totalUpdated} cells updated, ${totalAppended} rows appended).`
-        });
-      } else {
-        setNotice({
-          type: 'info',
-          message: `Workbook prepared in memory (${totalUpdated} updated). Nextcloud upload notice: ${uploadRes.error || 'Check WebDAV credentials'}`
+      if (currentAnalysis && onUpdateAnalysis) {
+        onUpdateAnalysis({
+          ...currentAnalysis,
+          base64Data: base64Out,
         });
       }
+
+      let nextcloudMessage = '';
+      if (nextcloudConfig?.url && nextcloudConfig?.username && nextcloudConfig?.appPassword) {
+        const uploadRes = await ApiClient.uploadExcelFile(
+          nextcloudConfig,
+          filename,
+          base64Out,
+          nextcloudConfig.sourceFolder || '/ExcelImports'
+        );
+        if (uploadRes.success) {
+          nextcloudMessage = ' and uploaded to Nextcloud WebDAV';
+        } else {
+          nextcloudMessage = ` (WebDAV notice: ${uploadRes.error || 'Check credentials'})`;
+        }
+      }
+
+      setNotice({
+        type: 'success',
+        message: `Reverse-Sync successful! Updated ${filename} in memory${nextcloudMessage} (${totalUpdated} cells updated, ${totalAppended} rows appended).`
+      });
     } catch (err: any) {
       setNotice({
         type: 'error',
@@ -300,6 +462,69 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
     } finally {
       setIsPushingToExcel(false);
     }
+  };
+
+  // Run live automated diagnostic test
+  const handleRunAutomatedTest = async () => {
+    setIsTestingAutomatedRun(true);
+    setNotice(null);
+    try {
+      const result = await ApiClient.testAutomatedRun({
+        nextcloud: nextcloudConfig,
+        supabase: supabaseConfig,
+        mappings,
+        base64Workbook: currentAnalysis?.base64Data,
+        filename: currentAnalysis?.filename,
+      });
+      setDiagnosticResult(result);
+      setActiveInfoTab('automated_test');
+      if (onRefreshScheduler) {
+        onRefreshScheduler();
+      }
+      if (result.verdict === 'PASSED') {
+        setNotice({
+          type: 'success',
+          message: `Automated run test PASSED! Verified all 5 stages in ${result.totalDurationMs}ms (${result.summary.rowsInserted} rows synced, ${result.summary.verificationRowCount} rows verified in Supabase).`
+        });
+      } else if (result.verdict === 'WARNING') {
+        setNotice({
+          type: 'info',
+          message: `Automated run completed with warnings in ${result.totalDurationMs}ms. Review the diagnostic breakdown below.`
+        });
+      } else {
+        const failedStage = result.stages.find(s => s.status === 'FAILED');
+        setNotice({
+          type: 'error',
+          message: `Automated run failed: ${failedStage?.message || 'Pipeline error detected'}`
+        });
+      }
+    } catch (err: any) {
+      setNotice({
+        type: 'error',
+        message: `Automated test runner failed: ${err.message}`
+      });
+    } finally {
+      setIsTestingAutomatedRun(false);
+    }
+  };
+
+  // Download active Excel file locally
+  const handleDownloadCurrentWorkbook = () => {
+    const liveWb = getLiveWorkbook();
+    if (!liveWb) {
+      setNotice({ type: 'error', message: 'No active Excel spreadsheet available to download.' });
+      return;
+    }
+    const wbOut = XLSX.write(liveWb.workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = liveWb.filename.endsWith('.xlsx') ? liveWb.filename : `${liveWb.filename}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Resolve a single collision
@@ -311,6 +536,13 @@ export const TwoWaySyncView: React.FC<TwoWaySyncViewProps> = ({
       const updatedDb = TwoWaySyncEngine.applyResolutionToDatabase(target, choice, databaseState);
       for (const tbl of Object.keys(updatedDb)) {
         onUpdateDatabase(tbl, updatedDb[tbl]);
+      }
+      if (supabaseConfig?.url) {
+        const pkCol = mappings.find(m => m.supabaseTable === target.tableName)?.columns.find(c => c.uniqueKey)?.supabaseColumn;
+        const chosenRec = choice === 'excel' ? target.excelFullRecord : { ...target.supabaseFullRecord, ...target.excelFullRecord };
+        ApiClient.upsertSupabaseRecords(supabaseConfig, target.tableName, [chosenRec], pkCol).catch(e => {
+          console.warn('Upsert single resolution to Supabase notice:', e);
+        });
       }
     }
 
@@ -556,6 +788,21 @@ END $$;`;
               Conflict Hub
             </button>
             <button
+              id="tab-toggle-automated-test"
+              onClick={() => setActiveInfoTab('automated_test')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center space-x-1.5 ${
+                activeInfoTab === 'automated_test' 
+                  ? 'bg-indigo-700 text-white' 
+                  : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>Test Automated Run</span>
+              {schedulerStatus?.enabled && (
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-1" title="Scheduler Active" />
+              )}
+            </button>
+            <button
               id="tab-toggle-operational"
               onClick={() => setActiveInfoTab('operational_guide')}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center space-x-1.5 ${
@@ -578,6 +825,60 @@ END $$;`;
             >
               <Server className="w-3.5 h-3.5" />
               <span>Server Secrets & SQL</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Live Automated Background Scheduler Status Bar */}
+        <div className="mt-5 p-3.5 rounded-xl bg-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center space-x-3">
+            <div className={`p-2 rounded-lg ${
+              schedulerStatus?.enabled 
+                ? 'bg-emerald-500/20 text-emerald-400' 
+                : 'bg-slate-800 text-slate-400'
+            }`}>
+              <Activity className={`w-5 h-5 ${schedulerStatus?.state === 'SYNCING' ? 'animate-spin text-amber-400' : ''}`} />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-300">Automated Background Engine:</span>
+                <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                  schedulerStatus?.state === 'SYNCING'
+                    ? 'bg-amber-500/20 text-amber-300'
+                    : schedulerStatus?.enabled
+                    ? 'bg-emerald-500/20 text-emerald-300'
+                    : 'bg-slate-800 text-slate-400'
+                }`}>
+                  {schedulerStatus?.state === 'SYNCING' ? 'SYNC IN PROGRESS' : schedulerStatus?.enabled ? 'ACTIVE & SCHEDULED' : 'STANDBY'}
+                </span>
+                <span className="text-xs text-slate-400">
+                  ({schedulerStatus?.intervalLabel || '15m'} cycle)
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {schedulerStatus?.state === 'SYNCING'
+                  ? 'Currently processing Excel WebDAV and Supabase diffs in the background...'
+                  : schedulerStatus?.enabled && countdownSeconds !== null
+                  ? `Next automated run in ${Math.floor(countdownSeconds / 60)}m ${(countdownSeconds % 60).toString().padStart(2, '0')}s`
+                  : 'Automated runner in standby. Test pipeline diagnostics below.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 shrink-0">
+            <button
+              onClick={handleRunAutomatedTest}
+              disabled={isTestingAutomatedRun}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-colors disabled:opacity-50"
+            >
+              <Activity className={`w-3.5 h-3.5 ${isTestingAutomatedRun ? 'animate-spin' : ''}`} />
+              <span>{isTestingAutomatedRun ? 'Diagnosing...' : 'Test Run Diagnostics'}</span>
+            </button>
+            <button
+              onClick={() => setActiveInfoTab(activeInfoTab === 'automated_test' ? 'hub' : 'automated_test')}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors"
+            >
+              {activeInfoTab === 'automated_test' ? 'View Conflict Hub' : 'Analyze Pipeline'}
             </button>
           </div>
         </div>
@@ -652,6 +953,18 @@ END $$;`;
               <span>{isDetecting ? 'Scanning Diff...' : 'Scan 2-Way Diff'}</span>
             </button>
 
+            {/* Test Automated Run Pipeline */}
+            <button
+              id="btn-test-automated-run"
+              onClick={handleRunAutomatedTest}
+              disabled={isTestingAutomatedRun}
+              className="inline-flex items-center space-x-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg shadow-xs transition-colors disabled:opacity-50"
+              title="Test whether automated background run is functional using live diagnostics"
+            >
+              <Activity className={`w-4 h-4 ${isTestingAutomatedRun ? 'animate-spin' : 'text-indigo-200'}`} />
+              <span>{isTestingAutomatedRun ? 'Testing Automated Pipeline...' : 'Test Automated Run'}</span>
+            </button>
+
             <button
               id="btn-push-excel"
               onClick={handlePushDatabaseToNextcloud}
@@ -662,6 +975,18 @@ END $$;`;
               <UploadCloud className="w-4 h-4 text-blue-200" />
               <span>{isPushingToExcel ? 'Pushing...' : 'Push DB to Nextcloud'}</span>
             </button>
+
+            {currentAnalysis?.base64Data && (
+              <button
+                id="btn-download-excel"
+                onClick={handleDownloadCurrentWorkbook}
+                className="inline-flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition-colors border border-slate-200"
+                title="Download the active synchronized spreadsheet locally"
+              >
+                <Download className="w-4 h-4 text-slate-500" />
+                <span>Download .xlsx</span>
+              </button>
+            )}
           </div>
 
           {/* Batch Collision Shortcuts */}
@@ -712,6 +1037,284 @@ END $$;`;
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Automated Run Test & Diagnostic Studio */}
+      {activeInfoTab === 'automated_test' && (
+        <div className="bg-white rounded-xl shadow-xs border border-indigo-200 p-6 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                  <Activity className="w-5 h-5" />
+                </span>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Automated Run Diagnostic Suite & Analysis
+                </h2>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">
+                  Live Engine Tester
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Directly simulates the background scheduler to verify file discovery, Supabase PostgREST tables, schema mapping, sync execution, and post-sync database integrity.
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <button
+                id="btn-trigger-diagnostic-test"
+                onClick={handleRunAutomatedTest}
+                disabled={isTestingAutomatedRun}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-2 shadow-xs transition-colors disabled:opacity-50"
+              >
+                <Activity className={`w-4 h-4 ${isTestingAutomatedRun ? 'animate-spin' : ''}`} />
+                <span>{isTestingAutomatedRun ? 'Executing Diagnostic...' : 'Run Diagnostic Test Now'}</span>
+              </button>
+              <button
+                onClick={() => setActiveInfoTab('hub')}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          {/* Diagnostic Verdict & Results */}
+          {diagnosticResult ? (
+            <div className="space-y-6">
+              {/* Verdict Header Banner */}
+              <div className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                diagnosticResult.verdict === 'PASSED'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                  : diagnosticResult.verdict === 'WARNING'
+                  ? 'bg-amber-50 border-amber-300 text-amber-950'
+                  : 'bg-rose-50 border-rose-300 text-rose-950'
+              }`}>
+                <div className="flex items-start space-x-3">
+                  <div className={`p-2 rounded-lg shrink-0 ${
+                    diagnosticResult.verdict === 'PASSED'
+                      ? 'bg-emerald-200 text-emerald-800'
+                      : diagnosticResult.verdict === 'WARNING'
+                      ? 'bg-amber-200 text-amber-800'
+                      : 'bg-rose-200 text-rose-800'
+                  }`}>
+                    {diagnosticResult.verdict === 'PASSED' ? (
+                      <CheckCircle className="w-6 h-6" />
+                    ) : diagnosticResult.verdict === 'WARNING' ? (
+                      <AlertTriangle className="w-6 h-6" />
+                    ) : (
+                      <XCircle className="w-6 h-6" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h3 className="text-base font-bold">
+                        {diagnosticResult.verdict === 'PASSED'
+                          ? 'Automated Run Pipeline Verified & Fully Functional'
+                          : diagnosticResult.verdict === 'WARNING'
+                          ? 'Automated Run Completed with Warnings'
+                          : 'Automated Run Issue Detected'}
+                      </h3>
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider ${
+                        diagnosticResult.verdict === 'PASSED'
+                          ? 'bg-emerald-200 text-emerald-800'
+                          : diagnosticResult.verdict === 'WARNING'
+                          ? 'bg-amber-200 text-amber-800'
+                          : 'bg-rose-200 text-rose-800'
+                      }`}>
+                        {diagnosticResult.verdict}
+                      </span>
+                    </div>
+                    <p className="text-xs opacity-80 mt-1">
+                      Tested at {new Date(diagnosticResult.timestamp).toLocaleTimeString()} across all 5 production stages in <strong className="font-mono">{diagnosticResult.totalDurationMs}ms</strong>.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 shrink-0">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(JSON.stringify(diagnosticResult, null, 2));
+                      setCopiedDiagnostic(true);
+                      setTimeout(() => setCopiedDiagnostic(false), 2000);
+                    }}
+                    className="px-3 py-1.5 bg-white/80 hover:bg-white text-slate-800 border border-slate-300 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition-colors shadow-2xs"
+                  >
+                    {copiedDiagnostic ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-600" />}
+                    <span>{copiedDiagnostic ? 'Copied JSON!' : 'Copy Diagnostic Report'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 4 Telemetry Metrics Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Source Discovery</div>
+                  <div className="text-sm font-bold text-slate-900 mt-1 truncate" title={diagnosticResult.summary.filename}>
+                    {diagnosticResult.summary.filename || 'No File'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {diagnosticResult.summary.sourceType === 'NEXTCLOUD_WEBDAV' ? 'Nextcloud WebDAV' : 'Active Workbook'}
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Target PostgREST</div>
+                  <div className="text-sm font-bold text-slate-900 mt-1 truncate">
+                    {diagnosticResult.summary.targetTables.join(', ') || 'No Tables'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {diagnosticResult.summary.targetTables.length} mapped table(s)
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Pipeline Output</div>
+                  <div className="text-sm font-bold text-slate-900 mt-1 font-mono">
+                    <span className="text-emerald-600">+{diagnosticResult.summary.rowsInserted}</span>
+                    <span className="text-slate-400 mx-1">/</span>
+                    <span className="text-blue-600">~{diagnosticResult.summary.rowsUpdated}</span>
+                    <span className="text-slate-400 mx-1">/</span>
+                    <span className={diagnosticResult.summary.rowsFailed > 0 ? 'text-rose-600 font-bold' : 'text-slate-500'}>
+                      {diagnosticResult.summary.rowsFailed} err
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">ins / upd / failed</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Live DB Verified</div>
+                  <div className="text-sm font-bold text-slate-900 mt-1 font-mono">
+                    {diagnosticResult.summary.verificationRowCount} rows
+                  </div>
+                  <div className="text-[11px] text-emerald-600 mt-0.5 flex items-center space-x-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>Live PostgREST audit</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5-Stage Trace */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Production Execution Stages Trace
+                </h3>
+                <div className="space-y-2">
+                  {diagnosticResult.stages.map((stage, idx) => {
+                    const isExpanded = expandedStageIndex === idx;
+                    return (
+                      <div key={idx} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                        <div 
+                          onClick={() => setExpandedStageIndex(isExpanded ? null : idx)}
+                          className="p-3.5 flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors"
+                        >
+                          <div className="flex items-center space-x-3">
+                            <div className={`p-1.5 rounded-lg shrink-0 ${
+                              stage.status === 'PASSED'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : stage.status === 'WARNING'
+                                ? 'bg-amber-100 text-amber-700'
+                                : stage.status === 'FAILED'
+                                ? 'bg-rose-100 text-rose-700'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}>
+                              {stage.status === 'PASSED' ? (
+                                <CheckCircle className="w-4 h-4" />
+                              ) : stage.status === 'WARNING' ? (
+                                <AlertTriangle className="w-4 h-4" />
+                              ) : stage.status === 'FAILED' ? (
+                                <XCircle className="w-4 h-4" />
+                              ) : (
+                                <Clock className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <span className="text-xs font-bold text-slate-900">
+                                  {stage.label || stage.name}
+                                </span>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  stage.status === 'PASSED'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : stage.status === 'WARNING'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : stage.status === 'FAILED'
+                                    ? 'bg-rose-100 text-rose-800'
+                                    : 'bg-slate-100 text-slate-600'
+                                }`}>
+                                  {stage.status}
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-600 mt-0.5">
+                                {stage.message}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-3 shrink-0">
+                            <span className="text-[11px] font-mono text-slate-400 bg-slate-100 px-2 py-0.5 rounded">
+                              {stage.durationMs}ms
+                            </span>
+                            {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                          </div>
+                        </div>
+
+                        {/* Expandable Technical Details */}
+                        {isExpanded && stage.details && (
+                          <div className="p-3.5 bg-slate-900 text-slate-200 border-t border-slate-800 text-xs font-mono overflow-x-auto max-h-60">
+                            <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-2 font-sans font-semibold">
+                              Technical Payload & Runtime Response:
+                            </div>
+                            <pre className="text-[11px] leading-relaxed">
+                              {JSON.stringify(stage.details, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Recommendations */}
+              {diagnosticResult.recommendations && diagnosticResult.recommendations.length > 0 && (
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
+                  <div className="flex items-center space-x-2 text-amber-900 font-bold text-xs uppercase tracking-wider">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    <span>Diagnostics Recommendations:</span>
+                  </div>
+                  <ul className="list-disc list-inside text-xs text-amber-900 space-y-1">
+                    {diagnosticResult.recommendations.map((rec, i) => (
+                      <li key={i}>{rec}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Standby State */
+            <div className="p-8 rounded-xl bg-slate-50 border border-dashed border-slate-300 text-center space-y-4">
+              <div className="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mx-auto">
+                <Activity className="w-6 h-6" />
+              </div>
+              <div className="max-w-md mx-auto">
+                <h3 className="text-sm font-bold text-slate-900">Run End-to-End Automated Pipeline Test</h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  This test initiates the full background automated cycle: it checks Nextcloud WebDAV connectivity, verifies your Supabase PostgREST tables, maps worksheets, executes real-time UPSERTs, and validates the live rows inside PostgreSQL.
+                </p>
+              </div>
+              <button
+                id="btn-run-first-test"
+                onClick={handleRunAutomatedTest}
+                disabled={isTestingAutomatedRun}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center space-x-2 shadow-xs transition-colors disabled:opacity-50"
+              >
+                <Play className="w-4 h-4" />
+                <span>{isTestingAutomatedRun ? 'Running Diagnostics...' : 'Start Automated Pipeline Analysis'}</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 

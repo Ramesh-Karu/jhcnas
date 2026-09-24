@@ -22,7 +22,6 @@ import {
 import { StorageService } from './services/storage';
 import { ApiClient } from './services/apiClient';
 import { TwoWaySyncEngine } from './services/twoWaySyncEngine';
-import { createComplexSampleWorkbook } from './services/sampleWorkbook';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -33,6 +32,7 @@ import { WorkbookAnalyzerView } from './components/WorkbookAnalyzerView';
 import { MappingsView } from './components/MappingsView';
 import { ImportDryRunView } from './components/ImportDryRunView';
 import { TwoWaySyncView } from './components/TwoWaySyncView';
+import { WorkerDashboardView } from './components/WorkerDashboardView';
 import { ImportHistoryView } from './components/ImportHistoryView';
 import { ErrorsView } from './components/ErrorsView';
 import { LogsView } from './components/LogsView';
@@ -105,22 +105,10 @@ export default function App() {
       }
     }).catch(() => {});
 
-    // Check if conflicts need initialization
+    // Load stored conflicts if available
     const stored = StorageService.getConflicts();
-    if (stored.length === 0) {
-      try {
-        const sample = createComplexSampleWorkbook();
-        const diffs = TwoWaySyncEngine.detectTwoWayDiffs(
-          sample.workbook,
-          'students_complex.xlsx',
-          StorageService.getMappings(),
-          StorageService.getDatabaseState()
-        );
-        setConflicts(diffs.records);
-        StorageService.saveConflicts(diffs.records);
-      } catch (e) {
-        console.warn('Initial diff scan notice:', e);
-      }
+    if (stored.length > 0) {
+      setConflicts(stored);
     }
 
     return () => clearInterval(interval);
@@ -199,6 +187,7 @@ export default function App() {
   const handleClearLogs = () => {
     setWorkerLogs([]);
     StorageService.saveWorkerLogs([]);
+    ApiClient.clearServerLogs().catch(() => {});
   };
 
   const handleRefreshAll = () => {
@@ -209,6 +198,12 @@ export default function App() {
     setImportLogs(StorageService.getImportLogs());
     setDatabaseState(StorageService.getDatabaseState());
     setConflicts(StorageService.getConflicts());
+    handleFetchSchedulerStatus();
+    ApiClient.getLiveLogs({ limit: 100 }).then(res => {
+      if (res.success && res.logs && res.logs.length > 0) {
+        setWorkerLogs(res.logs);
+      }
+    }).catch(() => {});
   };
 
   const handleUpdateConflicts = (newConflicts: SyncConflictRecord[]) => {
@@ -434,6 +429,19 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'worker' && (
+            <WorkerDashboardView
+              nextcloud={nextcloud}
+              supabase={supabase}
+              syncSettings={syncSettings}
+              mappings={mappings}
+              schedulerStatus={schedulerStatus ?? undefined}
+              onSaveSettings={handleSaveSettings}
+              onNavigate={setCurrentTab}
+              onRefreshScheduler={handleFetchSchedulerStatus}
+            />
+          )}
+
           {currentTab === 'nextcloud' && (
             <NextcloudView
               config={nextcloud}
@@ -509,6 +517,9 @@ export default function App() {
               onNavigate={setCurrentTab}
               conflicts={conflicts}
               onUpdateConflicts={handleUpdateConflicts}
+              schedulerStatus={schedulerStatus ?? undefined}
+              onRefreshScheduler={handleFetchSchedulerStatus}
+              onUpdateAnalysis={handleUpdateAnalysis}
             />
           )}
 

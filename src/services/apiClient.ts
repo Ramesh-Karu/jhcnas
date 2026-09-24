@@ -1,4 +1,17 @@
-import { NextcloudConfig, SupabaseConfig, NextcloudFile, WorkbookAnalysis, SupabaseTableInfo, LiveSchedulerStatus, SyncInterval } from '../types';
+import { 
+  NextcloudConfig, 
+  SupabaseConfig, 
+  NextcloudFile, 
+  WorkbookAnalysis, 
+  SupabaseTableInfo, 
+  LiveSchedulerStatus, 
+  SyncInterval, 
+  WorksheetMapping, 
+  AutomatedRunDiagnosticResult,
+  WorkerConnectionStatus,
+  LiveSyncHistoryItem,
+  LogMessage
+} from '../types';
 
 export interface SupabaseTestResult {
   success: boolean;
@@ -557,7 +570,11 @@ export class ApiClient {
     }
   }
 
-  static async triggerSchedulerNow(): Promise<{
+  static async triggerSchedulerNow(payload?: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    mappings?: WorksheetMapping[];
+  }): Promise<{
     success: boolean;
     result?: any;
     status?: LiveSchedulerStatus;
@@ -567,6 +584,189 @@ export class ApiClient {
       const res = await fetch('/api/scheduler/trigger-now', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async testAutomatedRun(payload: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    mappings?: WorksheetMapping[];
+    base64Workbook?: string;
+    filename?: string;
+  }): Promise<AutomatedRunDiagnosticResult> {
+    try {
+      const res = await fetch('/api/scheduler/test-automated-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return {
+        success: false,
+        verdict: 'FAILED',
+        totalDurationMs: 0,
+        timestamp: new Date().toISOString(),
+        stages: [
+          {
+            name: 'COMMUNICATION',
+            label: 'Client-Server Communication',
+            status: 'FAILED',
+            durationMs: 0,
+            message: `Could not reach backend test runner: ${e.message}`,
+          }
+        ],
+        summary: {
+          sourceType: 'UNKNOWN',
+          filename: payload.filename || 'unknown.xlsx',
+          sheetsProcessed: 0,
+          targetTables: [],
+          rowsInserted: 0,
+          rowsUpdated: 0,
+          rowsFailed: 0,
+          verificationRowCount: 0,
+        },
+        recommendations: [
+          'Verify that the local development server or backend service is running and responsive.'
+        ],
+        rawError: e.message,
+      };
+    }
+  }
+
+  static async pingWorker(payload?: {
+    workerUrl?: string;
+    secretKey?: string;
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+  }): Promise<WorkerConnectionStatus> {
+    try {
+      const res = await fetch('/api/worker/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      const data = await res.json();
+      return data;
+    } catch (e: any) {
+      return {
+        connected: false,
+        workerMode: 'INTEGRATED_PRODUCTION_ENGINE',
+        workerEndpoint: payload?.workerUrl || 'internal',
+        latencyMs: 0,
+        handshakeVerified: false,
+        version: 'unknown',
+        uptimeSeconds: 0,
+        lastHeartbeat: new Date().toISOString(),
+        state: 'ERROR',
+        activeInterval: '15m',
+        nextRunAt: null,
+        secretsMatched: false,
+        diagnostics: {
+          nextcloudReachable: false,
+          supabaseReachable: false,
+          message: `Network error pinging worker daemon: ${e.message}`,
+        },
+      };
+    }
+  }
+
+  static async getLiveLogs(params?: {
+    level?: string;
+    search?: string;
+    limit?: number;
+  }): Promise<{
+    success: boolean;
+    count: number;
+    totalCount: number;
+    logs: LogMessage[];
+    error?: string;
+  }> {
+    try {
+      const qs = new URLSearchParams();
+      if (params?.level) qs.set('level', params.level);
+      if (params?.search) qs.set('search', params.search);
+      if (params?.limit) qs.set('limit', String(params.limit));
+
+      const res = await fetch(`/api/logs?${qs.toString()}`, { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, count: 0, totalCount: 0, logs: [], error: e.message };
+    }
+  }
+
+  static async addServerLog(log: {
+    level: 'info' | 'warn' | 'error' | 'success';
+    component: string;
+    message: string;
+    details?: any;
+  }): Promise<{ success: boolean; log?: any }> {
+    try {
+      const res = await fetch('/api/logs/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(log),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false };
+    }
+  }
+
+  static async clearServerLogs(): Promise<{ success: boolean }> {
+    try {
+      const res = await fetch('/api/logs/clear', { method: 'POST' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false };
+    }
+  }
+
+  static async getSyncHistory(): Promise<{
+    success: boolean;
+    count: number;
+    history: LiveSyncHistoryItem[];
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/sync/history', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, count: 0, history: [], error: e.message };
+    }
+  }
+
+  static async clearSyncHistory(): Promise<{ success: boolean }> {
+    try {
+      const res = await fetch('/api/sync/history/clear', { method: 'POST' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false };
+    }
+  }
+
+  static async triggerLiveSync(payload: {
+    nextcloud: NextcloudConfig;
+    supabase: SupabaseConfig;
+    mappings: WorksheetMapping[];
+    targetFilename?: string;
+    base64Workbook?: string;
+  }): Promise<{
+    success: boolean;
+    result?: any;
+    status?: LiveSchedulerStatus;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/sync/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
       return await res.json();
     } catch (e: any) {

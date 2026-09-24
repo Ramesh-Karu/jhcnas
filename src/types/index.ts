@@ -1,5 +1,6 @@
 export type NavigationTab = 
   | 'dashboard'
+  | 'worker'
   | 'nextcloud'
   | 'supabase'
   | 'files'
@@ -58,6 +59,7 @@ export interface SyncSettings {
   backupToStorage: boolean;
   storageBucket: string;
   workerUrl: string;
+  workerSecretKey?: string;
   workerStatus: 'healthy' | 'idle' | 'syncing' | 'error';
   lastSyncAt?: string;
   nextSyncAt?: string;
@@ -397,4 +399,73 @@ export interface TwoWaySyncSettings {
   createBackupBeforeExcelWrite: boolean;
   backupFolder: string;
 }
+
+export interface AutomatedRunStage {
+  name: string;
+  label: string;
+  status: 'PENDING' | 'RUNNING' | 'PASSED' | 'WARNING' | 'FAILED';
+  durationMs: number;
+  message: string;
+  details?: Record<string, any>;
+}
+
+export interface AutomatedRunDiagnosticResult {
+  success: boolean;
+  verdict: 'PASSED' | 'WARNING' | 'FAILED';
+  totalDurationMs: number;
+  timestamp: string;
+  stages: AutomatedRunStage[];
+  summary: {
+    sourceType: 'NEXTCLOUD_WEBDAV' | 'LOADED_WORKBOOK' | 'UNKNOWN';
+    filename: string;
+    sheetsProcessed: number;
+    targetTables: string[];
+    rowsInserted: number;
+    rowsUpdated: number;
+    rowsFailed: number;
+    verificationRowCount: number;
+  };
+  recommendations: string[];
+  rawError?: string;
+}
+
+export interface WorkerConnectionStatus {
+  connected: boolean;
+  workerMode: 'INTEGRATED_PRODUCTION_ENGINE' | 'EXTERNAL_WORKER_DAEMON';
+  workerEndpoint: string;
+  latencyMs: number;
+  handshakeVerified: boolean;
+  version: string;
+  uptimeSeconds: number;
+  memoryUsageMb?: number;
+  lastHeartbeat: string;
+  state: 'IDLE' | 'SYNCING' | 'SCHEDULED' | 'DISABLED' | 'ERROR';
+  activeInterval: SyncInterval;
+  nextRunAt: string | null;
+  secretsMatched: boolean;
+  diagnostics: {
+    nextcloudReachable: boolean;
+    supabaseReachable: boolean;
+    message: string;
+  };
+}
+
+export interface LiveSyncHistoryItem {
+  id: string;
+  timestamp: string;
+  triggerType: 'SCHEDULED_CRON' | 'MANUAL_ADMIN' | 'TWO_WAY_AUTO' | 'DIAGNOSTIC_TEST';
+  status: 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | 'RUNNING';
+  filename: string;
+  durationMs: number;
+  totalWorksheets: number;
+  targetTables: string[];
+  rowsProcessed: number;
+  rowsInserted: number;
+  rowsUpdated: number;
+  rowsFailed: number;
+  syncResults?: any[];
+  error?: string;
+  errorSummary?: string;
+}
+
 
