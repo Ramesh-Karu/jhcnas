@@ -1517,9 +1517,11 @@ async function executeFullPipelineCore(params: {
         signal: AbortSignal.timeout(20000),
       });
 
-      if (!upsertRes.ok && uniqueCol) {
-        const errText = await upsertRes.text().catch(() => '');
-        if (errText.includes('ON CONFLICT') || errText.includes('constraint') || upsertRes.status === 400) {
+      if (!upsertRes.ok) {
+        let errText = await upsertRes.text().catch(() => '');
+
+        // Fallback 1: If on_conflict failed because no unique constraint exists, try direct insert
+        if (uniqueCol && (errText.includes('ON CONFLICT') || errText.includes('constraint') || upsertRes.status === 400)) {
           console.warn(`[Sync Core] Upsert on_conflict=${uniqueCol} failed for ${targetTable}, retrying direct insert: ${errText}`);
           const fallbackUrl = `${supUrl}/rest/v1/${encodeURIComponent(targetTable)}`;
           upsertRes = await fetch(fallbackUrl, {
@@ -1533,14 +1535,13 @@ async function executeFullPipelineCore(params: {
             body: JSON.stringify(batch),
             signal: AbortSignal.timeout(20000),
           });
+          if (!upsertRes.ok) {
+            errText = await upsertRes.text().catch(() => '');
+          }
         }
-      }
 
-      if (!upsertRes.ok) {
-        let errText = await upsertRes.text().catch(() => '');
-
-        // Auto-heal integer type mismatch
-        if (errText.includes('invalid input syntax for type integer') || errText.includes('22P02')) {
+        // Fallback 2: Auto-heal integer type mismatch
+        if (!upsertRes.ok && (errText.includes('invalid input syntax for type integer') || errText.includes('22P02'))) {
           const candidateCols = new Set<string>();
           if (batch[0]) {
             for (const [k, v] of Object.entries(batch[0])) {
@@ -1564,25 +1565,25 @@ async function executeFullPipelineCore(params: {
               return copy;
             });
 
-            let healUrl = `${supUrl}/rest/v1/${encodeURIComponent(targetTable)}`;
-            if (uniqueCol) healUrl += `?on_conflict=${encodeURIComponent(uniqueCol)}`;
-
+            const healUrl = `${supUrl}/rest/v1/${encodeURIComponent(targetTable)}`;
             upsertRes = await fetch(healUrl, {
               method: 'POST',
               headers: {
                 'apikey': supKey,
                 'Authorization': `Bearer ${supKey}`,
                 'Content-Type': 'application/json',
-                'Prefer': uniqueCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
+                'Prefer': 'return=representation',
               },
               body: JSON.stringify(healedRecords),
               signal: AbortSignal.timeout(20000),
             });
+            if (!upsertRes.ok) {
+              errText = await upsertRes.text().catch(() => '');
+            }
           }
         }
 
         if (!upsertRes.ok) {
-          errText = await upsertRes.text().catch(() => errText);
           tableFailed += batch.length;
           const diag = diagnoseSupabaseError(upsertRes.status, errText, targetTable, batch[0]);
           lastTableError = {
@@ -1674,6 +1675,18 @@ class ProductionScheduler {
 
   private tick() {
     if (!this.enabled || this.state === 'SYNCING') return;
+
+    // Check if minimal configuration exists before running
+    const hasSupabase = Boolean(
+      this.cachedSupabase?.url && 
+      (this.cachedSupabase?.serviceKey || this.cachedSupabase?.serviceRoleKey || this.cachedSupabase?.anonKey)
+    );
+    const hasSource = Boolean(this.cachedNextcloud?.url || this.cachedMappings?.length > 0);
+
+    if (!hasSupabase || !hasSource) {
+      // Configuration not ready yet - stay in SCHEDULED mode without spamming error cycles
+      return;
+    }
 
     if (this.nextRunAt) {
       const now = Date.now();

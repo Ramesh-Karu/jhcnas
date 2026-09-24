@@ -288,44 +288,118 @@ export class StorageService {
     localStorage.setItem(STORAGE_KEYS.MAPPINGS, JSON.stringify(mappings));
   }
 
+  private static _cachedDbState: Record<string, any[]> | null = null;
+
   static getImportLogs(): ImportLog[] {
     const raw = localStorage.getItem(STORAGE_KEYS.IMPORT_LOGS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
     return [];
   }
 
   static saveImportLogs(logs: ImportLog[]): void {
-    localStorage.setItem(STORAGE_KEYS.IMPORT_LOGS, JSON.stringify(logs));
+    try {
+      const trimmed = logs.slice(0, 100);
+      localStorage.setItem(STORAGE_KEYS.IMPORT_LOGS, JSON.stringify(trimmed));
+    } catch (e) {
+      console.warn('LocalStorage quota limit reached for import logs, saving recent logs only:', e);
+      try {
+        localStorage.setItem(STORAGE_KEYS.IMPORT_LOGS, JSON.stringify(logs.slice(0, 20)));
+      } catch {}
+    }
   }
 
   static getImportErrors(): ImportAuditError[] {
     const raw = localStorage.getItem(STORAGE_KEYS.IMPORT_ERRORS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
     return [];
   }
 
   static saveImportErrors(errs: ImportAuditError[]): void {
-    localStorage.setItem(STORAGE_KEYS.IMPORT_ERRORS, JSON.stringify(errs));
+    try {
+      const trimmed = errs.slice(0, 150);
+      localStorage.setItem(STORAGE_KEYS.IMPORT_ERRORS, JSON.stringify(trimmed));
+    } catch (e) {
+      console.warn('LocalStorage quota limit reached for import errors:', e);
+      try {
+        localStorage.setItem(STORAGE_KEYS.IMPORT_ERRORS, JSON.stringify(errs.slice(0, 30)));
+      } catch {}
+    }
   }
 
   static getWorkerLogs(): LogMessage[] {
     const raw = localStorage.getItem(STORAGE_KEYS.WORKER_LOGS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
     return [];
   }
 
   static saveWorkerLogs(logs: LogMessage[]): void {
-    localStorage.setItem(STORAGE_KEYS.WORKER_LOGS, JSON.stringify(logs));
+    try {
+      const trimmed = logs.slice(0, 150);
+      localStorage.setItem(STORAGE_KEYS.WORKER_LOGS, JSON.stringify(trimmed));
+    } catch (e) {
+      console.warn('LocalStorage quota limit reached for worker logs:', e);
+      try {
+        localStorage.setItem(STORAGE_KEYS.WORKER_LOGS, JSON.stringify(logs.slice(0, 30)));
+      } catch {}
+    }
   }
 
   static getDatabaseState(): Record<string, any[]> {
+    if (this._cachedDbState) {
+      return this._cachedDbState;
+    }
     const raw = localStorage.getItem(STORAGE_KEYS.DB_STATE);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        this._cachedDbState = parsed;
+        return parsed;
+      } catch {}
+    }
     return {};
   }
 
   static saveDatabaseState(state: Record<string, any[]>): void {
-    localStorage.setItem(STORAGE_KEYS.DB_STATE, JSON.stringify(state));
+    // Keep full in-memory cache for all tables (even with 50,000+ rows)
+    this._cachedDbState = state;
+
+    if (!state || typeof state !== 'object') {
+      localStorage.removeItem(STORAGE_KEYS.DB_STATE);
+      return;
+    }
+
+    try {
+      // First try saving full state
+      localStorage.setItem(STORAGE_KEYS.DB_STATE, JSON.stringify(state));
+    } catch (quotaErr) {
+      console.warn('LocalStorage quota exceeded for full database state. Saving top 100 rows per table for offline preview:', quotaErr);
+      try {
+        // Sample down to first 100 rows per table for offline browser storage
+        const lightweightState: Record<string, any[]> = {};
+        for (const [table, rows] of Object.entries(state)) {
+          if (Array.isArray(rows)) {
+            lightweightState[table] = rows.slice(0, 100);
+          } else {
+            lightweightState[table] = rows;
+          }
+        }
+        localStorage.setItem(STORAGE_KEYS.DB_STATE, JSON.stringify(lightweightState));
+      } catch (nestedErr) {
+        console.warn('Could not persist database preview to localStorage, operating in memory-only mode:', nestedErr);
+      }
+    }
   }
 
   static getConflicts(): SyncConflictRecord[] {
@@ -339,7 +413,15 @@ export class StorageService {
   }
 
   static saveConflicts(conflicts: SyncConflictRecord[]): void {
-    localStorage.setItem(STORAGE_KEYS.CONFLICTS, JSON.stringify(conflicts));
+    try {
+      const trimmed = conflicts.slice(0, 150);
+      localStorage.setItem(STORAGE_KEYS.CONFLICTS, JSON.stringify(trimmed));
+    } catch (e) {
+      console.warn('LocalStorage quota limit reached for conflicts:', e);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONFLICTS, JSON.stringify(conflicts.slice(0, 30)));
+      } catch {}
+    }
   }
 
   static getSyncBaselines(): Record<string, SyncBaselineRecord> {
