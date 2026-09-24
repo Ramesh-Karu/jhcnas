@@ -183,7 +183,7 @@ export class DryRunEngine {
           failedRows++;
           sheetFails++;
           allErrors.push(...errors);
-          if (sampleTransformedRecords.length < 50) {
+          if (sampleTransformedRecords.length < 5000) {
             sampleTransformedRecords.push({
               sheetName: wm.worksheetName,
               targetTable,
@@ -219,7 +219,7 @@ export class DryRunEngine {
             sheetInserts++;
           }
 
-          if (sampleTransformedRecords.length < 100) {
+          if (sampleTransformedRecords.length < 5000) {
             sampleTransformedRecords.push({
               sheetName: wm.worksheetName,
               targetTable,

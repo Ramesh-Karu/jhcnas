@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   PlaySquare, 
@@ -18,7 +18,13 @@ import {
   Wand2,
   Check,
   Copy,
-  Info
+  Info,
+  Upload,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  FileCheck
 } from 'lucide-react';
 import { 
   WorkbookAnalysis, 
@@ -27,11 +33,14 @@ import {
   RowValidationError, 
   ImportLog, 
   NavigationTab,
-  SupabaseConfig
+  SupabaseConfig,
+  NextcloudFile,
+  NextcloudConfig
 } from '../types';
 import { createComplexSampleWorkbook } from '../services/sampleWorkbook';
 import { DryRunEngine } from '../services/dryRunEngine';
 import { ApiClient } from '../services/apiClient';
+import { ExcelAnalyzer } from '../services/excelAnalyzer';
 
 interface ImportDryRunViewProps {
   currentAnalysis: WorkbookAnalysis | null;
@@ -42,6 +51,10 @@ interface ImportDryRunViewProps {
   onNavigate: (tab: NavigationTab) => void;
   supabaseConfig?: SupabaseConfig;
   onSaveMappings?: (mappings: WorksheetMapping[]) => void;
+  files?: NextcloudFile[];
+  nextcloudConfig?: NextcloudConfig;
+  onSelectFileForAnalysis?: (file: NextcloudFile) => void;
+  onAnalysisUpdate?: (analysis: WorkbookAnalysis) => void;
 }
 
 export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
@@ -52,15 +65,26 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
   onAddImportLog,
   onNavigate,
   supabaseConfig,
-  onSaveMappings
+  onSaveMappings,
+  files = [],
+  nextcloudConfig,
+  onSelectFileForAnalysis,
+  onAnalysisUpdate
 }) => {
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [isRunningDryRun, setIsRunningDryRun] = useState<boolean>(false);
   const [isImporting, setIsImporting] = useState<boolean>(false);
+  const [isLoadingFile, setIsLoadingFile] = useState<boolean>(false);
   const [importNotice, setImportNotice] = useState<{ success: boolean; message: string } | null>(null);
   const [filterAction, setFilterAction] = useState<'ALL' | 'INSERT' | 'UPDATE' | 'FAIL'>('ALL');
+  const [selectedSheetFilter, setSelectedSheetFilter] = useState<string>('ALL');
   const [selectedErrorType, setSelectedErrorType] = useState<string>('ALL');
   const [copiedAlterSql, setCopiedAlterSql] = useState<boolean>(false);
+  const [searchRecordQuery, setSearchRecordQuery] = useState<string>('');
+  const [recordsPage, setRecordsPage] = useState<number>(1);
+  const [recordsPerPage, setRecordsPerPage] = useState<number>(50);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [typeMismatchAlert, setTypeMismatchAlert] = useState<{
     tableName: string;
     columnName: string;
@@ -68,6 +92,62 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     alterSql: string;
     isFixing?: boolean;
   } | null>(null);
+
+  const handleLocalFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsLoadingFile(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const { analysis } = ExcelAnalyzer.parseBuffer(arrayBuffer, file.name);
+      analysis.fileHash = await ExcelAnalyzer.computeSHA256(arrayBuffer);
+      if (onAnalysisUpdate) {
+        onAnalysisUpdate(analysis);
+      }
+      setImportNotice({
+        success: true,
+        message: `Loaded '${file.name}' (${analysis.totalWorksheets} sheets, ${analysis.worksheets.reduce((acc, w) => acc + (w.sampleRows?.length || 0), 0)} rows). Running simulation...`
+      });
+    } catch (err: any) {
+      setImportNotice({
+        success: false,
+        message: `Failed to parse '${file.name}': ${err.message}`
+      });
+    } finally {
+      setIsLoadingFile(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleSelectNextcloudFile = async (filename: string) => {
+    if (!files || files.length === 0) return;
+    const targetFile = files.find(f => f.filename === filename);
+    if (!targetFile) return;
+
+    setIsLoadingFile(true);
+    try {
+      if (nextcloudConfig?.url && nextcloudConfig.isConnected) {
+        const res = await ApiClient.fetchAndParseWorkbook(nextcloudConfig, targetFile.path, targetFile.filename);
+        if (res.success && res.analysis && onAnalysisUpdate) {
+          onAnalysisUpdate(res.analysis);
+          setImportNotice({
+            success: true,
+            message: `Loaded live Nextcloud file '${targetFile.filename}'. Running simulation...`
+          });
+          return;
+        }
+      }
+      if (onSelectFileForAnalysis) {
+        onSelectFileForAnalysis(targetFile);
+      }
+    } catch (err: any) {
+      console.error('Failed to load remote file:', err);
+    } finally {
+      setIsLoadingFile(false);
+    }
+  };
 
   const getEffectiveWorkbook = (): XLSX.WorkBook => {
     if (currentAnalysis?.base64Data) {
@@ -404,11 +484,48 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     }, 400);
   };
 
-  const displayedRecords = dryRunResult
-    ? (filterAction === 'ALL'
-        ? dryRunResult.sampleTransformedRecords
-        : dryRunResult.sampleTransformedRecords.filter(r => r.action === filterAction))
-    : [];
+  // Available worksheets in current run
+  const availableSheets = useMemo(() => {
+    if (dryRunResult?.sheetSummaries && dryRunResult.sheetSummaries.length > 0) {
+      return dryRunResult.sheetSummaries.map(s => s.sheetName);
+    }
+    if (currentAnalysis?.worksheets && currentAnalysis.worksheets.length > 0) {
+      return currentAnalysis.worksheets.map(w => w.sheetName);
+    }
+    return [];
+  }, [dryRunResult, currentAnalysis]);
+
+  // Filtered records across action, worksheet, and search query
+  const filteredRecords = useMemo(() => {
+    if (!dryRunResult) return [];
+    return dryRunResult.sampleTransformedRecords.filter(item => {
+      // Filter by Action
+      if (filterAction !== 'ALL' && item.action !== filterAction) return false;
+      // Filter by Sheet
+      if (selectedSheetFilter !== 'ALL' && item.sheetName !== selectedSheetFilter) return false;
+      // Filter by Search
+      if (searchRecordQuery.trim() !== '') {
+        const query = searchRecordQuery.toLowerCase();
+        const payloadStr = JSON.stringify(item.record).toLowerCase();
+        const sheetStr = item.sheetName.toLowerCase();
+        const tableStr = item.targetTable.toLowerCase();
+        const rowStr = String(item.rowNumber);
+        if (!payloadStr.includes(query) && !sheetStr.includes(query) && !tableStr.includes(query) && !rowStr.includes(query)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [dryRunResult, filterAction, selectedSheetFilter, searchRecordQuery]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / (recordsPerPage === -1 ? filteredRecords.length || 1 : recordsPerPage)));
+  const currentPage = Math.min(recordsPage, totalPages);
+
+  const paginatedRecords = useMemo(() => {
+    if (recordsPerPage === -1) return filteredRecords;
+    const start = (currentPage - 1) * recordsPerPage;
+    return filteredRecords.slice(start, start + recordsPerPage);
+  }, [filteredRecords, currentPage, recordsPerPage]);
 
   const filteredErrors = dryRunResult?.errors.filter(err => {
     if (selectedErrorType === 'ALL') return true;
@@ -435,21 +552,91 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
           <button
             id="btn-trigger-dryrun"
             onClick={handleRunDryRun}
-            disabled={isRunningDryRun}
+            disabled={isRunningDryRun || isLoadingFile}
             className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors"
           >
-            <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isRunningDryRun ? 'animate-spin' : ''}`} />
-            <span>{isRunningDryRun ? 'Simulating...' : 'Re-Run Simulation (Dry Run)'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isRunningDryRun || isLoadingFile ? 'animate-spin' : ''}`} />
+            <span>{isRunningDryRun ? 'Simulating...' : 'Re-Run Simulation'}</span>
           </button>
 
           <button
             id="btn-import-now"
             onClick={handleExecuteImport}
-            disabled={isImporting}
+            disabled={isImporting || isLoadingFile}
             className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold text-white shadow-2xs transition-colors cursor-pointer"
           >
             <Play className={`w-3.5 h-3.5 ${isImporting ? 'animate-spin' : ''}`} />
             <span>{isImporting ? 'Writing to Supabase...' : 'Import Now (Write to DB)'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Source File & Monitored Workbooks Selection Bar */}
+      <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center space-x-2">
+            <FileSpreadsheet className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Active File:</span>
+          </div>
+
+          {/* Select from Monitored / Nextcloud files */}
+          <div className="relative">
+            <select
+              value={currentAnalysis?.filename || ''}
+              onChange={(e) => handleSelectNextcloudFile(e.target.value)}
+              disabled={isLoadingFile || isRunningDryRun}
+              className="text-xs font-semibold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 transition-colors"
+            >
+              {currentAnalysis && !files.some(f => f.filename === currentAnalysis.filename) && (
+                <option value={currentAnalysis.filename}>{currentAnalysis.filename} (Current File)</option>
+              )}
+              {files.map(f => (
+                <option key={f.id || f.filename} value={f.filename}>
+                  {f.filename} ({f.fileSizeFormatted || `${f.fileSize} B`})
+                </option>
+              ))}
+              {files.length === 0 && !currentAnalysis && (
+                <option value="">No files detected</option>
+              )}
+            </select>
+          </div>
+
+          <div className="flex items-center space-x-2 text-xs text-slate-500 font-medium">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+              {currentAnalysis?.totalWorksheets || dryRunResult?.sheetSummaries.length || 1} Worksheets
+            </span>
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
+              {dryRunResult?.totalRows || 0} Total Rows Extracted
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleLocalFileUpload}
+            accept=".xlsx,.xls,.csv"
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isLoadingFile}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer"
+            title="Upload any local Excel or CSV file to simulate"
+          >
+            <Upload className="w-3.5 h-3.5 text-slate-500" />
+            <span>Upload Local File</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('files')}
+            className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 transition-colors"
+          >
+            <span>All Files ({files.length})</span>
+            <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -754,35 +941,115 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
           {/* Transformed Records Preview */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-            <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center space-x-2">
-                <span className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
-                  Sample Transformed Records
-                </span>
-                <span className="text-xs text-slate-500">
-                  (Showing {displayedRecords.length} records)
-                </span>
+            <div className="p-4 bg-slate-50 border-b border-slate-200 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
+                    Transformed Records Preview
+                  </span>
+                  <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    {filteredRecords.length} records {searchRecordQuery ? '(filtered)' : ''}
+                  </span>
+                </div>
+
+                {/* Search in Record Payloads */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchRecordQuery}
+                    onChange={(e) => {
+                      setSearchRecordQuery(e.target.value);
+                      setRecordsPage(1);
+                    }}
+                    placeholder="Search rows or values..."
+                    className="pl-8 pr-3 py-1 text-xs rounded-lg border border-slate-300 bg-white text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full sm:w-64"
+                  />
+                </div>
               </div>
 
-              {/* Action Filter Pills */}
-              <div className="flex items-center space-x-1.5 text-xs">
-                {(['ALL', 'INSERT', 'UPDATE', 'FAIL'] as const).map(action => (
-                  <button
-                    key={action}
-                    onClick={() => setFilterAction(action)}
-                    className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                      filterAction === action
-                        ? 'bg-slate-900 text-white'
-                        : 'bg-slate-200/70 text-slate-700 hover:bg-slate-300'
-                    }`}
+              {/* Filters Bar: Action Type & Worksheet */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-slate-200/60">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase mr-1">Action:</span>
+                  {(['ALL', 'INSERT', 'UPDATE', 'FAIL'] as const).map(action => (
+                    <button
+                      key={action}
+                      onClick={() => {
+                        setFilterAction(action);
+                        setRecordsPage(1);
+                      }}
+                      className={`px-2.5 py-0.5 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                        filterAction === action
+                          ? action === 'INSERT' ? 'bg-emerald-600 text-white' :
+                            action === 'UPDATE' ? 'bg-purple-600 text-white' :
+                            action === 'FAIL' ? 'bg-rose-600 text-white' :
+                            'bg-slate-900 text-white'
+                          : 'bg-slate-200/70 text-slate-700 hover:bg-slate-300'
+                      }`}
+                    >
+                      {action}
+                    </button>
+                  ))}
+                </div>
+
+                {availableSheets.length > 1 && (
+                  <div className="flex flex-wrap items-center gap-1 text-xs">
+                    <span className="text-[11px] font-bold text-slate-500 uppercase mr-1">Worksheet:</span>
+                    <button
+                      onClick={() => {
+                        setSelectedSheetFilter('ALL');
+                        setRecordsPage(1);
+                      }}
+                      className={`px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer ${
+                        selectedSheetFilter === 'ALL'
+                          ? 'bg-slate-800 text-white font-bold'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      All Sheets
+                    </button>
+                    {availableSheets.map(s => (
+                      <button
+                        key={s}
+                        onClick={() => {
+                          setSelectedSheetFilter(s);
+                          setRecordsPage(1);
+                        }}
+                        className={`px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer ${
+                          selectedSheetFilter === s
+                            ? 'bg-emerald-700 text-white font-bold'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Rows Per Page */}
+                <div className="flex items-center space-x-1.5 text-xs text-slate-500 ml-auto">
+                  <span>Show:</span>
+                  <select
+                    value={recordsPerPage}
+                    onChange={(e) => {
+                      setRecordsPerPage(Number(e.target.value));
+                      setRecordsPage(1);
+                    }}
+                    className="px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-700 font-semibold text-xs"
                   >
-                    {action}
-                  </button>
-                ))}
+                    <option value={25}>25 rows</option>
+                    <option value={50}>50 rows</option>
+                    <option value={100}>100 rows</option>
+                    <option value={250}>250 rows</option>
+                    <option value={-1}>All ({filteredRecords.length})</option>
+                  </select>
+                </div>
               </div>
             </div>
 
-            <div className="overflow-x-auto max-h-80">
+            <div className="overflow-x-auto max-h-96">
               <table className="w-full text-left text-xs font-mono">
                 <thead className="bg-slate-100 text-slate-700 uppercase font-semibold border-b border-slate-200 sticky top-0">
                   <tr>
@@ -794,28 +1061,69 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {displayedRecords.map((item, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50">
-                      <td className="px-3 py-2 text-slate-400">{item.rowNumber}</td>
-                      <td className="px-3 py-2 text-slate-900 font-sans font-medium">{item.sheetName}</td>
-                      <td className="px-3 py-2 text-teal-700">public.{item.targetTable}</td>
-                      <td className="px-3 py-2 text-center">
-                        <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${
-                          item.action === 'INSERT' ? 'bg-emerald-100 text-emerald-800' :
-                          item.action === 'UPDATE' ? 'bg-purple-100 text-purple-800' :
-                          'bg-rose-100 text-rose-800'
-                        }`}>
-                          {item.action}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-slate-700 max-w-lg truncate">
-                        {JSON.stringify(item.record)}
+                  {paginatedRecords.length > 0 ? (
+                    paginatedRecords.map((item, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 text-slate-400 font-bold">{item.rowNumber}</td>
+                        <td className="px-3 py-2 text-slate-900 font-sans font-medium">{item.sheetName}</td>
+                        <td className="px-3 py-2 text-teal-700 font-sans">public.{item.targetTable}</td>
+                        <td className="px-3 py-2 text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${
+                            item.action === 'INSERT' ? 'bg-emerald-100 text-emerald-800' :
+                            item.action === 'UPDATE' ? 'bg-purple-100 text-purple-800' :
+                            'bg-rose-100 text-rose-800'
+                          }`}>
+                            {item.action}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-slate-700 max-w-xl truncate font-mono text-[11px]">
+                          {JSON.stringify(item.record)}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-slate-400 font-sans text-xs">
+                        No transformed records matched the selected filters.
                       </td>
                     </tr>
-                  ))}
+                  )}
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && recordsPerPage !== -1 && (
+              <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                <div className="text-slate-500 font-medium">
+                  Showing <span className="font-bold text-slate-800">{(currentPage - 1) * recordsPerPage + 1}</span>–<span className="font-bold text-slate-800">{Math.min(currentPage * recordsPerPage, filteredRecords.length)}</span> of <span className="font-bold text-slate-800">{filteredRecords.length}</span> records
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  <button
+                    onClick={() => setRecordsPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    title="Previous Page"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+
+                  <span className="px-2.5 py-1 text-slate-700 font-semibold bg-white border border-slate-300 rounded-lg">
+                    Page {currentPage} of {totalPages}
+                  </span>
+
+                  <button
+                    onClick={() => setRecordsPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    title="Next Page"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       ) : (

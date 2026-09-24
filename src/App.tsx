@@ -503,6 +503,10 @@ export default function App() {
               onNavigate={setCurrentTab}
               supabaseConfig={supabase}
               onSaveMappings={handleSaveMappings}
+              files={files}
+              nextcloudConfig={nextcloud}
+              onSelectFileForAnalysis={handleSelectFileForAnalysis}
+              onAnalysisUpdate={handleUpdateAnalysis}
             />
           )}
 
