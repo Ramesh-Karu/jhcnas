@@ -13,6 +13,29 @@ import {
   LogMessage
 } from '../types';
 
+export interface SupabaseDiagnostic {
+  errorCode: string;
+  httpStatus: number;
+  tableName: string;
+  cause: string;
+  details: string;
+  remediation: string;
+  suggestedSql?: string;
+}
+
+export interface UpsertBatchProgress {
+  processed: number;
+  total: number;
+  percentage: number;
+  currentBatch: number;
+  totalBatches: number;
+  successfulCount: number;
+  failedCount: number;
+  tableName: string;
+  status: 'running' | 'success' | 'error';
+  message: string;
+}
+
 export interface SupabaseTestResult {
   success: boolean;
   isConnected: boolean;
@@ -259,31 +282,142 @@ export class ApiClient {
     config: SupabaseConfig,
     tableName: string,
     records: any[],
-    onConflict?: string
+    onConflict?: string,
+    onProgress?: (progress: UpsertBatchProgress) => void
   ): Promise<{
     success: boolean;
     tableName?: string;
     upsertedCount?: number;
+    totalRecords?: number;
     records?: any[];
     error?: string;
+    warning?: string;
+    diagnostic?: SupabaseDiagnostic;
   }> {
-    try {
-      const res = await fetch('/api/supabase/upsert-records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: config.url,
-          anonKey: config.anonKey,
-          serviceKey: config.serviceKey || config.serviceRoleKey,
-          tableName,
-          records,
-          onConflict,
-        }),
-      });
-      return await res.json();
-    } catch (e: any) {
-      return { success: false, error: e.message };
+    if (!records || records.length === 0) {
+      return { success: true, tableName, upsertedCount: 0, totalRecords: 0, records: [] };
     }
+
+    const CHUNK_SIZE = 250;
+    const totalRecords = records.length;
+    const totalBatches = Math.ceil(totalRecords / CHUNK_SIZE);
+    let totalUpserted = 0;
+    const allInserted: any[] = [];
+
+    for (let b = 0; b < totalBatches; b++) {
+      const start = b * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, totalRecords);
+      const batch = records.slice(start, end);
+      const currentBatchNum = b + 1;
+
+      if (onProgress) {
+        onProgress({
+          processed: start,
+          total: totalRecords,
+          percentage: Math.round((start / totalRecords) * 100),
+          currentBatch: currentBatchNum,
+          totalBatches,
+          successfulCount: totalUpserted,
+          failedCount: 0,
+          tableName,
+          status: 'running',
+          message: `Pushing batch ${currentBatchNum}/${totalBatches} (${batch.length} rows) to public.${tableName}...`
+        });
+      }
+
+      try {
+        const res = await fetch('/api/supabase/upsert-records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: config.url,
+            anonKey: config.anonKey,
+            serviceKey: config.serviceKey || config.serviceRoleKey,
+            tableName,
+            records: batch,
+            onConflict,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!data.success) {
+          if (onProgress) {
+            onProgress({
+              processed: start,
+              total: totalRecords,
+              percentage: Math.round((start / totalRecords) * 100),
+              currentBatch: currentBatchNum,
+              totalBatches,
+              successfulCount: totalUpserted,
+              failedCount: batch.length,
+              tableName,
+              status: 'error',
+              message: `Batch ${currentBatchNum}/${totalBatches} failed: ${data.error || 'Check Supabase table'}`
+            });
+          }
+          return {
+            success: false,
+            tableName,
+            upsertedCount: totalUpserted,
+            totalRecords,
+            error: data.error,
+            diagnostic: data.diagnostic,
+          };
+        }
+
+        const count = data.upsertedCount || batch.length;
+        totalUpserted += count;
+        if (Array.isArray(data.records)) {
+          allInserted.push(...data.records);
+        }
+
+        if (onProgress) {
+          onProgress({
+            processed: end,
+            total: totalRecords,
+            percentage: Math.round((end / totalRecords) * 100),
+            currentBatch: currentBatchNum,
+            totalBatches,
+            successfulCount: totalUpserted,
+            failedCount: 0,
+            tableName,
+            status: end === totalRecords ? 'success' : 'running',
+            message: `Batch ${currentBatchNum}/${totalBatches} confirmed! (${end}/${totalRecords} rows committed)`
+          });
+        }
+      } catch (e: any) {
+        if (onProgress) {
+          onProgress({
+            processed: start,
+            total: totalRecords,
+            percentage: Math.round((start / totalRecords) * 100),
+            currentBatch: currentBatchNum,
+            totalBatches,
+            successfulCount: totalUpserted,
+            failedCount: batch.length,
+            tableName,
+            status: 'error',
+            message: `Network error on batch ${currentBatchNum}: ${e.message}`
+          });
+        }
+        return {
+          success: false,
+          tableName,
+          upsertedCount: totalUpserted,
+          totalRecords,
+          error: `Network error pushing to Supabase: ${e.message}`,
+        };
+      }
+    }
+
+    return {
+      success: true,
+      tableName,
+      upsertedCount: totalUpserted,
+      totalRecords,
+      records: allInserted,
+    };
   }
 
   static async parseRawExcelOrCsv(params: {

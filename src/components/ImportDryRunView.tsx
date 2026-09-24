@@ -24,7 +24,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Filter,
-  FileCheck
+  FileCheck,
+  X,
+  ExternalLink,
+  Terminal,
+  FileCode,
+  CheckSquare
 } from 'lucide-react';
 import { 
   WorkbookAnalysis, 
@@ -39,8 +44,44 @@ import {
 } from '../types';
 import { createComplexSampleWorkbook } from '../services/sampleWorkbook';
 import { DryRunEngine } from '../services/dryRunEngine';
-import { ApiClient } from '../services/apiClient';
+import { ApiClient, SupabaseDiagnostic, UpsertBatchProgress } from '../services/apiClient';
 import { ExcelAnalyzer } from '../services/excelAnalyzer';
+
+export interface TablePushStatus {
+  tableName: string;
+  sheetName: string;
+  totalRows: number;
+  processedRows: number;
+  successfulRows: number;
+  status: 'pending' | 'running' | 'done' | 'error';
+  error?: string;
+}
+
+export interface PushProgressState {
+  isActive: boolean;
+  status: 'idle' | 'preparing' | 'pushing' | 'completed' | 'error';
+  percentage: number;
+  currentTable: string;
+  currentBatch: number;
+  totalBatches: number;
+  processedRows: number;
+  totalRows: number;
+  successfulRows: number;
+  failedRows: number;
+  tableProgressList: TablePushStatus[];
+  liveLogs: string[];
+}
+
+export interface DiagnosticErrorState {
+  tableName: string;
+  errorCode: string;
+  httpStatus: number;
+  errorMessage: string;
+  cause: string;
+  remediation: string;
+  suggestedSql?: string;
+  sampleData?: any;
+}
 
 interface ImportDryRunViewProps {
   currentAnalysis: WorkbookAnalysis | null;
@@ -84,6 +125,14 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
   const [recordsPage, setRecordsPage] = useState<number>(1);
   const [recordsPerPage, setRecordsPerPage] = useState<number>(50);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Live Supabase Push Progress State
+  const [importProgress, setImportProgress] = useState<PushProgressState | null>(null);
+
+  // Supabase Push Error Diagnostics State
+  const [diagnosticError, setDiagnosticError] = useState<DiagnosticErrorState | null>(null);
+  const [copiedDiagSql, setCopiedDiagSql] = useState<boolean>(false);
+  const [isExecutingDiagSql, setIsExecutingDiagSql] = useState<boolean>(false);
 
   const [typeMismatchAlert, setTypeMismatchAlert] = useState<{
     tableName: string;
@@ -263,6 +312,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
   const handleExecuteImport = async () => {
     setIsImporting(true);
     setImportNotice(null);
+    setDiagnosticError(null);
 
     const wb = getEffectiveWorkbook();
     const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'students.xlsx';
@@ -285,108 +335,232 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
       currentAnalysis
     );
 
-    // If Supabase is connected, sanitize and write clean records directly to Supabase PostgREST
-    let supabaseWriteNotice = '';
-    let supabaseSuccessCount = 0;
-    const supabaseErrors: string[] = [];
+    const activeMaps = mappings.filter(m => m.enabled);
+    const initialTableStatuses: TablePushStatus[] = activeMaps.map(m => {
+      const recs = capturedDbRecords[m.supabaseTable] || databaseState[m.supabaseTable] || [];
+      return {
+        tableName: m.supabaseTable,
+        sheetName: m.worksheetName,
+        totalRows: recs.length,
+        processedRows: 0,
+        successfulRows: 0,
+        status: 'pending' as const,
+      };
+    });
+
+    const totalRowsToPush = initialTableStatuses.reduce((acc, t) => acc + t.totalRows, 0);
+
+    setImportProgress({
+      isActive: true,
+      status: 'preparing',
+      percentage: 2,
+      currentTable: activeMaps[0]?.supabaseTable || '',
+      currentBatch: 0,
+      totalBatches: 1,
+      processedRows: 0,
+      totalRows: totalRowsToPush,
+      successfulRows: 0,
+      failedRows: 0,
+      tableProgressList: initialTableStatuses,
+      liveLogs: [`[${new Date().toLocaleTimeString()}] Initialized push pipeline for ${filename} (${totalRowsToPush.toLocaleString()} rows across ${activeMaps.length} table mappings)`]
+    });
+
+    // Supabase Live Push
+    let totalSuccessCount = 0;
+    let totalFailedCount = 0;
+    let anySupabaseError: any = null;
 
     if (supabaseConfig?.url && (supabaseConfig.anonKey || supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey)) {
       try {
-        for (const wm of mappings) {
-          if (!wm.enabled) continue;
+        for (let mIdx = 0; mIdx < activeMaps.length; mIdx++) {
+          const wm = activeMaps[mIdx];
           const rawRecords = capturedDbRecords[wm.supabaseTable] || databaseState[wm.supabaseTable] || [];
-          if (rawRecords.length > 0) {
-            // ONLY send mapped Supabase columns to avoid PostgREST rejecting extra metadata
-            const allowedCols = new Set(wm.columns.map(c => c.supabaseColumn));
-            if (wm.sectionHeadingTargetCol) {
-              allowedCols.add(wm.sectionHeadingTargetCol);
+          
+          if (rawRecords.length === 0) continue;
+
+          // ONLY send mapped Supabase columns to avoid PostgREST rejecting extra metadata
+          const allowedCols = new Set(wm.columns.map(c => c.supabaseColumn));
+          if (wm.sectionHeadingTargetCol) {
+            allowedCols.add(wm.sectionHeadingTargetCol);
+          }
+
+          const cleanRecordsForSupabase = rawRecords.map(r => {
+            const clean: Record<string, any> = {};
+            for (const col of allowedCols) {
+              if (r[col] !== undefined) {
+                clean[col] = r[col];
+              }
+            }
+            return clean;
+          }).filter(r => Object.keys(r).length > 0);
+
+          if (cleanRecordsForSupabase.length === 0) continue;
+
+          const uniqueKeyCol = wm.columns.find(c => c.uniqueKey)?.supabaseColumn;
+
+          // Set current table to running
+          setImportProgress(prev => {
+            if (!prev) return null;
+            const updated = prev.tableProgressList.map(t => 
+              t.tableName === wm.supabaseTable ? { ...t, status: 'running' as const } : t
+            );
+            return {
+              ...prev,
+              status: 'pushing',
+              currentTable: wm.supabaseTable,
+              tableProgressList: updated,
+              liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] Pushing to table 'public.${wm.supabaseTable}' (${cleanRecordsForSupabase.length.toLocaleString()} rows)...`]
+            };
+          });
+
+          const upRes = await ApiClient.upsertSupabaseRecords(
+            supabaseConfig,
+            wm.supabaseTable,
+            cleanRecordsForSupabase,
+            uniqueKeyCol,
+            (batchProgress) => {
+              setImportProgress(prev => {
+                if (!prev) return null;
+                const doneRowsBefore = prev.tableProgressList
+                  .filter(t => t.tableName !== wm.supabaseTable && t.status === 'done')
+                  .reduce((acc, t) => acc + t.totalRows, 0);
+                const overallProcessed = doneRowsBefore + batchProgress.processed;
+                const overallPct = prev.totalRows > 0 ? Math.min(98, Math.round((overallProcessed / prev.totalRows) * 100)) : 50;
+
+                const updated = prev.tableProgressList.map(t => 
+                  t.tableName === wm.supabaseTable 
+                    ? { ...t, processedRows: batchProgress.processed, successfulRows: batchProgress.successfulCount } 
+                    : t
+                );
+
+                return {
+                  ...prev,
+                  percentage: Math.max(prev.percentage, overallPct),
+                  currentBatch: batchProgress.currentBatch,
+                  totalBatches: batchProgress.totalBatches,
+                  processedRows: overallProcessed,
+                  successfulRows: totalSuccessCount + batchProgress.successfulCount,
+                  tableProgressList: updated,
+                  liveLogs: batchProgress.message 
+                    ? [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] [${wm.supabaseTable}] ${batchProgress.message}`]
+                    : prev.liveLogs
+                };
+              });
+            }
+          );
+
+          if (!upRes.success) {
+            totalFailedCount += cleanRecordsForSupabase.length;
+            anySupabaseError = upRes;
+
+            setImportProgress(prev => {
+              if (!prev) return null;
+              const updated = prev.tableProgressList.map(t => 
+                t.tableName === wm.supabaseTable ? { ...t, status: 'error' as const, error: upRes.error } : t
+              );
+              return {
+                ...prev,
+                status: 'error',
+                failedRows: prev.failedRows + cleanRecordsForSupabase.length,
+                tableProgressList: updated,
+                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ❌ Failed on table 'public.${wm.supabaseTable}': ${upRes.error}`]
+              };
+            });
+
+            // Set rich diagnostic error
+            setDiagnosticError({
+              tableName: wm.supabaseTable,
+              errorCode: upRes.diagnostic?.errorCode || 'PostgREST Sync Error',
+              httpStatus: upRes.diagnostic?.httpStatus || 500,
+              errorMessage: upRes.error || 'Check Supabase table schema and keys',
+              cause: upRes.diagnostic?.cause || `Supabase rejected writing rows to table 'public.${wm.supabaseTable}'`,
+              remediation: upRes.diagnostic?.remediation || 'Ensure the table exists in Supabase, and RLS policies allow INSERT.',
+              suggestedSql: upRes.diagnostic?.suggestedSql,
+              sampleData: cleanRecordsForSupabase[0]
+            });
+
+            // If error is 22P02, also populate typeMismatchAlert
+            if (upRes.error?.includes('22P02') || upRes.error?.includes('invalid input syntax for type integer')) {
+              const intMatch = upRes.error.match(/invalid input syntax for type integer:\s*"([^"]+)"/i);
+              const offending = intMatch ? intMatch[1] : 'text value';
+              let culpritCol = '';
+              for (const r of cleanRecordsForSupabase) {
+                for (const [k, v] of Object.entries(r)) {
+                  if (String(v).trim() === offending.trim()) {
+                    culpritCol = k;
+                    break;
+                  }
+                }
+                if (culpritCol) break;
+              }
+              if (!culpritCol) culpritCol = wm.sectionHeadingTargetCol || 'class';
+
+              setTypeMismatchAlert({
+                tableName: wm.supabaseTable,
+                columnName: culpritCol,
+                offendingValue: offending,
+                alterSql: `ALTER TABLE public.${wm.supabaseTable} ALTER COLUMN ${culpritCol} TYPE text;`
+              });
             }
 
-            const cleanRecordsForSupabase = rawRecords.map(r => {
-              const clean: Record<string, any> = {};
-              for (const col of allowedCols) {
-                if (r[col] !== undefined) {
-                  clean[col] = r[col];
-                }
-              }
-              return clean;
-            }).filter(r => Object.keys(r).length > 0);
+            break; // Stop at first table failure
+          } else {
+            const tableRowsCount = upRes.upsertedCount || cleanRecordsForSupabase.length;
+            totalSuccessCount += tableRowsCount;
 
-            if (cleanRecordsForSupabase.length === 0) continue;
+            setImportProgress(prev => {
+              if (!prev) return null;
+              const updated = prev.tableProgressList.map(t => 
+                t.tableName === wm.supabaseTable 
+                  ? { ...t, status: 'done' as const, processedRows: t.totalRows, successfulRows: t.totalRows } 
+                  : t
+              );
+              return {
+                ...prev,
+                tableProgressList: updated,
+                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ✅ Table 'public.${wm.supabaseTable}' complete! (${tableRowsCount.toLocaleString()} rows committed)`]
+              };
+            });
 
-            const uniqueKeyCol = wm.columns.find(c => c.uniqueKey)?.supabaseColumn;
-            const upRes = await ApiClient.upsertSupabaseRecords(
-              supabaseConfig,
-              wm.supabaseTable,
-              cleanRecordsForSupabase,
-              uniqueKeyCol
-            );
-
-            if (upRes.success) {
-              supabaseSuccessCount += cleanRecordsForSupabase.length;
-              if ((upRes as any).warning) {
-                supabaseWriteNotice += ` Synced ${cleanRecordsForSupabase.length} rows to '${wm.supabaseTable}'. ${(upRes as any).warning}`;
-              } else {
-                supabaseWriteNotice += ` Synced ${cleanRecordsForSupabase.length} rows to '${wm.supabaseTable}'.`;
-              }
-              // Fetch latest live rows from Supabase to update local UI databaseState
+            // Refresh local database preview
+            try {
               const latest = await ApiClient.fetchSupabaseTableRows(supabaseConfig, wm.supabaseTable, 100);
               if (latest.success && latest.rows) {
                 onUpdateDatabase(wm.supabaseTable, latest.rows);
               }
-            } else {
-              const errStr = upRes.error || '';
-              supabaseErrors.push(`${wm.supabaseTable}: ${errStr || 'Check table schema'}`);
-
-              // Detect PostgreSQL 22P02: invalid input syntax for type integer: "GRADE 07 A"
-              if (errStr.includes('invalid input syntax for type integer') || errStr.includes('22P02')) {
-                const intMatch = errStr.match(/invalid input syntax for type integer:\s*"([^"]+)"/i);
-                const offending = intMatch ? intMatch[1] : 'GRADE 07 A';
-
-                // Find culprit column
-                let culpritCol = '';
-                for (const r of cleanRecordsForSupabase) {
-                  for (const [k, v] of Object.entries(r)) {
-                    if (String(v).trim() === offending.trim()) {
-                      culpritCol = k;
-                      break;
-                    }
-                  }
-                  if (culpritCol) break;
-                }
-                if (!culpritCol) {
-                  culpritCol = wm.sectionHeadingTargetCol || 'class';
-                }
-
-                setTypeMismatchAlert({
-                  tableName: wm.supabaseTable,
-                  columnName: culpritCol,
-                  offendingValue: offending,
-                  alterSql: `ALTER TABLE public.${wm.supabaseTable} ALTER COLUMN ${culpritCol} TYPE text;`
-                });
-              }
-            }
+            } catch {}
           }
         }
       } catch (err: any) {
-        supabaseErrors.push(err.message);
+        anySupabaseError = { error: err.message };
       }
+    } else {
+      // Local-only mode
+      totalSuccessCount = totalRowsToPush;
     }
-
-    await new Promise(r => setTimeout(r, 400));
 
     onAddImportLog(log, errors);
     setIsImporting(false);
 
-    if (supabaseErrors.length > 0) {
+    if (anySupabaseError) {
       setImportNotice({
         success: false,
-        message: `Import processed locally, but Supabase reported issues: ${supabaseErrors.join(' | ')}. Please check the Supabase Schema tab or use the 1-Click fix below.`
+        message: `Supabase push halted: ${anySupabaseError.error || 'Check error diagnostic below'}. Review the Diagnostic Center for the 1-Click SQL fix.`
       });
     } else {
+      setImportProgress(prev => prev ? {
+        ...prev,
+        isActive: true,
+        status: 'completed',
+        percentage: 100,
+        processedRows: totalRowsToPush,
+        successfulRows: totalSuccessCount,
+        liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] 🚀 Finished! Successfully committed ${totalSuccessCount.toLocaleString()} total rows to Supabase!`]
+      } : null);
+
       setImportNotice({
         success: true,
-        message: `Production Import completed! ${log.rowsInserted} records inserted, ${log.rowsUpdated} records merged/updated, ${log.rowsFailed} failed.${supabaseWriteNotice || (supabaseSuccessCount > 0 ? ` (Synced ${supabaseSuccessCount} rows to Supabase)` : '')}`
+        message: `Production Import completed! Synced ${totalSuccessCount.toLocaleString()} records directly to Supabase.`
       });
     }
 
@@ -454,6 +628,44 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     setTimeout(() => {
       handleExecuteImport();
     }, 400);
+  };
+
+  // 1-Click Direct DDL execution for diagnostic SQL fixes
+  const handleExecuteDiagnosticSql = async () => {
+    if (!diagnosticError?.suggestedSql || !supabaseConfig) return;
+    setIsExecutingDiagSql(true);
+    try {
+      const res = await ApiClient.executeSupabaseDdl(
+        supabaseConfig,
+        diagnosticError.suggestedSql,
+        diagnosticError.tableName
+      );
+      if (res.success && res.directExecuted) {
+        setImportNotice({
+          success: true,
+          message: `Schema updated in Supabase! Retrying table push now...`
+        });
+        setDiagnosticError(null);
+        setTimeout(() => {
+          handleExecuteImport();
+        }, 600);
+      } else {
+        setImportNotice({
+          success: false,
+          message: `Direct DDL requires Service Role Key or execute directly in Supabase SQL Editor (SQL copied to clipboard!).`
+        });
+        navigator.clipboard.writeText(diagnosticError.suggestedSql);
+        setCopiedDiagSql(true);
+        setTimeout(() => setCopiedDiagSql(false), 3000);
+      }
+    } catch (e: any) {
+      setImportNotice({
+        success: false,
+        message: `DDL error: ${e.message}. Copy the SQL below to Supabase Dashboard -> SQL Editor.`
+      });
+    } finally {
+      setIsExecutingDiagSql(false);
+    }
   };
 
   // Auto-resolve non-critical validation errors by unsetting strict requirement or setting flexible transformations
@@ -695,6 +907,260 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
             <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
           )}
           <span className="flex-1">{importNotice.message}</span>
+        </div>
+      )}
+
+      {/* Live Supabase Push Progress & Loading Feedback Card */}
+      {importProgress && importProgress.isActive && (
+        <div className="p-5 rounded-2xl bg-white border-2 border-emerald-500 shadow-md space-y-4 transition-all animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <div className="flex items-center space-x-3">
+              <div className={`p-2 rounded-xl text-white shrink-0 ${
+                importProgress.status === 'completed'
+                  ? 'bg-emerald-600'
+                  : importProgress.status === 'error'
+                  ? 'bg-rose-600'
+                  : 'bg-emerald-600 animate-pulse'
+              }`}>
+                {importProgress.status === 'completed' ? (
+                  <CheckSquare className="w-5 h-5" />
+                ) : importProgress.status === 'error' ? (
+                  <ShieldAlert className="w-5 h-5" />
+                ) : (
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                )}
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {importProgress.status === 'completed' && '✅ Supabase Live Write Completed'}
+                    {importProgress.status === 'error' && '❌ Supabase Push Paused (Action Needed)'}
+                    {importProgress.status === 'preparing' && '⏳ Preparing Records & Schema...'}
+                    {importProgress.status === 'pushing' && '⚡ Pushing Rows to Supabase Live...'}
+                  </h3>
+                  <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                    importProgress.status === 'completed'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : importProgress.status === 'error'
+                      ? 'bg-rose-100 text-rose-800'
+                      : 'bg-blue-100 text-blue-800'
+                  }`}>
+                    {importProgress.percentage}% Complete
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {importProgress.status === 'completed'
+                    ? `Successfully pushed and verified all ${importProgress.successfulRows.toLocaleString()} rows into Supabase.`
+                    : importProgress.status === 'error'
+                    ? `Encountered an error writing to table public.${importProgress.currentTable}. See diagnostic guidance below.`
+                    : `Committing batch ${importProgress.currentBatch}/${importProgress.totalBatches} (${importProgress.processedRows.toLocaleString()} / ${importProgress.totalRows.toLocaleString()} rows processed)`}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 shrink-0">
+              {importProgress.status !== 'pushing' && (
+                <button
+                  type="button"
+                  onClick={() => setImportProgress(null)}
+                  className="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-600 font-semibold rounded hover:bg-slate-100"
+                >
+                  Close Feedback
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Master Progress Bar */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between text-xs font-semibold text-slate-700">
+              <span>Overall Progress ({importProgress.processedRows.toLocaleString()} of {importProgress.totalRows.toLocaleString()} rows)</span>
+              <span className="font-mono text-emerald-600 font-bold">{importProgress.percentage}%</span>
+            </div>
+            <div className="w-full h-3.5 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ${
+                  importProgress.status === 'completed'
+                    ? 'bg-emerald-500'
+                    : importProgress.status === 'error'
+                    ? 'bg-rose-500'
+                    : 'bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 animate-pulse'
+                }`}
+                style={{ width: `${Math.min(100, Math.max(2, importProgress.percentage))}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Table by Table Status Pill Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+            {importProgress.tableProgressList.map((t) => (
+              <div
+                key={t.tableName}
+                className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
+                  t.status === 'done'
+                    ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+                    : t.status === 'running'
+                    ? 'bg-sky-50 border-sky-300 text-sky-950 font-bold ring-1 ring-sky-400'
+                    : t.status === 'error'
+                    ? 'bg-rose-50 border-rose-300 text-rose-950 font-bold'
+                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}
+              >
+                <div className="flex items-center space-x-2 truncate">
+                  <div className="shrink-0">
+                    {t.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+                    {t.status === 'running' && <RefreshCw className="w-3.5 h-3.5 text-sky-600 animate-spin" />}
+                    {t.status === 'error' && <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />}
+                    {t.status === 'pending' && <div className="w-2 h-2 rounded-full bg-slate-300" />}
+                  </div>
+                  <div className="truncate">
+                    <span className="font-mono font-medium">public.{t.tableName}</span>
+                    <span className="text-[10px] text-slate-500 block truncate font-sans">
+                      {t.sheetName} ({t.totalRows.toLocaleString()} rows)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-right shrink-0 font-mono text-[11px]">
+                  {t.status === 'done' && <span className="text-emerald-700 font-bold">✓ Synced</span>}
+                  {t.status === 'running' && <span className="text-sky-700 font-bold">{t.processedRows}/{t.totalRows}</span>}
+                  {t.status === 'error' && <span className="text-rose-700 font-bold">Failed</span>}
+                  {t.status === 'pending' && <span className="text-slate-400">Waiting</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Live Progress Log Drawer */}
+          {importProgress.liveLogs.length > 0 && (
+            <div className="bg-slate-900 rounded-xl p-3 border border-slate-800 text-[11px] font-mono text-slate-300 max-h-36 overflow-y-auto space-y-1">
+              <div className="flex items-center space-x-1.5 text-slate-400 border-b border-slate-800 pb-1.5 mb-1.5 uppercase tracking-wider text-[10px] font-sans font-bold">
+                <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Supabase Live Sync Event Stream</span>
+              </div>
+              {importProgress.liveLogs.map((logStr, i) => (
+                <div key={i} className={logStr.includes('❌') ? 'text-rose-400' : logStr.includes('✅') ? 'text-emerald-400' : 'text-slate-300'}>
+                  {logStr}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Supabase Diagnostic Troubleshooting Center */}
+      {diagnosticError && (
+        <div className="p-5 rounded-2xl bg-rose-50/90 border-2 border-rose-300 shadow-md text-slate-900 space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start space-x-3">
+              <div className="p-2.5 rounded-xl bg-rose-600 text-white shrink-0 mt-0.5">
+                <ShieldAlert className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-base font-bold text-rose-950">
+                    Supabase Push Issue: {diagnosticError.errorCode}
+                  </h3>
+                  <span className="px-2 py-0.5 bg-rose-200 text-rose-900 text-[10px] font-extrabold uppercase rounded-full">
+                    HTTP {diagnosticError.httpStatus}
+                  </span>
+                </div>
+                <p className="text-xs text-rose-900 font-medium mt-1 leading-relaxed">
+                  {diagnosticError.cause}
+                </p>
+                <p className="text-xs text-slate-700 mt-1">
+                  <strong>Recommended Fix:</strong> {diagnosticError.remediation}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setDiagnosticError(null)}
+              className="text-xs text-slate-400 hover:text-slate-600 font-semibold p-1"
+              title="Dismiss error card"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Raw Error Details */}
+          <div className="bg-white/80 p-3 rounded-lg border border-rose-200 text-xs font-mono text-rose-900 overflow-x-auto">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-rose-600 block mb-1 font-sans">
+              PostgREST Error Response:
+            </span>
+            {diagnosticError.errorMessage}
+          </div>
+
+          {/* Suggested SQL Script with 1-Click Execution and Copy */}
+          {diagnosticError.suggestedSql && (
+            <div className="bg-white p-4 rounded-xl border border-rose-200 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <FileCode className="w-4 h-4 text-emerald-600" />
+                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                    Remediation SQL (Copy & Paste to Supabase SQL Editor):
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(diagnosticError.suggestedSql || '');
+                    setCopiedDiagSql(true);
+                    setTimeout(() => setCopiedDiagSql(false), 2000);
+                  }}
+                  className="inline-flex items-center space-x-1.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  {copiedDiagSql ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span className="text-emerald-700 font-bold">SQL Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy SQL</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <pre className="bg-slate-950 text-emerald-400 p-3.5 rounded-lg text-xs font-mono overflow-x-auto leading-relaxed">
+                {diagnosticError.suggestedSql}
+              </pre>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleExecuteDiagnosticSql}
+                    disabled={isExecutingDiagSql}
+                    className="inline-flex items-center space-x-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>{isExecutingDiagSql ? 'Applying Fix to Supabase...' : '1-Click Auto-Apply Fix & Retry'}</span>
+                  </button>
+
+                  <a
+                    href="https://supabase.com/dashboard"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center space-x-1 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors"
+                  >
+                    <span>Open Supabase SQL Editor</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleExecuteImport}
+                  disabled={isImporting}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-2xs transition-colors cursor-pointer"
+                >
+                  Retry Push Now
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

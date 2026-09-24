@@ -393,9 +393,9 @@ export class ExcelAnalyzer {
       });
     }
 
-    // 6. Extract Sample Rows (up to 1500 rows for complete dry-run and sync preview)
+    // 6. Extract Sample Rows (extracting all data rows, up to 50,000 rows for complete 3000+ row processing)
     const sampleRows: { rowNumber: number; data: Record<string, any> }[] = [];
-    const maxSampleRows = Math.min(totalRows, detectedDataStartRow + 1500);
+    const maxSampleRows = Math.min(totalRows, detectedDataStartRow + 50000);
 
     for (let r = detectedDataStartRow - 1; r < maxSampleRows; r++) {
       const rowNumber = r + 1;
