@@ -194,7 +194,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+          <button
+            id="btn-sync-all-coolify"
+            onClick={async () => {
+              setIsRunningSync(true);
+              try {
+                const res = await ApiClient.saveFullServerState({
+                  nextcloud: nextcloudConfig,
+                  supabase: supabaseConfig,
+                  syncSettings: formData,
+                  mappings,
+                });
+                if (res.success) {
+                  setSavedNotice('✨ All environment variables, presets, mappings, and worker settings permanently saved to Coolify server disk & local storage!');
+                  setTimeout(() => setSavedNotice(null), 5000);
+                }
+              } catch (e: any) {
+                alert(`Notice saving to Coolify server disk: ${e.message}`);
+              } finally {
+                setIsRunningSync(false);
+              }
+            }}
+            disabled={isRunningSync}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-2xs transition-colors"
+            title="Persist all variables, sheet mappings, presets, and worker configs to Coolify server disk & localStorage"
+          >
+            <Server className="w-3.5 h-3.5 text-indigo-200" />
+            <span>Sync All to Coolify Server Disk & LocalStorage</span>
+          </button>
+
           <button
             id="btn-run-diagnostics"
             onClick={handleRunDiagnostics}
@@ -247,6 +276,77 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Coolify Server Disk & Local Storage Dual-Persistence Hub */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-xl p-5 text-white shadow-sm border border-indigo-900/60 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-800/40 pb-3">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-2 rounded-lg bg-indigo-600/30 text-indigo-400 border border-indigo-500/30">
+              <Server className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <h2 className="text-sm font-bold uppercase tracking-wider text-indigo-100">
+                  Coolify Server Disk & LocalStorage Auto-Persistence Hub
+                </h2>
+                <span className="text-[10px] px-2 py-0.5 rounded font-bold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  ● Continuous Dual-Sync Active
+                </span>
+              </div>
+              <p className="text-xs text-indigo-200/70 mt-0.5">
+                All environment variables, sheet mappings, presets, worker configs, and credentials are saved to server disk (<code className="text-indigo-300 font-mono">data/</code> + <code className="text-indigo-300 font-mono">.env</code>) and mirrored in your browser's local storage.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 pt-1">
+          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 space-y-1">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Disk Secrets</div>
+            <div className="font-mono text-xs font-semibold text-emerald-400 flex items-center justify-between">
+              <span>data/secrets.json</span>
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="text-[10px] text-slate-400 truncate">Credentials & URLs</div>
+          </div>
+
+          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 space-y-1">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Sheet Mappings</div>
+            <div className="font-mono text-xs font-semibold text-indigo-300 flex items-center justify-between">
+              <span>data/mappings.json</span>
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="text-[10px] text-slate-400">{mappings.length} worksheets</div>
+          </div>
+
+          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 space-y-1">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">AI Presets Store</div>
+            <div className="font-mono text-xs font-semibold text-purple-300 flex items-center justify-between">
+              <span>data/presets.json</span>
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="text-[10px] text-slate-400 truncate">Archetypes & Custom</div>
+          </div>
+
+          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 space-y-1">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Worker Daemon</div>
+            <div className="font-mono text-xs font-semibold text-amber-300 flex items-center justify-between">
+              <span>worker_config.json</span>
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="text-[10px] text-slate-400">Interval: {formData.syncInterval}</div>
+          </div>
+
+          <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 space-y-1">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Container .env</div>
+            <div className="font-mono text-xs font-semibold text-teal-300 flex items-center justify-between">
+              <span>.env Auto-Updated</span>
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="text-[10px] text-slate-400 truncate">Survives Reboots</div>
+          </div>
+        </div>
+      </div>
 
       {/* System Secrets & Configuration Vault (Admin Panel Integration) */}
       <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-2xs space-y-4">

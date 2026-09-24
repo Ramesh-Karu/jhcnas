@@ -37,10 +37,12 @@ import {
   TableSyncPolicy,
   SupabaseConfig,
   SupabaseTableInfo,
-  SupabaseTableColumn
+  SupabaseTableColumn,
+  AiWorkbookPreset
 } from '../types';
 import { getDefaultSampleMappings } from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
+import { AiPresetsModal } from './AiPresetsModal';
 
 interface MappingsViewProps {
   mappings: WorksheetMapping[];
@@ -69,6 +71,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   const [isLoadingSchema, setIsLoadingSchema] = useState<boolean>(false);
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [showSupabasePanel, setShowSupabasePanel] = useState<boolean>(true);
+
+  // AI Presets & Archetypes Modal state
+  const [showAiPresetsModal, setShowAiPresetsModal] = useState<boolean>(false);
+  const [presetPrefill, setPresetPrefill] = useState<boolean>(false);
 
   // Active mapping reference
   const activeMapping = currentMappings.find(m => m.id === activeSheetId) || currentMappings[0];
@@ -429,10 +435,23 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     handleUpdateActiveMapping({ columns: activeMapping.columns.filter(c => c.id !== colId) });
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     onSaveMappings(currentMappings);
-    setSaveMessage('All worksheet mappings saved to database configuration.');
-    setTimeout(() => setSaveMessage(null), 3000);
+    try {
+      await ApiClient.savePermanentMappings({
+        mappings: currentMappings,
+        workbookInfo: {
+          filename: currentAnalysis?.filename || activeMapping?.workbookName || 'students.xlsx',
+          fileHash: currentAnalysis?.fileHash,
+          totalWorksheets: currentMappings.length,
+        },
+        supabase: supabaseConfig,
+      });
+      setSaveMessage('✨ Mappings permanently saved to server disk and Supabase PostgreSQL metadata tables!');
+    } catch {
+      setSaveMessage('All worksheet mappings saved to database configuration.');
+    }
+    setTimeout(() => setSaveMessage(null), 4000);
   };
 
   const handleResetDefaults = () => {
@@ -441,6 +460,16 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     onSaveMappings(defaults);
     setSaveMessage('Reset to default sample mappings.');
     setTimeout(() => setSaveMessage(null), 3000);
+  };
+
+  const handleApplyPreset = (preset: AiWorkbookPreset) => {
+    if (preset.sheetMappings && preset.sheetMappings.length > 0) {
+      setCurrentMappings(preset.sheetMappings);
+      setActiveSheetId(preset.sheetMappings[0].id);
+      onSaveMappings(preset.sheetMappings);
+      setSaveMessage(`✨ Successfully applied AI Preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured, merge keys preserved).`);
+      setTimeout(() => setSaveMessage(null), 4500);
+    }
   };
 
   // Find sample values for a column from the analyzed sheet
@@ -505,11 +534,47 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           </button>
 
           <button
-            onClick={onOpenAiAssistant}
-            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-purple-50 border border-purple-200 text-xs font-medium text-purple-700 hover:bg-purple-100 shadow-2xs"
+            id="btn-open-presets-library"
+            onClick={() => {
+              setPresetPrefill(false);
+              setShowAiPresetsModal(true);
+            }}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 shadow-2xs transition-colors"
+            title="Browse pre-built workbook archetype presets (Timetable, Donations, Allocations)"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+            <span>AI Presets Library</span>
+          </button>
+
+          <button
+            id="btn-view-served-sheets-hub"
+            onClick={() => onNavigate('served_mappings')}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-semibold text-white shadow-2xs transition-colors"
+            title="Inspect unified overview of all served sheets, merged Supabase tables, and single sync history"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Served Sheets Hub</span>
+          </button>
+
+          <button
+            id="btn-save-as-ai-preset"
+            onClick={() => {
+              setPresetPrefill(true);
+              setShowAiPresetsModal(true);
+            }}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-purple-50 border border-purple-200 text-xs font-semibold text-purple-800 hover:bg-purple-100 shadow-2xs transition-colors"
+            title="Save these current worksheet mappings as a reusable AI Preset in server disk & Supabase"
           >
             <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-            <span>AI Mapping Suggester</span>
+            <span>Save as AI Preset</span>
+          </button>
+
+          <button
+            onClick={onOpenAiAssistant}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs font-medium text-slate-700 hover:bg-slate-100 shadow-2xs"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-slate-600" />
+            <span>AI Suggester</span>
           </button>
 
           <button
@@ -569,11 +634,11 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               </div>
             ) : supabaseTables.length > 0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {supabaseTables.map((tbl) => {
+                {supabaseTables.map((tbl, tblIdx) => {
                   const isMappedToActive = activeMapping?.supabaseTable?.toLowerCase() === tbl.name.toLowerCase();
                   return (
                     <div
-                      key={tbl.name}
+                      key={`${tbl.name}-${tblIdx}`}
                       className={`p-3.5 rounded-lg border text-left transition-all ${
                         isMappedToActive
                           ? 'border-emerald-500 bg-white ring-2 ring-emerald-500/20 shadow-xs'
@@ -759,8 +824,8 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                   }}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white font-medium text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 >
-                  {currentAnalysis.worksheets.map(w => (
-                    <option key={w.sheetName} value={w.sheetName}>
+                  {currentAnalysis.worksheets.map((w, wIdx) => (
+                    <option key={`${w.sheetName}-${wIdx}`} value={w.sheetName}>
                       {w.sheetName} ({w.totalRows} rows, {w.headers.length} detected columns)
                     </option>
                   ))}
@@ -816,8 +881,8 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                   onChange={(e) => handleSelectSupabaseTable(e.target.value)}
                   className="flex-1 px-3 py-2 rounded-lg border border-slate-300 bg-white font-bold font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 >
-                  {supabaseTables.map(t => (
-                    <option key={t.name} value={t.name}>
+                  {supabaseTables.map((t, tIdx) => (
+                    <option key={`${t.name}-${tIdx}`} value={t.name}>
                       public.{t.name} ({t.columns.length} columns)
                     </option>
                   ))}
@@ -1088,6 +1153,21 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* AI Presets & Inbuilt Analyser Modal */}
+      <AiPresetsModal
+        isOpen={showAiPresetsModal}
+        onClose={() => setShowAiPresetsModal(false)}
+        currentAnalysis={currentAnalysis || null}
+        activeMappings={currentMappings}
+        onApplyPreset={handleApplyPreset}
+        onLoadPresetWorkbook={() => {
+          onNavigate('analyzer');
+        }}
+        supabaseConfig={supabaseConfig}
+        supabaseTables={supabaseTables}
+        prefillFromCustomMappings={presetPrefill}
+      />
     </div>
   );
 };

@@ -10,7 +10,8 @@ import {
   LogMessage,
   SyncConflictRecord,
   SyncBaselineRecord,
-  TwoWaySyncSettings
+  TwoWaySyncSettings,
+  AiWorkbookPreset
 } from '../types';
 import { createComplexSampleWorkbook, getDefaultSampleMappings, getSampleInitialDatabaseState } from './sampleWorkbook';
 import { ExcelAnalyzer } from './excelAnalyzer';
@@ -51,7 +52,8 @@ const STORAGE_KEYS = {
   CONFLICTS: 'nes_sync_conflicts',
   SYNC_BASELINES: 'nes_sync_baselines',
   TWOWAY_SETTINGS: 'nes_twoway_settings',
-  SAMPLE_LOADED: 'nes_sample_loaded_v1'
+  SAMPLE_LOADED: 'nes_sample_loaded_v1',
+  PRESETS: 'nes_ai_presets'
 };
 
 export class StorageService {
@@ -288,6 +290,24 @@ export class StorageService {
     localStorage.setItem(STORAGE_KEYS.MAPPINGS, JSON.stringify(mappings));
   }
 
+  static getPresets(): AiWorkbookPreset[] {
+    const raw = localStorage.getItem(STORAGE_KEYS.PRESETS);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+    return [];
+  }
+
+  static savePresets(presets: AiWorkbookPreset[]): void {
+    try {
+      localStorage.setItem(STORAGE_KEYS.PRESETS, JSON.stringify(presets));
+    } catch (e) {
+      console.warn('LocalStorage limit for presets:', e);
+    }
+  }
+
   private static _cachedDbState: Record<string, any[]> | null = null;
 
   static getImportLogs(): ImportLog[] {
@@ -461,6 +481,21 @@ export class StorageService {
 
   static saveTwoWaySyncSettings(settings: TwoWaySyncSettings): void {
     localStorage.setItem(STORAGE_KEYS.TWOWAY_SETTINGS, JSON.stringify(settings));
+  }
+
+  static getAiPresets(): AiWorkbookPreset[] {
+    const raw = localStorage.getItem(STORAGE_KEYS.PRESETS);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  }
+
+  static saveAiPresets(presets: AiWorkbookPreset[]): void {
+    localStorage.setItem(STORAGE_KEYS.PRESETS, JSON.stringify(presets));
   }
 
   static loadSampleData(): void {

@@ -241,6 +241,32 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
   const [remoteRows, setRemoteRows] = useState<any[] | null>(null);
   const [remoteFetchNotice, setRemoteFetchNotice] = useState<string | null>(null);
   const [selectedTable, setSelectedTable] = useState<string>('');
+  const [isPopulatingMetadata, setIsPopulatingMetadata] = useState(false);
+
+  const handleSyncMetadataToSupabase = async () => {
+    if (!config.url || !mappings || mappings.length === 0) return;
+    setIsPopulatingMetadata(true);
+    setRemoteFetchNotice(null);
+    try {
+      const res = await ApiClient.syncMappingsToSupabase({
+        mappings,
+        supabase: config,
+      });
+      if (res.success) {
+        setRemoteFetchNotice(`Successfully populated ${res.worksheetsCount || mappings.length} worksheet mappings and ${res.columnsCount || 0} column alignments into Supabase PostgreSQL metadata tables!`);
+        if (selectedTable) {
+          await fetchTableData(selectedTable, config);
+        }
+      } else {
+        setRemoteFetchNotice(`Failed syncing mappings to Supabase: ${res.error}`);
+      }
+    } catch (e: any) {
+      setRemoteFetchNotice(`Error syncing mappings: ${e.message}`);
+    } finally {
+      setIsPopulatingMetadata(false);
+      setTimeout(() => setRemoteFetchNotice(null), 6000);
+    }
+  };
 
   const hasCredentials = Boolean(formData.url.trim() && (formData.anonKey.trim() || formData.serviceKey?.trim() || formData.serviceRoleKey?.trim()));
   const isVerifiedConnected = Boolean(config.isConnected && hasCredentials);
@@ -754,11 +780,11 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
                   </div>
                 ) : (
                   <div className="space-y-1.5">
-                    {allAvailableTables.map((t) => {
+                    {allAvailableTables.map((t, tIdx) => {
                       const isDiscovered = discoveredTableNames.includes(t);
                       return (
                         <button
-                          key={t}
+                          key={`${t}-${tIdx}`}
                           id={`table-select-${t}`}
                           onClick={() => {
                             setSelectedTable(t);
@@ -830,7 +856,7 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
                   </div>
                 )}
 
-                <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between">
+                <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="font-bold text-slate-900 text-base">public.{selectedTable || 'Select Table'}</span>
                     {selectedTable && (
@@ -839,11 +865,24 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
                       </span>
                     )}
                   </div>
-                  {selectedTable && (
-                    <span className="text-xs text-teal-700 bg-teal-100/60 px-2 py-0.5 rounded font-mono">
-                      Live PostgreSQL Table
-                    </span>
-                  )}
+                  <div className="flex items-center space-x-2">
+                    {['workbooks', 'worksheet_mappings', 'column_mappings', 'sync_settings'].includes(selectedTable) && (
+                      <button
+                        onClick={handleSyncMetadataToSupabase}
+                        disabled={isPopulatingMetadata}
+                        className="inline-flex items-center space-x-1.5 px-3 py-1 rounded bg-teal-600 hover:bg-teal-700 text-white font-medium text-xs transition-colors shadow-2xs"
+                        title="Sync active mappings and source info into this table"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isPopulatingMetadata ? 'animate-spin' : ''}`} />
+                        <span>{isPopulatingMetadata ? 'Syncing Mappings...' : 'Populate with Live Mappings'}</span>
+                      </button>
+                    )}
+                    {selectedTable && (
+                      <span className="text-xs text-teal-700 bg-teal-100/60 px-2 py-0.5 rounded font-mono">
+                        Live PostgreSQL Table
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {!selectedTable ? (
@@ -856,11 +895,23 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
                     <span>Querying table public.{selectedTable} from Supabase...</span>
                   </div>
                 ) : currentRecords.length === 0 ? (
-                  <div className="p-12 text-center text-slate-500 text-sm space-y-1">
+                  <div className="p-12 text-center text-slate-500 text-sm space-y-3">
                     <p className="font-medium text-slate-700">0 records in <code className="font-mono">public.{selectedTable}</code>.</p>
-                    <p className="text-xs text-slate-400">
-                      This table is currently empty in your PostgreSQL database. Run an Ingestion Sync Cycle or Dry Run to sync Excel data.
+                    <p className="text-xs text-slate-400 max-w-md mx-auto">
+                      {['workbooks', 'worksheet_mappings', 'column_mappings', 'sync_settings'].includes(selectedTable)
+                        ? 'This metadata table is currently empty in Supabase. Click below to automatically populate it with your configured worksheet mappings and source file information.'
+                        : 'This data table is currently empty in your PostgreSQL database. Run an Ingestion Sync Cycle or Dry Run to sync Excel rows.'}
                     </p>
+                    {['workbooks', 'worksheet_mappings', 'column_mappings', 'sync_settings'].includes(selectedTable) && (
+                      <button
+                        onClick={handleSyncMetadataToSupabase}
+                        disabled={isPopulatingMetadata}
+                        className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold shadow-2xs transition-colors"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isPopulatingMetadata ? 'animate-spin' : ''}`} />
+                        <span>{isPopulatingMetadata ? 'Populating Supabase Table...' : 'Populate & Sync Mapping Data to Table'}</span>
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="overflow-x-auto max-h-[500px]">

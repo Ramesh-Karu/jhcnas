@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { WorkbookAnalysis, SheetAnalysis, MergedRange, SheetHeader, DataType } from '../types';
+import { MatrixTransformer } from './matrixTransformer';
 
 export class ExcelAnalyzer {
   static async computeSHA256(data: ArrayBuffer): Promise<string> {
@@ -28,12 +29,24 @@ export class ExcelAnalyzer {
     const fileSize = buffer.byteLength;
     const worksheets: SheetAnalysis[] = [];
     const base64Data = this.bufferToBase64(buffer);
+    const rawPreviewData: { sheetName: string; rows: any[][] }[] = [];
 
     for (const sheetName of wb.SheetNames) {
       const ws = wb.Sheets[sheetName];
       const sheetAnalysis = this.analyzeSheet(ws, sheetName);
       worksheets.push(sheetAnalysis);
+
+      // Collect sample rows for archetype detection
+      try {
+        const previewRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
+        rawPreviewData.push({ sheetName, rows: previewRows.slice(0, 25) });
+      } catch {
+        rawPreviewData.push({ sheetName, rows: [] });
+      }
     }
+
+    // Run Archetype Detection Engine
+    const archetypeResult = MatrixTransformer.detectArchetype(wb.SheetNames, rawPreviewData);
 
     const analysis: WorkbookAnalysis = {
       filename,
@@ -43,7 +56,14 @@ export class ExcelAnalyzer {
       worksheets,
       analyzedAt: new Date().toISOString(),
       fileHash: '', // Will be populated with SHA-256
-      base64Data
+      base64Data,
+      rawWorkbookBase64: base64Data,
+      detectedArchetype: archetypeResult.archetype,
+      archetypeTitle: archetypeResult.title,
+      archetypeBadge: archetypeResult.badge,
+      archetypeSummary: archetypeResult.summary,
+      archetypeFeatures: archetypeResult.features,
+      archetypeRecommendations: archetypeResult.recommendations
     };
 
     return { wb, analysis };
@@ -63,6 +83,70 @@ export class ExcelAnalyzer {
       }
     }
     return null;
+  }
+
+  /**
+   * Industrial Standard: Detects if a row is a merged year header, section divider,
+   * or category banner (e.g. "Year 2023", "2020", "CLASS 10A") so that it is NEVER
+   * used, sampled, or inserted into the database as a data row.
+   */
+  static isYearOrSectionDividerRow(
+    ws: XLSX.WorkSheet,
+    r: number,
+    totalCols: number,
+    rawMerges: XLSX.Range[]
+  ): { isDivider: boolean; extractedHeading?: string } {
+    // 1. Check if this row intersects a merged range spanning 2+ columns with a year or section definition
+    const mergesInRow = rawMerges.filter(m => m.s.r <= r && r <= m.e.r && m.e.c > m.s.c);
+    for (const m of mergesInRow) {
+      const originCell = ws[XLSX.utils.encode_cell(m.s)];
+      const rawText = String(originCell?.w ?? originCell?.v ?? '').trim();
+      if (!rawText) continue;
+
+      const spanCols = m.e.c - m.s.c + 1;
+      const isYearPattern =
+        /\b(19\d{2}|20\d{2})\b/.test(rawText) ||
+        /year\s*[-:]?\s*\d{4}/i.test(rawText) ||
+        /\d{4}\s*[-/]\s*\d{2,4}/.test(rawText) ||
+        /^(year|academic\s*year|batch)/i.test(rawText);
+      const isSectionPattern = /^(grade|class|section|term|semester)\s*[:;]?\s*\w+/i.test(rawText);
+
+      if (spanCols >= 2 && (isYearPattern || isSectionPattern)) {
+        return { isDivider: true, extractedHeading: rawText };
+      }
+
+      if (spanCols >= Math.max(2, Math.floor(totalCols / 2))) {
+        return { isDivider: true, extractedHeading: rawText };
+      }
+    }
+
+    // 2. Check individual cell values in this row
+    const nonNullVals: string[] = [];
+    for (let c = 0; c < totalCols; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      if (cell && cell.v !== undefined && cell.v !== null && String(cell.v).trim() !== '') {
+        nonNullVals.push(String(cell.w ?? cell.v).trim());
+      }
+    }
+
+    if (nonNullVals.length === 0) {
+      return { isDivider: true }; // blank divider row
+    }
+
+    // If only 1 or 2 cells populated across the row and matches year or section pattern
+    if (nonNullVals.length <= 2) {
+      const joined = nonNullVals.join(' ').trim();
+      if (
+        /^(year\s*[-:]?\s*)?(19\d{2}|20\d{2})([-/\s]+(19\d{2}|20\d{2}))?$/i.test(joined) ||
+        /year[- ]?\d{4}/i.test(joined) ||
+        /^(academic\s*year|batch|grade|class|section)\s*[:;]?\s*[0-9a-zA-Z\s_-]+/i.test(joined) ||
+        /^(total|grand\s*total|subtotal)$/i.test(joined)
+      ) {
+        return { isDivider: true, extractedHeading: joined };
+      }
+    }
+
+    return { isDivider: false };
   }
 
   // Automatic Data Type Inference Engine
@@ -221,7 +305,10 @@ export class ExcelAnalyzer {
 
       const spanCols = m.e.c - m.s.c + 1;
       let type: 'title' | 'section_heading' | 'data_span' = 'data_span';
-      if (spanCols >= Math.max(2, Math.floor(totalColumns / 2))) {
+      if (
+        (spanCols >= 2 && (/\b(19\d{2}|20\d{2})\b/.test(value) || /year/i.test(value) || /^(grade|class|section|batch)/i.test(value))) ||
+        spanCols >= Math.max(2, Math.floor(totalColumns / 2))
+      ) {
         if (startRow <= 2) {
           type = 'title';
         } else {
@@ -364,6 +451,10 @@ export class ExcelAnalyzer {
       const sampleLimit = Math.min(totalRows, detectedDataStartRow + 100);
 
       for (let r = detectedDataStartRow - 1; r < sampleLimit; r++) {
+        // Exclude merged year and section divider rows from column type inference
+        if (this.isYearOrSectionDividerRow(ws, r, effectiveColCount, rawMerges).isDivider) {
+          continue;
+        }
         const scVal = this.getResolvedCellValue(ws, r, c, rawMerges);
         if (scVal !== null && scVal !== undefined && String(scVal).trim() !== '') {
           rawSampleList.push(scVal);
@@ -400,6 +491,11 @@ export class ExcelAnalyzer {
     for (let r = detectedDataStartRow - 1; r < maxSampleRows; r++) {
       const rowNumber = r + 1;
       if (emptyRows.includes(rowNumber)) continue;
+
+      // Industrial standard: exclude merged year header rows and section dividers from sample data
+      if (this.isYearOrSectionDividerRow(ws, r, effectiveColCount, rawMerges).isDivider) {
+        continue;
+      }
 
       const rowData: Record<string, any> = {};
       let hasData = false;
@@ -512,15 +608,36 @@ export class ExcelAnalyzer {
         continue;
       }
 
+      // Check if this row is an embedded section/year divider (merged columns with year or category)
+      const dividerCheck = this.isYearOrSectionDividerRow(ws, r, totalCols, rawMerges);
+      if (dividerCheck.isDivider) {
+        if (dividerCheck.extractedHeading) {
+          currentSectionHeading = dividerCheck.extractedHeading;
+        }
+        continue; // CRITICAL: NEVER treat merged year or divider rows as database records!
+      }
+
       const rowObj: Record<string, any> = { __rowNumber: rowNumber };
       let hasData = false;
+      const nonNullVals: string[] = [];
 
       for (let c = 0; c < totalCols; c++) {
         const colLetter = XLSX.utils.encode_col(c);
-        const val = this.getResolvedCellValue(ws, r, c, rawMerges);
+        let val = this.getResolvedCellValue(ws, r, c, rawMerges);
 
         if (val !== null && val !== undefined && String(val).trim() !== '') {
           hasData = true;
+          const str = String(val).trim();
+          nonNullVals.push(str);
+
+          // Clean currency strings: e.g. "Rs 40000" or "$ 1500" -> number
+          if (/^Rs\.?\s*[\d,]+/i.test(str) || /^[$€£₹]\s*[\d,]+/i.test(str)) {
+            const numStr = str.replace(/[^0-9.]/g, '');
+            const parsedNum = parseFloat(numStr);
+            if (!isNaN(parsedNum)) {
+              val = parsedNum;
+            }
+          }
         }
 
         rowObj[colLetter] = val;
@@ -530,8 +647,20 @@ export class ExcelAnalyzer {
 
       if (!hasData) continue;
 
-      if (sectionHeadingTargetCol && currentSectionHeading) {
+      // Secondary check: single cell value with year or category pattern
+      if (nonNullVals.length === 1) {
+        const singleVal = nonNullVals[0];
+        if (/^(year\s*[-:]?\s*)?(19\d{2}|20\d{2})$/i.test(singleVal) || /year[- ]?\d{4}/i.test(singleVal) || /^(grade|class|section)\s*[:;]?\s*\w+/i.test(singleVal)) {
+          currentSectionHeading = singleVal;
+          continue; // Skip the divider row so it does not corrupt SQL table rows
+        }
+      }
+
+      if (currentSectionHeading) {
         rowObj['__sectionHeading'] = currentSectionHeading;
+        if (sectionHeadingTargetCol) {
+          rowObj[sectionHeadingTargetCol] = currentSectionHeading;
+        }
       }
 
       records.push(rowObj);

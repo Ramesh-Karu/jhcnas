@@ -6,6 +6,7 @@ export type NavigationTab =
   | 'files'
   | 'analyzer'
   | 'mappings'
+  | 'served_mappings'
   | 'import'
   | 'twoway'
   | 'history'
@@ -157,6 +158,12 @@ export interface SheetAnalysis {
   sampleRows: { rowNumber: number; data: Record<string, any> }[];
 }
 
+export type WorkbookArchetype = 
+  | 'TIMETABLE_MATRIX'        // Weekly/Daily matrix with periods & interleaved Subject/Teacher rows
+  | 'MULTI_SHEET_LEDGER'       // Financial / inventory ledger with title banners, inline section dividers & cross-sheet receipts
+  | 'PIVOT_ALLOCATION_MATRIX'  // Multi-sheet pivot with Division columns (A-H) and Subject rows
+  | 'STANDARD_TABULAR';        // Normal flat rows and columns
+
 export interface WorkbookAnalysis {
   filename: string;
   fileSize: number;
@@ -168,6 +175,14 @@ export interface WorkbookAnalysis {
   base64Data?: string;
   consolidationMode?: MultiSheetConsolidationMode;
   sheetToTableMap?: Record<string, string>;
+  detectedArchetype?: WorkbookArchetype;
+  archetypeTitle?: string;
+  archetypeBadge?: string;
+  archetypeSummary?: string;
+  archetypeFeatures?: string[];
+  archetypeRecommendations?: string[];
+  isNormalizedMatrix?: boolean;
+  rawWorkbookBase64?: string;
 }
 
 export interface TableSchemaColumn {
@@ -241,9 +256,73 @@ export interface WorksheetMapping {
   dataStartRow: number;
   dataEndRow?: number;
   sectionHeadingTargetCol?: string; // e.g. 'class' for A3:H3 CLASS 10A
+  skipMergedYearRows?: boolean; // When true (default), merged column rows defining years (e.g. "Year 2023", "2020") are skipped and NEVER inserted as data
   enabled: boolean;
   syncPolicy?: TableSyncPolicy; // Per-table authority rule
   columns: ColumnMapping[];
+}
+
+export interface AiWorkbookPreset {
+  id: string;
+  name: string;
+  description: string;
+  archetype: WorkbookArchetype;
+  badge?: string;
+  isSystem?: boolean;
+  createdAt: string;
+  updatedAt: string;
+  filenamePattern?: string;
+  sheetPatterns?: string[];
+  consolidationMode?: MultiSheetConsolidationMode;
+  sheetMappings: WorksheetMapping[];
+  unpivotConfig?: {
+    enabled: boolean;
+    archetype: WorkbookArchetype;
+    targetTable?: string;
+  };
+  skipMergedYearRows: boolean; // Industrial standard: exclude merged year header rows from database records
+  sectionHeadingColumn?: string;
+  sampleWorkbookId?: string;
+  tags?: string[];
+  metadata?: Record<string, any>;
+}
+
+export interface AiSheetMappingSolution {
+  worksheetName: string;
+  suggestedTable: string;
+  headerRow: number;
+  dataStartRow: number;
+  dataEndRow?: number;
+  sectionHeadingTargetCol?: string;
+  sectionHeadingSample?: string;
+  uniqueKeyColumn?: string;
+  confidence: number;
+  reasoning: string;
+  syncPolicy?: TableSyncPolicy;
+  columns: ColumnMapping[];
+  relationships?: {
+    targetTable: string;
+    foreignKey: string;
+    referencedColumn: string;
+  }[];
+}
+
+export interface AiWorkbookAnalysisResult {
+  filename: string;
+  totalSheets: number;
+  architectureSummary: string;
+  recommendedConsolidationMode: MultiSheetConsolidationMode;
+  sheetSolutions: AiSheetMappingSolution[];
+  aiPowered: boolean;
+  modelUsed?: string;
+  analyzedAt?: string;
+  fallbackActive?: boolean;
+  fallbackNotice?: string;
+  detectedArchetype?: WorkbookArchetype;
+  archetypeBadge?: string;
+  archetypeTitle?: string;
+  archetypeFeatures?: string[];
+  normalizationNotice?: string;
 }
 
 export interface WorkbookMapping {

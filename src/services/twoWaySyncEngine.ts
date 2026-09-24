@@ -87,12 +87,11 @@ export class TwoWaySyncEngine {
         );
 
         const pkVal = String(cleanRecord[primaryKeyCol] ?? '').trim();
-        if (pkVal) {
-          cleanExcelMap.set(pkVal, {
-            record: cleanRecord,
-            rowNumber: raw.__rowNumber || 0
-          });
-        }
+        const effectivePk = pkVal || `row_${raw.__rowNumber || cleanExcelMap.size + 1}`;
+        cleanExcelMap.set(effectivePk, {
+          record: cleanRecord,
+          rowNumber: raw.__rowNumber || 0
+        });
       }
 
       // Map Supabase DB rows by primary key

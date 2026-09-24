@@ -57,13 +57,25 @@ export class MappingEngine {
     return null;
   }
 
+  static isEffectivelyEmpty(val: any): boolean {
+    if (val === null || val === undefined) return true;
+    const str = String(val).trim();
+    if (str === '') return true;
+    const lower = str.toLowerCase();
+    // Common spreadsheet placeholder tokens for empty fields
+    if (['-', '—', '--', 'n/a', 'na', 'nil', 'null', 'none', '?', '.'].includes(lower)) {
+      return true;
+    }
+    return false;
+  }
+
   static applyTransformation(
     rawVal: any,
     transformation: TransformationType,
     defaultValue?: string,
     targetDataType?: DataType
   ): any {
-    if (rawVal === null || rawVal === undefined || String(rawVal).trim() === '') {
+    if (this.isEffectivelyEmpty(rawVal)) {
       return defaultValue !== undefined && defaultValue !== '' ? defaultValue : null;
     }
 
@@ -187,32 +199,15 @@ export class MappingEngine {
       // 1. Transformation (with intelligent datatype awareness)
       const transformed = this.applyTransformation(val, cm.transformation, cm.defaultValue, cm.dataType);
 
-      // Check if value is truly empty
-      const isEmpty = transformed === null || transformed === undefined || String(transformed).trim() === '';
+      // Check if value is empty or an empty placeholder token
+      const isEmpty = this.isEffectivelyEmpty(transformed);
 
-      // 2. Required Check
-      if (cm.required && isEmpty) {
-        // If the column is 'id', PostgreSQL generates it via DEFAULT (uuid or serial).
-        // Never fail rows because the Excel source didn't contain an 'id' column.
-        if (cm.supabaseColumn === 'id') {
-          continue;
-        }
-        errors.push({
-          worksheetName,
-          rowNumber,
-          excelColumn: cm.excelColumn,
-          columnName: cm.supabaseColumn,
-          rawValue: String(val ?? ''),
-          errorMessage: `Row ${rowNumber}: Required field '${cm.supabaseColumn}' is missing or empty.`,
-          errorType: 'missing_required'
-        });
-        cleanRecord[cm.supabaseColumn] = null;
-        continue;
-      }
-
-      // If optional and empty, coerce to null and skip further validation!
+      // User instruction: "If some cells are empty in a row where some data added. Don't create errors keep those cells as empty field"
+      // Keep empty cells as an empty field (null or default value) and do not create errors or fail the row!
       if (isEmpty) {
-        cleanRecord[cm.supabaseColumn] = null;
+        cleanRecord[cm.supabaseColumn] = (cm.defaultValue !== undefined && cm.defaultValue !== null && cm.defaultValue.trim() !== '')
+          ? cm.defaultValue
+          : null;
         continue;
       }
 
@@ -230,15 +225,8 @@ export class MappingEngine {
             if (embedded) {
               coercedVal = parseInt(embedded[0], 10);
             } else {
-              errors.push({
-                worksheetName,
-                rowNumber,
-                excelColumn: cm.excelColumn,
-                columnName: cm.supabaseColumn,
-                rawValue: strVal,
-                errorMessage: `Row ${rowNumber}: Field '${cm.supabaseColumn}' value '${strVal}' is not a valid integer.`,
-                errorType: 'type_mismatch'
-              });
+              // If non-numeric text (e.g. "Absent", "N/A"), keep as empty field without failing row
+              coercedVal = null;
             }
           } else {
             coercedVal = Math.round(num);
@@ -250,15 +238,12 @@ export class MappingEngine {
           const cleanNumStr = strVal.replace(/[$,€£₹% ]/g, '').replace(/,/g, '');
           const num = Number(cleanNumStr);
           if (isNaN(num)) {
-            errors.push({
-              worksheetName,
-              rowNumber,
-              excelColumn: cm.excelColumn,
-              columnName: cm.supabaseColumn,
-              rawValue: strVal,
-              errorMessage: `Row ${rowNumber}: Field '${cm.supabaseColumn}' value '${strVal}' is not a valid decimal number.`,
-              errorType: 'type_mismatch'
-            });
+            const embedded = strVal.match(/\d+(\.\d+)?/);
+            if (embedded) {
+              coercedVal = parseFloat(embedded[0]);
+            } else {
+              coercedVal = null;
+            }
           } else {
             coercedVal = num;
           }
@@ -268,15 +253,8 @@ export class MappingEngine {
         case 'date': {
           const parsedDate = this.parseFlexibleDate(transformed);
           if (!parsedDate) {
-            errors.push({
-              worksheetName,
-              rowNumber,
-              excelColumn: cm.excelColumn,
-              columnName: cm.supabaseColumn,
-              rawValue: strVal,
-              errorMessage: `Row ${rowNumber}: Invalid date '${strVal}' for '${cm.supabaseColumn}'. Could not parse to standard YYYY-MM-DD.`,
-              errorType: 'invalid_date'
-            });
+            // If date could not be parsed, keep cell as empty field (null) without failing row
+            coercedVal = null;
           } else {
             coercedVal = parsedDate;
           }
@@ -293,15 +271,7 @@ export class MappingEngine {
             } else if (['false', '0', 'no', 'n', 'f', 'a'].includes(lower)) {
               coercedVal = false;
             } else {
-              errors.push({
-                worksheetName,
-                rowNumber,
-                excelColumn: cm.excelColumn,
-                columnName: cm.supabaseColumn,
-                rawValue: strVal,
-                errorMessage: `Row ${rowNumber}: Field '${cm.supabaseColumn}' value '${strVal}' is not a valid boolean.`,
-                errorType: 'type_mismatch'
-              });
+              coercedVal = null;
             }
           }
           break;

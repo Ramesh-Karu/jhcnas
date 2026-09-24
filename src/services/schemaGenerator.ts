@@ -160,12 +160,22 @@ export class SchemaGenerator {
       plans.push(plan);
 
     } else if (mode === 'SEPARATE_TABLES') {
-      // 1 Table Per Sheet
+      // 1 Table Per Sheet (guaranteeing unique table names)
+      const usedTableNames = new Set<string>();
       for (const ws of analysis.worksheets) {
         const customTable = sheetToTableMap?.[ws.sheetName];
-        const targetTable = customTable
+        let targetTable = customTable
           ? this.sanitizeIdentifier(customTable)
           : this.sanitizeIdentifier(ws.sheetName);
+
+        if (usedTableNames.has(targetTable)) {
+          let suffix = 2;
+          while (usedTableNames.has(`${targetTable}_${suffix}`)) {
+            suffix++;
+          }
+          targetTable = `${targetTable}_${suffix}`;
+        }
+        usedTableNames.add(targetTable);
 
         const columns: TableSchemaColumn[] = ws.headers.map(h => {
           const colName = this.sanitizeIdentifier(h.name);
@@ -306,8 +316,8 @@ export class SchemaGenerator {
       if (c.name === 'id') {
         colDefs.push(`  id ${c.sqlType} PRIMARY KEY DEFAULT gen_random_uuid()`);
       } else {
-        const notNull = c.required ? ' NOT NULL' : '';
-        colDefs.push(`  ${c.name} ${c.sqlType}${notNull}`);
+        // Keep columns nullable so that empty cells in Excel rows are stored seamlessly as NULL
+        colDefs.push(`  ${c.name} ${c.sqlType}`);
         if (c.isPrimary) {
           uniqueCols.push(c.name);
         }

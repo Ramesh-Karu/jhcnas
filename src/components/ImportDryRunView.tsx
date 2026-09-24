@@ -388,7 +388,18 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
             const clean: Record<string, any> = {};
             for (const col of allowedCols) {
               if (r[col] !== undefined) {
-                clean[col] = r[col];
+                const val = r[col];
+                // Keep empty cells or placeholder tokens as null in DB
+                if (
+                  val === null ||
+                  val === undefined ||
+                  (typeof val === 'string' &&
+                    (val.trim() === '' || ['-', '—', '--', 'n/a', 'na', 'nil', 'null', 'none', '?'].includes(val.trim().toLowerCase())))
+                ) {
+                  clean[col] = null;
+                } else {
+                  clean[col] = val;
+                }
               }
             }
             return clean;
@@ -993,9 +1004,9 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
           {/* Table by Table Status Pill Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
-            {importProgress.tableProgressList.map((t) => (
+            {importProgress.tableProgressList.map((t, idx) => (
               <div
-                key={t.tableName}
+                key={`${t.tableName}-${t.sheetName || idx}`}
                 className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
                   t.status === 'done'
                     ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
@@ -1318,8 +1329,8 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono">
-                  {dryRunResult.sheetSummaries.map((ss) => (
-                    <tr key={ss.sheetName} className="hover:bg-slate-50">
+                  {dryRunResult.sheetSummaries.map((ss, idx) => (
+                    <tr key={`${ss.sheetName}-${ss.targetTable || idx}`} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-sans font-medium text-slate-900">{ss.sheetName}</td>
                       <td className="px-4 py-2.5 text-teal-700">public.{ss.targetTable}</td>
                       <td className="px-4 py-2.5">{ss.totalRows}</td>

@@ -330,3 +330,141 @@ export function getSampleInitialDatabaseState(): Record<string, any[]> {
     ]
   };
 }
+
+export function createSchoolCustomLayoutWorkbook(): { workbook: XLSX.WorkBook; binaryData: Uint8Array; filename: string } {
+  const wb = XLSX.utils.book_new();
+
+  // 1. Grade 6 Sheet (Grade partitioned)
+  const grade6Data = [
+    ["GRADE 6 - STUDENT ACADEMIC MARKSHEET (2024-2025)", "", "", "", "", ""],
+    ["Class Teacher: Mrs. Anderson", "Room: 106", "Term: Final Assessment", "", "", ""],
+    ["", "", "", "", "", ""],
+    ["Roll No", "Student Name", "Mathematics", "Science", "English", "Result"],
+    ["G6-101", "Emma Watson", 92, 88, 95, "Passed"],
+    ["G6-102", "Daniel Craig", 78, 82, 74, "Passed"],
+    ["G6-103", "Rupert Grint", 65, 70, 68, "Passed"],
+    ["G6-104", "Tom Felton", 88, 91, 85, "Passed"],
+    ["G6-105", "Bonnie Wright", 94, 96, 92, "Passed"]
+  ];
+  const wsG6 = XLSX.utils.aoa_to_sheet(grade6Data);
+  wsG6['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
+  XLSX.utils.book_append_sheet(wb, wsG6, "Grade 6");
+
+  // 2. Grade 7 Sheet (Grade partitioned)
+  const grade7Data = [
+    ["GRADE 7 - STUDENT ACADEMIC MARKSHEET (2024-2025)", "", "", "", "", ""],
+    ["Class Teacher: Mr. Davis", "Room: 204", "Term: Final Assessment", "", "", ""],
+    ["", "", "", "", "", ""],
+    ["Roll No", "Student Name", "Mathematics", "Science", "English", "Result"],
+    ["G7-101", "Peter Parker", 96, 98, 89, "Passed"],
+    ["G7-102", "Gwen Stacy", 99, 95, 98, "Passed"],
+    ["G7-103", "Miles Morales", 89, 92, 94, "Passed"],
+    ["G7-104", "Harry Osborn", 74, 80, 71, "Passed"]
+  ];
+  const wsG7 = XLSX.utils.aoa_to_sheet(grade7Data);
+  wsG7['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
+  XLSX.utils.book_append_sheet(wb, wsG7, "Grade 7");
+
+  // 3. Grade 8 Sheet (Grade partitioned)
+  const grade8Data = [
+    ["GRADE 8 - STUDENT ACADEMIC MARKSHEET (2024-2025)", "", "", "", "", ""],
+    ["Class Teacher: Dr. Banner", "Room: 302", "Term: Final Assessment", "", "", ""],
+    ["", "", "", "", "", ""],
+    ["Roll No", "Student Name", "Mathematics", "Science", "English", "Result"],
+    ["G8-101", "Tony Stark", 100, 100, 95, "Passed"],
+    ["G8-102", "Steve Rogers", 85, 87, 92, "Passed"],
+    ["G8-103", "Natasha Romanoff", 94, 91, 98, "Passed"],
+    ["G8-104", "Bruce Wayne", 97, 95, 96, "Passed"]
+  ];
+  const wsG8 = XLSX.utils.aoa_to_sheet(grade8Data);
+  wsG8['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
+  XLSX.utils.book_append_sheet(wb, wsG8, "Grade 8");
+
+  // 4. Timetable Sheet: Dual-Cell Format per Period (Subject + Teacher/Room)
+  const timetableData = [
+    ["WEEKLY TIMETABLE - GRADE 10 (ACADEMIC YEAR 2024-2025)", "", "", "", "", "", "", "", ""],
+    ["Section: 10-A", "Class Teacher: Prof. McGonagall", "Room: Hall 3B", "", "", "", "", "", ""],
+    // Row 3 (Index 2): Main Period Headers with 2-cell span
+    ["Day", "Period 1 (08:30-09:30)", "", "Period 2 (09:30-10:30)", "", "Break", "Period 3 (11:00-12:00)", "", "Period 4 (12:00-01:00)"],
+    // Row 4 (Index 3): Subheaders for the two cells
+    ["Day", "Subject", "Teacher / Room", "Subject", "Teacher / Room", "Interval", "Subject", "Teacher / Room", "Subject", "Teacher / Room"],
+    // Rows 5-9: Timetable rows with 2-cell data
+    ["Monday", "Mathematics", "Mr. Clark / R101", "Physics", "Dr. Banner / Lab A", "Recess", "English Lit", "Ms. Watson / R102", "Chemistry", "Dr. Wells / Lab B"],
+    ["Tuesday", "Biology", "Dr. Grey / Lab C", "Mathematics", "Mr. Clark / R101", "Recess", "History", "Mr. Davis / R104", "Computer Sci", "Ms. Lovelace / Lab D"],
+    ["Wednesday", "Physics", "Dr. Banner / Lab A", "Physical Ed", "Coach Taylor / Gym", "Recess", "Mathematics", "Mr. Clark / R101", "Art & Craft", "Ms. Kahlo / Studio"],
+    ["Thursday", "Chemistry", "Dr. Wells / Lab B", "English Lit", "Ms. Watson / R102", "Recess", "Geography", "Mr. Scott / R105", "Economics", "Mr. Keynes / R106"],
+    ["Friday", "Mathematics", "Mr. Clark / R101", "Computer Sci", "Ms. Lovelace / Lab D", "Recess", "Library / Reading", "Mrs. Pince / Lib", "Club / Activities", "Faculty Team"]
+  ];
+  const wsTimetable = XLSX.utils.aoa_to_sheet(timetableData);
+  wsTimetable['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }, // A1:J1 Banner
+    { s: { r: 2, c: 1 }, e: { r: 2, c: 2 } }, // B3:C3 Period 1 (2 cells)
+    { s: { r: 2, c: 3 }, e: { r: 2, c: 4 } }, // D3:E3 Period 2 (2 cells)
+    { s: { r: 2, c: 6 }, e: { r: 2, c: 7 } }, // G3:H3 Period 3 (2 cells)
+    { s: { r: 2, c: 8 }, e: { r: 2, c: 9 } }, // I3:J3 Period 4 (2 cells)
+  ];
+  XLSX.utils.book_append_sheet(wb, wsTimetable, "Timetable_Grade10");
+
+  // 5. Year 2020 Sheet (Year partitioned)
+  const yr2020Data = [
+    ["ACADEMIC ENROLLMENTS - YEAR 2020", "", "", "", ""],
+    ["Student ID", "Student Name", "Enrollment Date", "Grade Enrolled", "Tuition Status"],
+    ["ENR-2020-001", "Alex Ferguson", "2020-01-15", "Grade 6", "Paid"],
+    ["ENR-2020-002", "Beth Harmon", "2020-01-18", "Grade 7", "Paid"],
+    ["ENR-2020-003", "Carl Sagan", "2020-01-20", "Grade 8", "Scholarship"]
+  ];
+  const ws2020 = XLSX.utils.aoa_to_sheet(yr2020Data);
+  ws2020['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 4 } }];
+  XLSX.utils.book_append_sheet(wb, ws2020, "Academic_2020");
+
+  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const binaryData = new Uint8Array(wbout);
+
+  return {
+    workbook: wb,
+    binaryData,
+    filename: "school_custom_designs_grades_timetable.xlsx"
+  };
+}
+
+export function generateLayoutStructureExport(analysis: WorkbookAnalysis): string {
+  let output = `========================================================\n`;
+  output += `WORKBOOK ARCHITECTURE EXPORT: ${analysis.filename}\n`;
+  output += `Total Worksheets: ${analysis.totalWorksheets} | Size: ${analysis.fileSizeFormatted}\n`;
+  output += `========================================================\n\n`;
+
+  analysis.worksheets.forEach((ws, idx) => {
+    output += `--- [Sheet ${idx + 1}/${analysis.totalWorksheets}]: "${ws.sheetName}" ---\n`;
+    output += `Rows: ${ws.totalRows} | Cols: ${ws.totalColumns} | Header Row: ${ws.detectedHeaderRow} | Data Start: ${ws.detectedDataStartRow}\n`;
+    
+    if (ws.mergedRanges && ws.mergedRanges.length > 0) {
+      output += `Merged Cells (${ws.mergedRanges.length}):\n`;
+      ws.mergedRanges.slice(0, 10).forEach(m => {
+        const valStr = m.value ? ` -> "${m.value}"` : '';
+        output += `  • ${m.range} (${m.type})${valStr}\n`;
+      });
+      if (ws.mergedRanges.length > 10) {
+        output += `  ... and ${ws.mergedRanges.length - 10} more merged ranges\n`;
+      }
+    } else {
+      output += `Merged Cells: None\n`;
+    }
+
+    output += `\nColumns Detected:\n`;
+    ws.headers.forEach(h => {
+      output += `  [Col ${h.colLetter}] "${h.name}" (${h.inferredType || 'text'})\n`;
+    });
+
+    if (ws.sampleRows && ws.sampleRows.length > 0) {
+      output += `\nSample Grid (First ${Math.min(ws.sampleRows.length, 6)} rows):\n`;
+      ws.sampleRows.slice(0, 6).forEach((row) => {
+        const rowVals = Object.keys(row.data).map(k => `${k}: ${JSON.stringify(row.data[k])}`).join(' | ');
+        output += `  Row ${row.rowNumber}: ${rowVals}\n`;
+      });
+    }
+    output += `\n`;
+  });
+
+  return output;
+}
+

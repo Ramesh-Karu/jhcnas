@@ -1,6 +1,107 @@
-import { SheetAnalysis, WorksheetMapping, ColumnMapping, DataType, TransformationType } from '../types';
+import { 
+  SheetAnalysis, 
+  WorkbookAnalysis,
+  WorksheetMapping, 
+  ColumnMapping, 
+  DataType, 
+  TransformationType,
+  SupabaseTableInfo,
+  AiWorkbookAnalysisResult,
+  AiSheetMappingSolution
+} from '../types';
+import { ApiClient } from './apiClient';
 
 export class GeminiWorkbookService {
+  /**
+   * Run full workbook AI analysis across all sheets simultaneously, producing a complete mapping solution.
+   */
+  static async analyzeFullWorkbook(
+    workbook: WorkbookAnalysis,
+    supabaseTables?: SupabaseTableInfo[]
+  ): Promise<AiWorkbookAnalysisResult> {
+    try {
+      const res = await ApiClient.analyzeWorkbookWithAi({
+        workbook,
+        supabaseTables,
+        consolidationMode: workbook.consolidationMode || 'SEPARATE_TABLES'
+      });
+
+      if (res.success && res.result) {
+        if (res.fallbackActive !== undefined) {
+          res.result.fallbackActive = res.fallbackActive;
+        }
+        if (res.fallbackNotice) {
+          res.result.fallbackNotice = res.fallbackNotice;
+        }
+        return res.result;
+      }
+    } catch (e) {
+      console.info('[GeminiWorkbookService] Server AI call reached fallback path:', e);
+    }
+
+    // Local client-side fallback
+    const solutions: AiSheetMappingSolution[] = await Promise.all(
+      workbook.worksheets.map(async (sheet) => {
+        const single = await this.analyzeSheetAndSuggestMappings(sheet, workbook.filename);
+        return {
+          worksheetName: sheet.sheetName,
+          suggestedTable: single.suggestedTable,
+          headerRow: single.headerRow,
+          dataStartRow: single.dataStartRow,
+          dataEndRow: sheet.totalRows,
+          sectionHeadingTargetCol: single.sectionHeadingTargetCol,
+          uniqueKeyColumn: single.columns.find(c => c.uniqueKey)?.supabaseColumn || single.columns[0]?.supabaseColumn,
+          confidence: 95,
+          reasoning: single.reasoning,
+          columns: single.columns,
+        };
+      })
+    );
+
+    return {
+      filename: workbook.filename,
+      totalSheets: workbook.worksheets.length,
+      architectureSummary: `Auto-analyzed ${solutions.length} worksheets with entity table mappings and column type inference.`,
+      recommendedConsolidationMode: workbook.consolidationMode || 'SEPARATE_TABLES',
+      sheetSolutions: solutions,
+      aiPowered: false,
+      modelUsed: 'Local Heuristic Engine'
+    };
+  }
+
+  /**
+   * Convert an AI Workbook Analysis Result directly into a list of WorksheetMapping objects for immediate execution.
+   */
+  static convertSolutionsToMappings(
+    analysisResult: AiWorkbookAnalysisResult,
+    workbookName: string
+  ): WorksheetMapping[] {
+    return analysisResult.sheetSolutions.map((solution, idx) => ({
+      id: `wm-ai-${idx}-${Date.now()}`,
+      workbookName,
+      worksheetName: solution.worksheetName,
+      supabaseTable: solution.suggestedTable,
+      headerRow: solution.headerRow,
+      dataStartRow: solution.dataStartRow,
+      dataEndRow: solution.dataEndRow,
+      sectionHeadingTargetCol: solution.sectionHeadingTargetCol,
+      enabled: true,
+      syncPolicy: solution.syncPolicy || 'BIDIRECTIONAL',
+      columns: solution.columns.map((c, cIdx) => ({
+        id: c.id || `col-ai-${idx}-${cIdx}-${Date.now()}`,
+        excelColumn: c.excelColumn,
+        excelHeader: c.excelHeader,
+        supabaseColumn: c.supabaseColumn,
+        dataType: c.dataType,
+        required: c.required,
+        uniqueKey: c.uniqueKey,
+        defaultValue: c.defaultValue,
+        transformation: c.transformation,
+        validationRegex: c.validationRegex
+      }))
+    }));
+  }
+
   static async analyzeSheetAndSuggestMappings(
     sheet: SheetAnalysis,
     workbookName: string
@@ -92,7 +193,7 @@ Format your response as pure JSON matching this structure:
         }
       }
     } catch (err) {
-      console.warn("[Gemini] Server route unavailable or returned error, using heuristic intelligence:", err);
+      console.info("[Gemini] Server route unavailable or returned error, using heuristic intelligence:", err);
     }
 
     // Heuristic Fallback Analysis

@@ -30,6 +30,7 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
 }) => {
   const [formData, setFormData] = useState<NextcloudConfig>(config);
   const [isTesting, setIsTesting] = useState(false);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [testResult, setTestResult] = useState<{
     tested: boolean;
     success: boolean;
@@ -48,17 +49,17 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
 
     // Call real backend WebDAV proxy
     const realResult = await ApiClient.testNextcloudConnection(formData);
-    const filesResult = await ApiClient.listNextcloudFiles(formData);
+    const filesResult = realResult.checks.folderExists ? await ApiClient.listNextcloudFiles(formData) : { files: [] };
 
-    const isHealthy = realResult.success && realResult.checks.hostReachability && realResult.checks.authValid;
-    const realFilesCount = filesResult.files ? filesResult.files.length : files.length;
+    const isHealthy = Boolean(realResult.success && realResult.checks.hostReachability && realResult.checks.authValid);
+    const realFilesCount = filesResult.files ? filesResult.files.length : 0;
 
     setTestResult({
       tested: true,
       success: isHealthy,
-      urlReachable: realResult.checks.hostReachability,
-      authSuccess: realResult.checks.authValid,
-      folderAccessible: realResult.checks.folderExists,
+      urlReachable: Boolean(realResult.checks.hostReachability),
+      authSuccess: Boolean(realResult.checks.authValid),
+      folderAccessible: Boolean(realResult.checks.folderExists),
       filesListed: realFilesCount,
       message: realResult.message || realResult.error || (isHealthy ? 'WebDAV connection verified!' : 'Connection test failed.')
     });
@@ -81,13 +82,31 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
         ...formData,
         isConnected: false,
         lastChecked: new Date().toISOString(),
-        statusMessage: realResult.error || 'Connection test failed. Verify WebDAV credentials.'
+        statusMessage: realResult.error || realResult.message || 'Connection test failed. Verify WebDAV credentials.'
       };
       setFormData(updated);
       onSaveConfig(updated);
     }
 
     setIsTesting(false);
+  };
+
+  const handleCreateFolder = async () => {
+    setIsCreatingFolder(true);
+    try {
+      const res = await ApiClient.createNextcloudFolder(formData, formData.sourceFolder);
+      if (res.success) {
+        setSaveMessage(`Created folder '${formData.sourceFolder}' in Nextcloud successfully!`);
+        setTimeout(() => setSaveMessage(null), 4000);
+        await handleTestConnection();
+      } else {
+        alert(res.error || 'Failed to create folder in Nextcloud');
+      }
+    } catch (e: any) {
+      alert(`Error creating folder: ${e.message}`);
+    } finally {
+      setIsCreatingFolder(false);
+    }
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -258,10 +277,27 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
 
             {testResult ? (
               <div className="space-y-3">
-                <div className={`p-3 rounded-lg text-xs font-medium ${
-                  testResult.success ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+                <div className={`p-3 rounded-lg text-xs font-medium border ${
+                  testResult.success 
+                    ? (testResult.folderAccessible ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-900 border-amber-200')
+                    : 'bg-rose-50 text-rose-800 border-rose-200'
                 }`}>
-                  {testResult.message}
+                  <div className="flex items-start justify-between gap-2">
+                    <div>{testResult.message}</div>
+                  </div>
+                  {testResult.authSuccess && !testResult.folderAccessible && (
+                    <div className="mt-2.5 pt-2 border-t border-amber-200/70 flex items-center justify-between">
+                      <span className="text-[11px] text-amber-800">Folder <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">{formData.sourceFolder}</code> is ready to be created:</span>
+                      <button
+                        type="button"
+                        onClick={handleCreateFolder}
+                        disabled={isCreatingFolder}
+                        className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] transition-colors shadow-2xs"
+                      >
+                        {isCreatingFolder ? 'Creating...' : 'Create Folder Now'}
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2 text-xs">
@@ -273,7 +309,9 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
                       ) : (
                         <XCircle className="w-3.5 h-3.5 text-rose-600" />
                       )}
-                      <span>{testResult.urlReachable ? 'HTTP 200/207 OK' : 'Unreachable'}</span>
+                      <span className={testResult.urlReachable ? 'text-emerald-700' : 'text-rose-700'}>
+                        {testResult.urlReachable ? 'HTTP 200/207 OK' : 'Unreachable'}
+                      </span>
                     </span>
                   </div>
 
@@ -285,7 +323,9 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
                       ) : (
                         <XCircle className="w-3.5 h-3.5 text-rose-600" />
                       )}
-                      <span>{testResult.authSuccess ? 'App Password Verified' : 'Auth Failed'}</span>
+                      <span className={testResult.authSuccess ? 'text-emerald-700' : 'text-rose-700'}>
+                        {testResult.authSuccess ? 'App Password Verified' : 'Auth Failed'}
+                      </span>
                     </span>
                   </div>
 
@@ -294,10 +334,14 @@ export const NextcloudView: React.FC<NextcloudViewProps> = ({
                     <span className="flex items-center space-x-1 font-medium">
                       {testResult.folderAccessible ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      ) : testResult.authSuccess ? (
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
                       ) : (
                         <XCircle className="w-3.5 h-3.5 text-rose-600" />
                       )}
-                      <span>{testResult.folderAccessible ? 'PROPFIND Successful' : 'Denied'}</span>
+                      <span className={testResult.folderAccessible ? 'text-emerald-700' : testResult.authSuccess ? 'text-amber-700' : 'text-rose-700'}>
+                        {testResult.folderAccessible ? 'PROPFIND Successful' : testResult.authSuccess ? 'Folder Not Created' : 'Denied'}
+                      </span>
                     </span>
                   </div>
 

@@ -7,6 +7,7 @@ import {
   FileSpreadsheet, 
   Microscope, 
   GitFork, 
+  Layers,
   PlaySquare, 
   ArrowLeftRight,
   History, 
@@ -63,6 +64,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     { id: 'analyzer' as NavigationTab, label: 'Workbook Analyzer', icon: Microscope },
     { id: 'mappings' as NavigationTab, label: 'Table & Column Mappings', icon: GitFork },
+    { 
+      id: 'served_mappings' as NavigationTab, 
+      label: 'Served Sheets Hub', 
+      icon: Layers,
+      badge: 'UNIFIED',
+      badgeColor: 'bg-indigo-600 text-white font-bold'
+    },
     { id: 'import' as NavigationTab, label: 'Import & Dry Run', icon: PlaySquare },
     { 
       id: 'twoway' as NavigationTab, 

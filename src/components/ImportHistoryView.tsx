@@ -8,18 +8,21 @@ import {
   FileSpreadsheet, 
   ArrowDownToLine, 
   Filter,
-  Search
+  Search,
+  Layers
 } from 'lucide-react';
-import { ImportLog } from '../types';
+import { ImportLog, NavigationTab } from '../types';
 
 interface ImportHistoryViewProps {
   logs: ImportLog[];
   onSelectLogForErrors?: (logId: string) => void;
+  onNavigate?: (tab: NavigationTab) => void;
 }
 
 export const ImportHistoryView: React.FC<ImportHistoryViewProps> = ({
   logs,
-  onSelectLogForErrors
+  onSelectLogForErrors,
+  onNavigate
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -87,6 +90,17 @@ export const ImportHistoryView: React.FC<ImportHistoryViewProps> = ({
             <option value="Skipped">Skipped</option>
             <option value="Failed">Failed</option>
           </select>
+
+          {onNavigate && (
+            <button
+              onClick={() => onNavigate('served_mappings')}
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-semibold text-white shadow-2xs transition-colors"
+              title="Inspect unified overview of all served sheets, merged Supabase tables, and single sync history"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Served Sheets Hub</span>
+            </button>
+          )}
         </div>
       </div>
 

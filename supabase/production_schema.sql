@@ -150,6 +150,30 @@ CREATE TABLE IF NOT EXISTS import_errors (
 );
 
 -- ----------------------------------------------------------------------------
+-- 7. AI Presets & Custom Mapping Templates
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ai_presets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    archetype TEXT NOT NULL DEFAULT 'STANDARD_TABULAR',
+    badge TEXT,
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    filename_pattern TEXT,
+    sheet_mappings JSONB NOT NULL DEFAULT '[]'::jsonb,
+    unpivot_config JSONB,
+    skip_merged_year_rows BOOLEAN NOT NULL DEFAULT TRUE,
+    tags TEXT[] DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS trg_ai_presets_updated_at ON ai_presets;
+CREATE TRIGGER trg_ai_presets_updated_at
+    BEFORE UPDATE ON ai_presets
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ----------------------------------------------------------------------------
 -- Performance Indexes
 -- ----------------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_workbooks_hash ON workbooks(file_hash);
@@ -161,6 +185,7 @@ CREATE INDEX IF NOT EXISTS idx_import_logs_started ON import_logs(started_at DES
 CREATE INDEX IF NOT EXISTS idx_worksheet_mappings_wb ON worksheet_mappings(workbook_id);
 CREATE INDEX IF NOT EXISTS idx_column_mappings_ws ON column_mappings(worksheet_mapping_id);
 CREATE INDEX IF NOT EXISTS idx_import_errors_log ON import_errors(import_log_id);
+CREATE INDEX IF NOT EXISTS idx_ai_presets_archetype ON ai_presets(archetype);
 
 -- ----------------------------------------------------------------------------
 -- Row Level Security (RLS) & Universal Key Compatibility
@@ -172,10 +197,15 @@ ALTER TABLE worksheet_mappings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE column_mappings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE import_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE import_errors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai_presets ENABLE ROW LEVEL SECURITY;
 
 -- Grant broad RLS policies for clean production access
 DO $$
 BEGIN
+    -- ai_presets
+    DROP POLICY IF EXISTS "Allow full access to ai_presets" ON ai_presets;
+    CREATE POLICY "Allow full access to ai_presets" ON ai_presets
+        FOR ALL TO public USING (true) WITH CHECK (true);
     -- sync_settings
     DROP POLICY IF EXISTS "Allow full access to sync_settings" ON sync_settings;
     CREATE POLICY "Allow full access to sync_settings" ON sync_settings

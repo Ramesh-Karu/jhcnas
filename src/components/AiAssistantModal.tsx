@@ -118,8 +118,8 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
                 }}
                 className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-800 bg-white"
               >
-                {allSheets.map(s => (
-                  <option key={s.sheetName} value={s.sheetName}>
+                {allSheets.map((s, idx) => (
+                  <option key={`${s.sheetName}-${idx}`} value={s.sheetName}>
                     {s.sheetName} ({s.totalRows} rows, {s.totalColumns} cols)
                   </option>
                 ))}

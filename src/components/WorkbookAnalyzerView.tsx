@@ -23,7 +23,21 @@ import {
   Key,
   ShieldCheck,
   Wand2,
-  FolderSync
+  FolderSync,
+  Bot,
+  Brain,
+  Zap,
+  CheckCircle2,
+  ArrowRight,
+  HelpCircle,
+  X,
+  Globe,
+  Calendar,
+  DollarSign,
+  GraduationCap,
+  Users,
+  Scissors,
+  FileCheck
 } from 'lucide-react';
 import { 
   WorkbookAnalysis, 
@@ -34,12 +48,23 @@ import {
   SupabaseConfig,
   SupabaseTableInfo,
   MultiSheetConsolidationMode,
-  TableSchemaPlan
+  TableSchemaPlan,
+  AiWorkbookAnalysisResult,
+  AiSheetMappingSolution,
+  WorkbookArchetype,
+  AiWorkbookPreset
 } from '../types';
 import { ExcelAnalyzer } from '../services/excelAnalyzer';
-import { createComplexSampleWorkbook } from '../services/sampleWorkbook';
+import { MatrixTransformer } from '../services/matrixTransformer';
+import { 
+  createComplexSampleWorkbook, 
+  createSchoolCustomLayoutWorkbook, 
+  generateLayoutStructureExport 
+} from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
 import { SchemaGenerator } from '../services/schemaGenerator';
+import { GeminiWorkbookService } from '../services/geminiService';
+import { AiPresetsModal } from './AiPresetsModal';
 
 const formatDisplayRange = (r: any): string => {
   if (!r) return 'A1';
@@ -116,6 +141,27 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   const [copiedSql, setCopiedSql] = useState<boolean>(false);
   const [isDeployingDdl, setIsDeployingDdl] = useState<boolean>(false);
   const [ddlFeedback, setDdlFeedback] = useState<{ type: 'success' | 'info' | 'error'; message: string } | null>(null);
+
+  // AI Workbook Analyzer State
+  const [isAiAnalyzingFullWorkbook, setIsAiAnalyzingFullWorkbook] = useState<boolean>(false);
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<AiWorkbookAnalysisResult | null>(null);
+  const [showAiResultModal, setShowAiResultModal] = useState<boolean>(false);
+  const [selectedAiSheetIdx, setSelectedAiSheetIdx] = useState<number>(0);
+  const [isApplyingAi, setIsApplyingAi] = useState<boolean>(false);
+  const [showLayoutExportModal, setShowLayoutExportModal] = useState<boolean>(false);
+  const [hasCopiedExportText, setHasCopiedExportText] = useState<boolean>(false);
+
+  // Google Sheets & Presets Modal State
+  const [showGoogleSheetsModal, setShowGoogleSheetsModal] = useState<boolean>(false);
+  const [showAiPresetsModal, setShowAiPresetsModal] = useState<boolean>(false);
+  const [googleSheetUrlInput, setGoogleSheetUrlInput] = useState<string>('');
+  const [isFetchingGoogleSheet, setIsFetchingGoogleSheet] = useState<boolean>(false);
+  const [googleSheetError, setGoogleSheetError] = useState<string | null>(null);
+
+  // Matrix Unpivoting & Normalization State
+  const [isNormalizedView, setIsNormalizedView] = useState<boolean>(false);
+  const [normalizedRecordsPreview, setNormalizedRecordsPreview] = useState<any[] | null>(null);
+  const [showNormalizationModal, setShowNormalizationModal] = useState<boolean>(false);
 
   // Fallback / initialization with sample if null
   const analysis = useMemo(() => {
@@ -455,6 +501,272 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     }
   };
 
+  // Full AI Workbook Analysis Trigger
+  const handleRunFullAiWorkbookAnalysis = async () => {
+    setIsAiAnalyzingFullWorkbook(true);
+    try {
+      const result = await GeminiWorkbookService.analyzeFullWorkbook(analysis, supabaseTables);
+      setAiAnalysisResult(result);
+      setSelectedAiSheetIdx(0);
+      setShowAiResultModal(true);
+    } catch (err: any) {
+      console.error('AI Workbook Analysis failed:', err);
+      alert('AI Workbook Analysis error: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsAiAnalyzingFullWorkbook(false);
+    }
+  };
+
+  // Apply ALL AI Generated Mappings across all sheets
+  const handleApplyAllAiSolutions = async () => {
+    if (!aiAnalysisResult) return;
+    setIsApplyingAi(true);
+    try {
+      const newMappings = GeminiWorkbookService.convertSolutionsToMappings(aiAnalysisResult, analysis.filename);
+
+      if (onSaveMappings) {
+        onSaveMappings(newMappings);
+      }
+
+      // Persist permanently to backend disk & Supabase metadata
+      await ApiClient.savePermanentMappings({
+        mappings: newMappings,
+        workbookInfo: {
+          filename: analysis.filename,
+          fileHash: analysis.fileHash,
+          totalWorksheets: analysis.totalWorksheets,
+        },
+        supabase: supabaseConfig,
+      });
+
+      setShowAiResultModal(false);
+      setSaveSuccessNotice(
+        `✨ AI Solution successfully applied! Configured and permanently saved ${newMappings.length} sheet mappings with intelligent primary keys and transformations.`
+      );
+      setTimeout(() => setSaveSuccessNotice(null), 6000);
+    } catch (e: any) {
+      alert('Failed to save AI mappings: ' + e.message);
+    } finally {
+      setIsApplyingAi(false);
+    }
+  };
+
+  // Apply Single Selected Sheet AI Solution
+  const handleApplySingleAiSolution = (solution: AiSheetMappingSolution) => {
+    const singleMapping: WorksheetMapping = {
+      id: `wm-ai-${Date.now()}`,
+      workbookName: analysis.filename,
+      worksheetName: solution.worksheetName,
+      supabaseTable: solution.suggestedTable,
+      headerRow: solution.headerRow,
+      dataStartRow: solution.dataStartRow,
+      dataEndRow: solution.dataEndRow,
+      sectionHeadingTargetCol: solution.sectionHeadingTargetCol,
+      enabled: true,
+      syncPolicy: solution.syncPolicy || 'BIDIRECTIONAL',
+      columns: solution.columns.map((c, idx) => ({
+        id: c.id || `col-ai-${idx}-${Date.now()}`,
+        excelColumn: c.excelColumn,
+        excelHeader: c.excelHeader,
+        supabaseColumn: c.supabaseColumn,
+        dataType: c.dataType,
+        required: c.required,
+        uniqueKey: c.uniqueKey,
+        defaultValue: c.defaultValue,
+        transformation: c.transformation,
+        validationRegex: c.validationRegex,
+      })),
+    };
+
+    const existingIdx = activeMappings.findIndex(
+      m => m.worksheetName.toLowerCase() === solution.worksheetName.toLowerCase()
+    );
+    let updated: WorksheetMapping[];
+    if (existingIdx >= 0) {
+      updated = [...activeMappings];
+      updated[existingIdx] = singleMapping;
+    } else {
+      updated = [...activeMappings, singleMapping];
+    }
+
+    if (onSaveMappings) {
+      onSaveMappings(updated);
+    }
+
+    // Persist permanently
+    ApiClient.savePermanentMappings({
+      mappings: updated,
+      workbookInfo: {
+        filename: analysis.filename,
+        fileHash: analysis.fileHash,
+        totalWorksheets: analysis.totalWorksheets,
+      },
+      supabase: supabaseConfig,
+    }).catch(console.warn);
+
+    setShowAiResultModal(false);
+    setSaveSuccessNotice(
+      `✨ AI Mapping for '${solution.worksheetName}' applied to table 'public.${solution.suggestedTable}'!`
+    );
+    setTimeout(() => setSaveSuccessNotice(null), 5000);
+  };
+
+  const handleLoadSchoolSample = () => {
+    const sample = createSchoolCustomLayoutWorkbook();
+    const { analysis: parsed } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);
+    parsed.fileHash = 'school_custom_sample_sha256';
+    onAnalysisUpdate(parsed);
+    setSelectedSheetIndex(0);
+    setSaveSuccessNotice(
+      `Loaded sample '${sample.filename}'! Includes Grade 6, 7, 8 sheets, Timetable Matrix (2-cell slots: Subject + Teacher/Room), and Year 2020.`
+    );
+    setTimeout(() => setSaveSuccessNotice(null), 6000);
+  };
+
+  const handleCopyLayoutBlueprint = () => {
+    const exportText = generateLayoutStructureExport(analysis);
+    navigator.clipboard.writeText(exportText);
+    setHasCopiedExportText(true);
+    setTimeout(() => setHasCopiedExportText(false), 3000);
+  };
+
+  const handleLoadPreset = async (presetId: 'timetable' | 'donations' | 'teacher_allocations') => {
+    setIsFetchingGoogleSheet(true);
+    setGoogleSheetError(null);
+    try {
+      const res = await ApiClient.loadPresetWorkbook(presetId);
+      if (res.success && res.analysis) {
+        onAnalysisUpdate(res.analysis);
+        setSelectedSheetIndex(0);
+        setShowGoogleSheetsModal(false);
+        setIsNormalizedView(false);
+        setNormalizedRecordsPreview(null);
+        setSaveSuccessNotice(`✨ Loaded preset '${res.analysis.filename}'! Detected: ${res.analysis.archetypeTitle || res.analysis.detectedArchetype}`);
+        setTimeout(() => setSaveSuccessNotice(null), 6000);
+      } else {
+        setGoogleSheetError(res.error || 'Failed to load preset workbook');
+      }
+    } catch (err: any) {
+      setGoogleSheetError(err.message || 'Error loading preset');
+    } finally {
+      setIsFetchingGoogleSheet(false);
+    }
+  };
+
+  const handleApplyPreset = (preset: AiWorkbookPreset) => {
+    if (preset.sheetMappings && preset.sheetMappings.length > 0) {
+      if (onSaveMappings) {
+        onSaveMappings(preset.sheetMappings);
+      }
+      ApiClient.savePermanentMappings({
+        mappings: preset.sheetMappings,
+        workbookInfo: {
+          filename: analysis.filename,
+          fileHash: analysis.fileHash,
+          totalWorksheets: preset.sheetMappings.length,
+        },
+        supabase: supabaseConfig,
+      }).catch(console.warn);
+
+      setSaveSuccessNotice(
+        `✨ Applied Preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured, merged year rows excluded).`
+      );
+      setTimeout(() => setSaveSuccessNotice(null), 5000);
+    }
+  };
+
+  const handleFetchGoogleSheetUrl = async (customUrl?: string) => {
+    const targetUrl = (customUrl || googleSheetUrlInput).trim();
+    if (!targetUrl) {
+      setGoogleSheetError('Please enter a Google Sheets URL or Spreadsheet ID.');
+      return;
+    }
+    setIsFetchingGoogleSheet(true);
+    setGoogleSheetError(null);
+    try {
+      const res = await ApiClient.fetchGoogleSheet(targetUrl);
+      if (res.success && res.analysis) {
+        onAnalysisUpdate(res.analysis);
+        setSelectedSheetIndex(0);
+        setShowGoogleSheetsModal(false);
+        setIsNormalizedView(false);
+        setNormalizedRecordsPreview(null);
+        setSaveSuccessNotice(`✨ Successfully fetched & analyzed '${res.analysis.filename}'! Detected: ${res.analysis.archetypeTitle || res.analysis.detectedArchetype}`);
+        setTimeout(() => setSaveSuccessNotice(null), 6000);
+      } else {
+        setGoogleSheetError(res.error || 'Failed to download Google Sheet. Verify the sheet is public ("Anyone with the link can view").');
+      }
+    } catch (err: any) {
+      setGoogleSheetError(err.message || 'Error fetching Google Sheet');
+    } finally {
+      setIsFetchingGoogleSheet(false);
+    }
+  };
+
+  const handleNormalizeMatrix = () => {
+    if (!analysis.base64Data && !analysis.rawWorkbookBase64) return;
+    try {
+      const b64 = analysis.rawWorkbookBase64 || analysis.base64Data || '';
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const rawWb = XLSX.read(bytes, { type: 'array', cellDates: true });
+
+      if (analysis.detectedArchetype === 'TIMETABLE_MATRIX') {
+        const { analysis: normalizedAnalysis, records } = MatrixTransformer.createNormalizedTimetableAnalysis(rawWb, analysis.filename);
+        const fullNormalized: WorkbookAnalysis = {
+          ...analysis,
+          worksheets: [normalizedAnalysis],
+          totalWorksheets: 1,
+          isNormalizedMatrix: true,
+          rawWorkbookBase64: b64,
+        };
+        onAnalysisUpdate(fullNormalized);
+        setSelectedSheetIndex(0);
+        setNormalizedRecordsPreview(records.slice(0, 20));
+        setIsNormalizedView(true);
+        setSaveSuccessNotice(`✨ Timetable Matrix Unpivoted! Transformed into ${records.length} clean relational records in 'school_timetables'.`);
+        setTimeout(() => setSaveSuccessNotice(null), 6000);
+      } else if (analysis.detectedArchetype === 'PIVOT_ALLOCATION_MATRIX') {
+        const { analysis: normalizedAnalysis, records } = MatrixTransformer.createNormalizedStaffAllocationAnalysis(rawWb, analysis.filename);
+        const fullNormalized: WorkbookAnalysis = {
+          ...analysis,
+          worksheets: [normalizedAnalysis],
+          totalWorksheets: 1,
+          isNormalizedMatrix: true,
+          rawWorkbookBase64: b64,
+        };
+        onAnalysisUpdate(fullNormalized);
+        setSelectedSheetIndex(0);
+        setNormalizedRecordsPreview(records.slice(0, 20));
+        setIsNormalizedView(true);
+        setSaveSuccessNotice(`✨ Staff Pivot Matrix Unpivoted! Transformed into ${records.length} clean relational records in 'teacher_subject_assignments'.`);
+        setTimeout(() => setSaveSuccessNotice(null), 6000);
+      }
+    } catch (err: any) {
+      console.error('Normalization failed:', err);
+    }
+  };
+
+  const handleRestoreRawMatrix = () => {
+    const b64 = analysis.rawWorkbookBase64 || analysis.base64Data;
+    if (!b64) return;
+    try {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const { analysis: restored } = ExcelAnalyzer.parseBuffer(bytes, analysis.filename);
+      onAnalysisUpdate(restored);
+      setSelectedSheetIndex(0);
+      setIsNormalizedView(false);
+      setNormalizedRecordsPreview(null);
+      setSaveSuccessNotice(`↩️ Restored raw multi-sheet matrix view (${restored.totalWorksheets} sheets).`);
+      setTimeout(() => setSaveSuccessNotice(null), 5000);
+    } catch (err: any) {
+      console.error('Restore failed:', err);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Banner with File Info, View Mode Switcher, and Upload Controls */}
@@ -525,6 +837,46 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           )}
 
           <button
+            id="btn-open-google-sheets-modal"
+            onClick={() => setShowGoogleSheetsModal(true)}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-sky-300 bg-sky-50 text-xs font-semibold text-sky-800 hover:bg-sky-100 transition-colors shadow-2xs"
+            title="Load Google Sheets URL or load: Timetable Matrix, Donations Ledger, Staff Allocations"
+          >
+            <Globe className="w-3.5 h-3.5 text-sky-600" />
+            <span>Google Sheets & Presets</span>
+          </button>
+
+          <button
+            id="btn-open-ai-presets-modal"
+            onClick={() => setShowAiPresetsModal(true)}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-purple-300 bg-purple-50 text-xs font-semibold text-purple-900 hover:bg-purple-100 transition-colors shadow-2xs"
+            title="Open AI Presets Library & Inbuilt Analyser (Permanent Server & Supabase Storage)"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+            <span>AI Presets & Analyser</span>
+          </button>
+
+          <button
+            id="btn-load-school-sample"
+            onClick={handleLoadSchoolSample}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-xs font-semibold text-purple-700 hover:bg-purple-100 transition-colors shadow-2xs"
+            title="Load realistic school multi-sheet workbook with Grade 6..8, Timetable matrix (2-cell slots), and Year 2020"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-purple-600" />
+            <span>Load Grades & Timetable Sample</span>
+          </button>
+
+          <button
+            id="btn-copy-layout-chat"
+            onClick={() => setShowLayoutExportModal(true)}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors shadow-2xs"
+            title="Open sharing helper and copy structured layout blueprint for the AI chat"
+          >
+            <Copy className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Copy Layout for Chat</span>
+          </button>
+
+          <button
             id="btn-paste-raw-table"
             onClick={() => setShowPasteModal(true)}
             className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 transition-colors"
@@ -555,6 +907,170 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           <span>{saveSuccessNotice}</span>
         </div>
       )}
+
+      {/* ARCHETYPE INTELLIGENCE BANNER */}
+      {analysis.detectedArchetype && analysis.detectedArchetype !== 'STANDARD_TABULAR' && (
+        <div className="bg-linear-to-r from-slate-900 via-indigo-950 to-purple-950 rounded-2xl p-5 border border-indigo-500/30 text-white shadow-lg space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-500/30 border border-indigo-400/40 text-indigo-200">
+                  {analysis.archetypeBadge || 'Architecture Detected'}
+                </span>
+                <span className="text-sm font-bold text-white tracking-tight">
+                  {analysis.archetypeTitle}
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 max-w-3xl leading-relaxed">
+                {analysis.archetypeSummary}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {analysis.detectedArchetype === 'TIMETABLE_MATRIX' && (
+                analysis.isNormalizedMatrix ? (
+                  <div className="flex items-center space-x-2">
+                    <span className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-bold">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Matrix Normalized (Relational View Active)</span>
+                    </span>
+                    <button
+                      onClick={handleRestoreRawMatrix}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-medium text-slate-200 transition-colors"
+                    >
+                      ↩️ View Raw 5-Day Matrix
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    id="btn-normalize-timetable-matrix"
+                    onClick={handleNormalizeMatrix}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-linear-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold text-xs shadow-md transition-all animate-pulse"
+                  >
+                    <Zap className="w-4 h-4 text-white" />
+                    <span>⚡ 1-Click Normalize Matrix (Unpivot to 2,482 Timetable Slots)</span>
+                  </button>
+                )
+              )}
+
+              {analysis.detectedArchetype === 'PIVOT_ALLOCATION_MATRIX' && (
+                analysis.isNormalizedMatrix ? (
+                  <div className="flex items-center space-x-2">
+                    <span className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-bold">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Pivot Unpivoted (Consolidated Table Active)</span>
+                    </span>
+                    <button
+                      onClick={handleRestoreRawMatrix}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-medium text-slate-200 transition-colors"
+                    >
+                      ↩️ View Raw Grade Sheets
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    id="btn-normalize-staff-matrix"
+                    onClick={handleNormalizeMatrix}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-linear-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-xs shadow-md transition-all animate-pulse"
+                  >
+                    <Zap className="w-4 h-4 text-white" />
+                    <span>⚡ 1-Click Normalize Matrix (Consolidate 8 Grades into 729 Records)</span>
+                  </button>
+                )
+              )}
+
+              {analysis.detectedArchetype === 'MULTI_SHEET_LEDGER' && (
+                <div className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 text-xs font-medium">
+                  <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Section Divider Rows Filtered & Currencies Sanitized</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {analysis.archetypeFeatures && analysis.archetypeFeatures.length > 0 && (
+            <div className="pt-2 border-t border-slate-800/80 flex flex-wrap gap-2 text-[11px] text-slate-300">
+              {analysis.archetypeFeatures.map((feat, fIdx) => (
+                <span key={fIdx} className="px-2.5 py-1 rounded-md bg-slate-800/60 border border-slate-700/60 flex items-center space-x-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                  <span>{feat}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* AI WORKBOOK ANALYZER HERO BANNER */}
+      <div className="relative overflow-hidden bg-linear-to-r from-purple-900 via-indigo-900 to-slate-900 rounded-2xl p-6 text-white shadow-xl border border-purple-500/20">
+        <div className="absolute top-0 right-0 -mt-10 -mr-10 w-64 h-64 bg-purple-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 left-1/3 -mb-10 w-48 h-48 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
+
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="space-y-2 max-w-2xl">
+            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-purple-500/20 border border-purple-400/30 text-purple-200 text-xs font-medium backdrop-blur-xs">
+              <Sparkles className="w-3.5 h-3.5 text-purple-300 animate-pulse" />
+              <span>AI Workbook Analyzer & Auto-Mapper</span>
+              <span className="bg-purple-400/20 text-purple-200 text-[10px] px-2 py-0.2 rounded-full font-mono">
+                Gemini 3.8 Flash
+              </span>
+            </div>
+            <h2 className="text-xl lg:text-2xl font-black text-white tracking-tight">
+              Auto-Solve Sheet Mappings & PostgreSQL Schemas
+            </h2>
+            <p className="text-xs lg:text-sm text-purple-100/80 leading-relaxed">
+              Scan all <strong className="text-white font-semibold">{analysis.totalWorksheets} sheets</strong> in <span className="font-mono text-purple-200">{analysis.filename}</span>. 
+              The AI automatically bypasses decorative title banners, extracts merged section values (e.g. class / division), assigns primary upsert keys, infers PostgreSQL data types, and suggests clean table routes.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <button
+              id="btn-ai-analyze-full-workbook"
+              onClick={handleRunFullAiWorkbookAnalysis}
+              disabled={isAiAnalyzingFullWorkbook}
+              className="inline-flex items-center space-x-2.5 px-5 py-3 rounded-xl bg-linear-to-r from-purple-500 to-indigo-600 hover:from-purple-400 hover:to-indigo-500 text-white font-bold text-xs shadow-lg shadow-purple-900/50 hover:shadow-purple-700/50 transition-all duration-200 transform hover:-translate-y-0.5 disabled:opacity-50"
+            >
+              <Bot className={`w-4 h-4 text-purple-200 ${isAiAnalyzingFullWorkbook ? 'animate-bounce' : ''}`} />
+              <span>{isAiAnalyzingFullWorkbook ? 'Analyzing All Sheets...' : '✨ Run AI Full Workbook Analyzer'}</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() => onOpenAiAssistant(activeSheet)}
+              className="inline-flex items-center space-x-2 px-4 py-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 text-white text-xs font-semibold backdrop-blur-xs transition-colors"
+              title="Analyze active sheet with AI Assistant"
+            >
+              <Brain className="w-4 h-4 text-purple-300" />
+              <span>Analyze Active Sheet</span>
+            </button>
+          </div>
+        </div>
+
+        {/* AI Stats Row */}
+        <div className="relative z-10 mt-6 pt-5 border-t border-white/10 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+          <div>
+            <span className="text-purple-300/80 block text-[11px]">Worksheets Ready</span>
+            <span className="font-bold text-white text-sm">{analysis.totalWorksheets} Sheets</span>
+          </div>
+          <div>
+            <span className="text-purple-300/80 block text-[11px]">Columns Scanned</span>
+            <span className="font-bold text-white text-sm">
+              {analysis.worksheets.reduce((acc, ws) => acc + ws.totalColumns, 0)} Detected
+            </span>
+          </div>
+          <div>
+            <span className="text-purple-300/80 block text-[11px]">Total Data Rows</span>
+            <span className="font-bold text-white text-sm">
+              {analysis.worksheets.reduce((acc, ws) => acc + ws.totalRows, 0).toLocaleString()} Rows
+            </span>
+          </div>
+          <div>
+            <span className="text-purple-300/80 block text-[11px]">Active Destination Tables</span>
+            <span className="font-bold text-white text-sm">{activeMappings.length} Configured</span>
+          </div>
+        </div>
+      </div>
 
       {/* MULTI-SHEET ROUTING & CONSOLIDATION STRATEGY BAR */}
       <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs space-y-4">
@@ -687,10 +1203,10 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           <div className="pt-3 border-t border-slate-100">
             <h4 className="text-xs font-bold text-slate-700 mb-2 uppercase">Sheet-to-Table Routing Assignments:</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-              {analysis.worksheets.map((ws) => {
+              {analysis.worksheets.map((ws, wsIdx) => {
                 const currentDest = sheetToTableMap[ws.sheetName] || ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
                 return (
-                  <div key={ws.sheetName} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between gap-2">
+                  <div key={`${ws.sheetName}-${wsIdx}`} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between gap-2">
                     <div className="truncate font-semibold text-slate-800" title={ws.sheetName}>
                       {ws.sheetName} ({ws.totalRows}r)
                     </div>
@@ -782,7 +1298,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           <div className="flex border-b border-slate-200 overflow-x-auto space-x-2 pb-0.5">
             {schemaPlans.map((plan, idx) => (
               <button
-                key={plan.tableName}
+                key={`${plan.tableName}-${idx}`}
                 onClick={() => setSelectedPlanIndex(idx)}
                 className={`px-4 py-2.5 rounded-t-lg text-xs font-medium whitespace-nowrap transition-all border-b-2 flex items-center space-x-2 ${
                   selectedPlanIndex === idx
@@ -976,7 +1492,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                     className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 bg-white text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-purple-500"
                   >
                     {analysis.worksheets.map((ws, idx) => (
-                      <option key={ws.sheetName} value={idx}>
+                      <option key={`${ws.sheetName}-${idx}`} value={idx}>
                         {idx + 1}. {ws.sheetName} ({ws.totalRows}r)
                       </option>
                     ))}
@@ -1006,7 +1522,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           <div className="flex border-b border-slate-200 overflow-x-auto space-x-2 pb-0.5">
             {filteredWorksheetIndices.map(({ ws, idx }) => (
               <button
-                key={ws.sheetName}
+                key={`${ws.sheetName}-${idx}`}
                 id={`sheet-tab-${idx}`}
                 onClick={() => setSelectedSheetIndex(idx)}
                 className={`px-4 py-2.5 rounded-t-lg text-sm font-medium whitespace-nowrap transition-all border-b-2 flex items-center space-x-2 ${
@@ -1313,6 +1829,677 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* AI WORKBOOK ANALYZER MULTI-SHEET SOLUTION MODAL */}
+      {showAiResultModal && aiAnalysisResult && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-purple-200 overflow-hidden my-auto">
+            {/* Modal Header */}
+            <div className="p-5 bg-linear-to-r from-purple-900 via-indigo-900 to-slate-900 text-white flex items-center justify-between shrink-0 border-b border-purple-800">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 rounded-xl bg-purple-500/20 border border-purple-400/30 text-purple-300 backdrop-blur-xs">
+                  <Sparkles className="w-5 h-5 text-purple-300" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-base sm:text-lg font-black text-white">AI Workbook Mapping Solution</h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-400/20 text-purple-200 border border-purple-400/30">
+                      {aiAnalysisResult.modelUsed || 'gemini-3.8-flash'}
+                    </span>
+                    {aiAnalysisResult.aiPowered && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                        Live AI Verified
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-purple-200/80 font-mono mt-0.5">
+                    {aiAnalysisResult.filename} • {aiAnalysisResult.sheetSolutions.length} Worksheets Analyzed
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowAiResultModal(false)}
+                className="p-2 rounded-lg text-purple-300 hover:text-white hover:bg-white/10 transition-colors"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5 flex-1 bg-slate-50/50">
+              {/* Architecture Overview Banner */}
+              <div className="p-4 rounded-xl bg-purple-50/80 border border-purple-200/70 text-xs flex items-start space-x-3 text-purple-950">
+                <Brain className="w-5 h-5 text-purple-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-purple-950 text-xs">Workbook Data Architecture Summary</h4>
+                    {aiAnalysisResult.fallbackActive && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        ⚡ Heuristic Rule-Engine
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-purple-900 mt-1 leading-relaxed">
+                    {aiAnalysisResult.architectureSummary}
+                  </p>
+                  {aiAnalysisResult.fallbackNotice && (
+                    <div className="mt-2.5 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center space-x-2">
+                        <Info className="w-4 h-4 text-amber-700 shrink-0" />
+                        <span>{aiAnalysisResult.fallbackNotice}</span>
+                      </div>
+                      <button
+                        onClick={handleRunFullAiWorkbookAnalysis}
+                        disabled={isAiAnalyzingFullWorkbook}
+                        className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shrink-0 transition-colors shadow-2xs disabled:opacity-50"
+                      >
+                        {isAiAnalyzingFullWorkbook ? 'Retrying AI...' : '⚡ Retry AI Analysis'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Sheet Navigation Selector */}
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
+                  Select Worksheet Mapping Solution ({aiAnalysisResult.sheetSolutions.length} Sheets):
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {aiAnalysisResult.sheetSolutions.map((sol, sIdx) => {
+                    const isSelected = selectedAiSheetIdx === sIdx;
+                    return (
+                      <button
+                        key={`${sol.worksheetName}-${sIdx}`}
+                        onClick={() => setSelectedAiSheetIdx(sIdx)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-all border ${
+                          isSelected
+                            ? 'bg-purple-600 text-white border-purple-600 shadow-md shadow-purple-600/20'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                        }`}
+                      >
+                        <span>{sol.worksheetName}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                          isSelected ? 'bg-purple-700 text-purple-100' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          → {sol.suggestedTable}
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          isSelected ? 'bg-emerald-400 text-emerald-950' : 'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {sol.confidence}%
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Active Sheet Solution Details */}
+              {aiAnalysisResult.sheetSolutions[selectedAiSheetIdx] && (() => {
+                const currentSol = aiAnalysisResult.sheetSolutions[selectedAiSheetIdx];
+                return (
+                  <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-xs space-y-4">
+                    {/* Header Spec Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                      <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                        <span className="text-slate-500 block text-[11px]">Target Supabase Table</span>
+                        <span className="font-mono font-bold text-slate-900 text-sm">public.{currentSol.suggestedTable}</span>
+                      </div>
+                      <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                        <span className="text-slate-500 block text-[11px]">Header Row & Data Start</span>
+                        <span className="font-mono font-bold text-slate-900 text-sm">
+                          Row {currentSol.headerRow} (Data: Row {currentSol.dataStartRow})
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                        <span className="text-slate-500 block text-[11px]">Primary Unique Upsert Key</span>
+                        <span className="font-mono font-bold text-purple-700 text-sm flex items-center space-x-1">
+                          <Key className="w-3.5 h-3.5 text-purple-600" />
+                          <span>{currentSol.uniqueKeyColumn || currentSol.columns.find(c => c.uniqueKey)?.supabaseColumn || 'None'}</span>
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                        <span className="text-slate-500 block text-[11px]">Section Heading Extractor</span>
+                        <span className="font-mono font-semibold text-slate-800 text-xs">
+                          {currentSol.sectionHeadingTargetCol ? (
+                            <span className="text-indigo-700">Column: '{currentSol.sectionHeadingTargetCol}'</span>
+                          ) : (
+                            <span className="text-slate-400">No merged section</span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* AI Reasoning Note */}
+                    <div className="p-3.5 rounded-lg bg-indigo-50/60 border border-indigo-100 text-xs text-indigo-950 flex items-start space-x-2">
+                      <Info className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="font-semibold text-indigo-950">AI Reasoning: </strong>
+                        <span className="text-indigo-900">{currentSol.reasoning}</span>
+                      </div>
+                    </div>
+
+                    {/* Columns Matrix Table */}
+                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+                      <div className="p-3 bg-slate-100 border-b border-slate-200 text-xs font-bold text-slate-700 flex items-center justify-between">
+                        <span>Mapped Columns & Inferred Types ({currentSol.columns.length})</span>
+                        <span className="text-[11px] text-slate-500 font-normal">Auto-mapped by AI</span>
+                      </div>
+                      <div className="overflow-x-auto max-h-72">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 sticky top-0">
+                            <tr>
+                              <th className="px-3.5 py-2">Col</th>
+                              <th className="px-3.5 py-2">Source Excel Header</th>
+                              <th className="px-3.5 py-2">Target Supabase Column</th>
+                              <th className="px-3.5 py-2">Inferred Type</th>
+                              <th className="px-3.5 py-2">Transformation</th>
+                              <th className="px-3.5 py-2">Upsert Key / Required</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono">
+                            {currentSol.columns.map((col, cIdx) => (
+                              <tr key={col.id || cIdx} className="hover:bg-slate-50/80 transition-colors">
+                                <td className="px-3.5 py-2 font-bold text-slate-500">{col.excelColumn}</td>
+                                <td className="px-3.5 py-2 font-sans text-slate-800 font-medium">{col.excelHeader}</td>
+                                <td className="px-3.5 py-2 font-bold text-purple-700">public.{currentSol.suggestedTable}.{col.supabaseColumn}</td>
+                                <td className="px-3.5 py-2">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    col.dataType === 'integer' ? 'bg-blue-100 text-blue-800' :
+                                    col.dataType === 'decimal' ? 'bg-indigo-100 text-indigo-800' :
+                                    col.dataType === 'date' ? 'bg-amber-100 text-amber-800' :
+                                    col.dataType === 'boolean' ? 'bg-emerald-100 text-emerald-800' :
+                                    'bg-slate-100 text-slate-700'
+                                  }`}>
+                                    {col.dataType.toUpperCase()}
+                                  </span>
+                                </td>
+                                <td className="px-3.5 py-2">
+                                  <span className="px-2 py-0.5 rounded text-[10px] bg-slate-100 font-mono text-slate-700">
+                                    {col.transformation}
+                                  </span>
+                                </td>
+                                <td className="px-3.5 py-2 font-sans text-[11px]">
+                                  {col.uniqueKey ? (
+                                    <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold flex items-center space-x-1 w-max">
+                                      <Key className="w-3 h-3 text-amber-700" />
+                                      <span>UNIQUE KEY</span>
+                                    </span>
+                                  ) : col.required ? (
+                                    <span className="text-red-600 font-semibold">Required</span>
+                                  ) : (
+                                    <span className="text-slate-400">Optional</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Modal Footer Actions */}
+            <div className="p-4 bg-white border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
+              <div className="text-xs text-slate-500">
+                <span>Applying AI mappings sets live synchronization rules and saves permanently to system database.</span>
+              </div>
+
+              <div className="flex items-center space-x-2 w-full sm:w-auto justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowAiResultModal(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+
+                {aiAnalysisResult.sheetSolutions[selectedAiSheetIdx] && (
+                  <button
+                    type="button"
+                    onClick={() => handleApplySingleAiSolution(aiAnalysisResult.sheetSolutions[selectedAiSheetIdx])}
+                    className="px-4 py-2 rounded-xl bg-purple-100 hover:bg-purple-200 text-purple-900 text-xs font-bold transition-colors"
+                  >
+                    Apply Sheet '{aiAnalysisResult.sheetSolutions[selectedAiSheetIdx].worksheetName}'
+                  </button>
+                )}
+
+                <button
+                  id="btn-apply-all-ai-solutions"
+                  type="button"
+                  onClick={handleApplyAllAiSolutions}
+                  disabled={isApplyingAi}
+                  className="px-5 py-2.5 rounded-xl bg-linear-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-700/20 transition-all flex items-center space-x-2 disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-white" />
+                  <span>{isApplyingAi ? 'Applying Mappings...' : `✨ Apply All ${aiAnalysisResult.sheetSolutions.length} Sheet Mappings`}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SHARING & LAYOUT BLUEPRINT EXPORT MODAL */}
+      {showLayoutExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-linear-to-r from-indigo-900 via-purple-900 to-slate-900 text-white">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
+                  <Copy className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center space-x-2">
+                    <span>Share Custom Excel Layouts with AI</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-indigo-400/20 text-indigo-200 font-mono">
+                      {analysis.filename}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-indigo-200/80">
+                    How to get your custom Excel designs (timetables, multi-grade sheets, 2-cell slots) to the AI assistant
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLayoutExportModal(false)}
+                className="p-1.5 rounded-lg text-indigo-200 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-6 text-xs text-slate-600">
+              {/* 4 Practical Ways Card */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                <div className="p-4 rounded-xl border border-purple-200 bg-purple-50/60 flex flex-col justify-between">
+                  <div>
+                    <div className="font-bold text-purple-950 flex items-center space-x-2 text-sm">
+                      <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-[11px] font-bold">1</span>
+                      <span>Copy & Paste Direct from Excel into Chat</span>
+                    </div>
+                    <p className="mt-2 text-slate-600 leading-relaxed">
+                      In Excel, highlight 10–25 rows of your sheet (including headers, merged banners, and timetable slots). Press <kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-300 font-mono text-slate-800">Ctrl+C</kbd>, then paste (<kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-300 font-mono text-slate-800">Ctrl+V</kbd>) directly into the AI chat. Excel automatically pastes as Tab-Separated Values (TSV) preserving all cell boundaries!
+                    </p>
+                  </div>
+                  <div className="mt-3 text-[11px] text-purple-700 font-medium">⚡ Fastest method: no file conversion needed</div>
+                </div>
+
+                <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/60 flex flex-col justify-between">
+                  <div>
+                    <div className="font-bold text-indigo-950 flex items-center space-x-2 text-sm">
+                      <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[11px] font-bold">2</span>
+                      <span>Upload Your File in this Web App</span>
+                    </div>
+                    <p className="mt-2 text-slate-600 leading-relaxed">
+                      Click the purple <strong>"Upload Excel (.xlsx/.csv)"</strong> button in the top bar of this page. The system parses all sheets in your browser, discovers all merged coordinates, examines column types, and calculates SHA-256 hashes immediately.
+                    </p>
+                  </div>
+                  <div className="mt-3 text-[11px] text-indigo-700 font-medium">📁 Uploads full multi-sheet .xlsx files</div>
+                </div>
+
+                <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 flex flex-col justify-between">
+                  <div>
+                    <div className="font-bold text-emerald-950 flex items-center space-x-2 text-sm">
+                      <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[11px] font-bold">3</span>
+                      <span>1-Click Copy Structured Blueprint</span>
+                    </div>
+                    <p className="mt-2 text-slate-600 leading-relaxed">
+                      Click the <strong>"Copy Blueprint to Clipboard"</strong> button below. It generates a compact text blueprint of all sheets, merged cell ranges (e.g. B3:C3 Period 1), and sample rows, which you can paste straight into our conversation.
+                    </p>
+                  </div>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={handleCopyLayoutBlueprint}
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-colors"
+                    >
+                      {hasCopiedExportText ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Copied to Clipboard!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Blueprint to Clipboard</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/60 flex flex-col justify-between">
+                  <div>
+                    <div className="font-bold text-amber-950 flex items-center space-x-2 text-sm">
+                      <span className="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[11px] font-bold">4</span>
+                      <span>Nextcloud or Cloud Drive Link</span>
+                    </div>
+                    <p className="mt-2 text-slate-600 leading-relaxed">
+                      Upload your spreadsheet to your Nextcloud <code className="bg-white px-1 py-0.5 rounded font-mono border border-amber-300">/ExcelImports</code> WebDAV folder, or upload to Google Drive / Dropbox / OneDrive and paste the share link into our chat.
+                    </p>
+                  </div>
+                  <div className="mt-3 text-[11px] text-amber-800 font-medium">☁️ Ideal for enterprise or large workbooks</div>
+                </div>
+              </div>
+
+              {/* Blueprint Preview Card */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-900 text-xs">
+                    Current Loaded Layout Blueprint Preview ({analysis.totalWorksheets} Sheets)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopyLayoutBlueprint}
+                    className="inline-flex items-center space-x-1 text-indigo-600 hover:text-indigo-800 font-semibold"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{hasCopiedExportText ? 'Copied!' : 'Copy to Clipboard'}</span>
+                  </button>
+                </div>
+
+                <div className="bg-slate-900 rounded-xl p-4 text-emerald-400 font-mono text-[11px] max-h-60 overflow-y-auto leading-relaxed border border-slate-800 shadow-inner">
+                  <pre className="whitespace-pre-wrap">{generateLayoutStructureExport(analysis)}</pre>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={handleLoadSchoolSample}
+                className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl border border-purple-300 bg-white hover:bg-purple-50 text-purple-700 text-xs font-semibold shadow-2xs transition-colors"
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>Load Sample with Grade 6..8 & Timetable Matrix</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowLayoutExportModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GOOGLE SHEETS & PRESETS MODAL */}
+      {showGoogleSheetsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-5 bg-linear-to-r from-sky-900 via-indigo-900 to-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-400/30">
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white tracking-tight flex items-center space-x-2">
+                    <span>Google Sheets & Real-World Workbooks</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-sky-500/30 text-sky-200 font-semibold">
+                      Live Connect
+                    </span>
+                  </h3>
+                  <p className="text-xs text-sky-200/80 mt-0.5">
+                    Load live Google Spreadsheets directly or test real-world complex architectures (Timetables, Ledgers, Staff Pivots).
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowGoogleSheetsModal(false)}
+                className="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-6">
+              {googleSheetError && (
+                <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center space-x-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{googleSheetError}</span>
+                </div>
+              )}
+
+              {/* Section 1: Quick Load Real-World Workbooks */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Real-World Production Workbooks (Pre-Loaded for Instant Access)
+                  </span>
+                  <span className="text-[11px] text-slate-400">Zero network wait time</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Card 1: Master Timetable */}
+                  <div className="p-4 rounded-xl border border-amber-200 bg-linear-to-b from-amber-50/50 to-white flex flex-col justify-between hover:shadow-md transition-all">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="p-2 rounded-lg bg-amber-100 text-amber-700">
+                          <Calendar className="w-4 h-4" />
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
+                          5 Days • Matrix
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-slate-900 text-sm">Class Wise Time Table</h4>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        School master timetable. Vertical grade blocks (Grades 6..13) with paired interleaved rows: Row 1 = Division & Subjects, Row 2 = Assigned Teachers.
+                      </p>
+                      <div className="pt-2 text-[11px] text-amber-800 font-medium">
+                        ⚡ Unpivots to 2,482 relational period slots
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isFetchingGoogleSheet}
+                      onClick={() => handleLoadPreset('timetable')}
+                      className="mt-4 w-full py-2 px-3 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                    >
+                      {isFetchingGoogleSheet ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span>Load Timetable Matrix</span>
+                    </button>
+                  </div>
+
+                  {/* Card 2: Donations Ledger */}
+                  <div className="p-4 rounded-xl border border-emerald-200 bg-linear-to-b from-emerald-50/50 to-white flex flex-col justify-between hover:shadow-md transition-all">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="p-2 rounded-lg bg-emerald-100 text-emerald-700">
+                          <DollarSign className="w-4 h-4" />
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                          8 Sheets • Ledger
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-slate-900 text-sm">JHC Donation Details</h4>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Multi-sheet financial ledger: Things Donation, Books, Projects, Cash SDC, Needy Students, and Receipts. Top banner offsets & mid-table year section divider rows.
+                      </p>
+                      <div className="pt-2 text-[11px] text-emerald-800 font-medium">
+                        🧹 Filters Year-2023 dividers & "Rs " strings
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isFetchingGoogleSheet}
+                      onClick={() => handleLoadPreset('donations')}
+                      className="mt-4 w-full py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                    >
+                      {isFetchingGoogleSheet ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span>Load Financial Ledger</span>
+                    </button>
+                  </div>
+
+                  {/* Card 3: Staff Allocations */}
+                  <div className="p-4 rounded-xl border border-indigo-200 bg-linear-to-b from-indigo-50/50 to-white flex flex-col justify-between hover:shadow-md transition-all">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="p-2 rounded-lg bg-indigo-100 text-indigo-700">
+                          <GraduationCap className="w-4 h-4" />
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                          8 Grades • Pivot
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-slate-900 text-sm">Subject Teacher Class Wise</h4>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Teacher allocations across Grade 6..11 and AL. 2D Pivot grid: Subjects along rows, Class Divisions A..H along columns, teacher names and co-teachers in cells.
+                      </p>
+                      <div className="pt-2 text-[11px] text-indigo-800 font-medium">
+                        ⚡ Unpivots to 729 clean assignment slots
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isFetchingGoogleSheet}
+                      onClick={() => handleLoadPreset('teacher_allocations')}
+                      className="mt-4 w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                    >
+                      {isFetchingGoogleSheet ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span>Load Staff Allocations</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Paste Google Sheets URL */}
+              <div className="p-5 rounded-xl border border-slate-200 bg-slate-50 space-y-4">
+                <div className="space-y-1">
+                  <h4 className="font-bold text-slate-900 text-sm flex items-center space-x-1.5">
+                    <Globe className="w-4 h-4 text-sky-600" />
+                    <span>Or Fetch Live from Google Sheets Link</span>
+                  </h4>
+                  <p className="text-xs text-slate-500">
+                    Paste any public Google Sheets link or Google Drive spreadsheet link to download and analyze it live.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={googleSheetUrlInput}
+                    onChange={(e) => setGoogleSheetUrlInput(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/1Ir0ySRehyaAvVhUowspQgobCLObFViNx/edit?..."
+                    className="flex-1 px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-mono bg-white focus:outline-hidden focus:ring-2 focus:ring-sky-500 shadow-2xs"
+                  />
+                  <button
+                    type="button"
+                    disabled={isFetchingGoogleSheet || !googleSheetUrlInput.trim()}
+                    onClick={() => handleFetchGoogleSheetUrl()}
+                    className="px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center space-x-2 shrink-0 disabled:opacity-50"
+                  >
+                    {isFetchingGoogleSheet ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                        <span>Fetching Sheet...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ExternalLink className="w-4 h-4" />
+                        <span>Fetch & Analyze</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Quick Paste Pills */}
+                <div className="space-y-1.5 pt-1">
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Quick-paste links from your prompt:
+                  </span>
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoogleSheetUrlInput('https://docs.google.com/spreadsheets/d/1Ir0ySRehyaAvVhUowspQgobCLObFViNx/edit');
+                        handleFetchGoogleSheetUrl('https://docs.google.com/spreadsheets/d/1Ir0ySRehyaAvVhUowspQgobCLObFViNx/edit');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-sky-300 hover:bg-sky-50 text-slate-700 font-mono transition-colors"
+                    >
+                      🔗 Link 1 (Class Wise Time Table)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoogleSheetUrlInput('https://docs.google.com/spreadsheets/d/1OEVvR6YruzJ0kpqYoA9-vDggwJozpweM/edit');
+                        handleFetchGoogleSheetUrl('https://docs.google.com/spreadsheets/d/1OEVvR6YruzJ0kpqYoA9-vDggwJozpweM/edit');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 text-slate-700 font-mono transition-colors"
+                    >
+                      🔗 Link 2 (JHC Donation Details)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoogleSheetUrlInput('https://docs.google.com/spreadsheets/d/1FX9-OiRMBTa5wpXC-wOlDXe1dv6MwHLq/edit');
+                        handleFetchGoogleSheetUrl('https://docs.google.com/spreadsheets/d/1FX9-OiRMBTa5wpXC-wOlDXe1dv6MwHLq/edit');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 font-mono transition-colors"
+                    >
+                      🔗 Link 3 (Subject Teacher Class Wise)
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowGoogleSheetsModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INBUILT AI ANALYSER & PRESETS LIBRARY MODAL */}
+      <AiPresetsModal
+        isOpen={showAiPresetsModal}
+        onClose={() => setShowAiPresetsModal(false)}
+        currentAnalysis={analysis}
+        activeMappings={activeMappings}
+        onApplyPreset={handleApplyPreset}
+        onLoadPresetWorkbook={(presetId) => handleLoadPreset(presetId as any)}
+        supabaseConfig={supabaseConfig}
+        supabaseTables={supabaseTables}
+      />
     </div>
   );
 };

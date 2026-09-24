@@ -3,6 +3,20 @@ import { DryRunResult, WorksheetMapping, RowValidationError, ImportLog, Workbook
 import { ExcelAnalyzer } from './excelAnalyzer';
 import { MappingEngine } from './mappingEngine';
 
+function areCellsEqual(a: any, b: any): boolean {
+  if (a === b) return true;
+  if ((a === null || a === undefined || a === '') && (b === null || b === undefined || b === '')) return true;
+  const strA = String(a ?? '').trim();
+  const strB = String(b ?? '').trim();
+  if (strA === strB) return true;
+  const numA = Number(strA);
+  const numB = Number(strB);
+  if (!isNaN(numA) && !isNaN(numB) && strA !== '' && strB !== '') {
+    return numA === numB;
+  }
+  return false;
+}
+
 export class DryRunEngine {
   static getWorkbookSheet(
     wb: XLSX.WorkBook | null | undefined,
@@ -112,7 +126,7 @@ export class DryRunEngine {
             excelHeader: h.name,
             supabaseColumn: h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
             dataType: h.inferredType || 'text',
-            required: h.isCandidateKey || idx === 0,
+            required: false,
             uniqueKey: h.isCandidateKey || idx === 0,
             transformation: h.inferredType === 'date' ? 'parse_date' : h.inferredType === 'integer' ? 'parse_number' : 'trim'
           }))
@@ -196,25 +210,40 @@ export class DryRunEngine {
           validRows++;
           sheetValid++;
 
-          // Check against existing database records for Insert vs Update (Merge)
-          let isExisting = false;
+          // Check against existing database records for Identity & Cell-level changes
           let matchedExistingRecord: any = null;
+          const candidateKeys = ['admission_no', 'student_id', 'roll_no', 'username', 'index_number', 'email', 'id', 'code'];
+
           if (uniqueColNames.length > 0 && existingTableRecords.length > 0) {
             matchedExistingRecord = existingTableRecords.find(ex => {
-              return uniqueColNames.every(col => {
-                const exVal = String(ex[col] ?? '').trim().toLowerCase();
-                const cleanVal = String(cleanRecord[col] ?? '').trim().toLowerCase();
-                return exVal !== '' && exVal === cleanVal;
-              });
+              return uniqueColNames.every(col => areCellsEqual(ex[col], cleanRecord[col]));
             });
-            isExisting = !!matchedExistingRecord;
+          } else if (existingTableRecords.length > 0) {
+            for (const ck of candidateKeys) {
+              if (cleanRecord[ck] !== undefined && cleanRecord[ck] !== null && String(cleanRecord[ck]).trim() !== '') {
+                matchedExistingRecord = existingTableRecords.find(ex => areCellsEqual(ex[ck], cleanRecord[ck]));
+                if (matchedExistingRecord) break;
+              }
+            }
+            if (!matchedExistingRecord) {
+              matchedExistingRecord = existingTableRecords.find(ex => {
+                return Object.keys(cleanRecord).every(k => areCellsEqual(cleanRecord[k], ex[k]));
+              });
+            }
           }
 
-          const action = isExisting ? 'UPDATE' : 'INSERT';
-          if (isExisting) {
-            proposedUpdates++;
-            sheetUpdates++;
+          let action: 'INSERT' | 'UPDATE' | 'SKIP' = 'INSERT';
+          if (matchedExistingRecord) {
+            const isIdentical = Object.keys(cleanRecord).every(k => areCellsEqual(cleanRecord[k], matchedExistingRecord[k]));
+            if (isIdentical) {
+              action = 'SKIP';
+            } else {
+              action = 'UPDATE';
+              proposedUpdates++;
+              sheetUpdates++;
+            }
           } else {
+            action = 'INSERT';
             proposedInserts++;
             sheetInserts++;
           }
@@ -223,7 +252,7 @@ export class DryRunEngine {
             sampleTransformedRecords.push({
               sheetName: wm.worksheetName,
               targetTable,
-              action,
+              action: action === 'SKIP' ? 'UPDATE' : action,
               record: cleanRecord,
               rowNumber: raw.__rowNumber || 0
             });
@@ -293,6 +322,7 @@ export class DryRunEngine {
 
       const currentDb = [...(databaseState[targetTable] || [])];
       const uniqueColNames = wm.columns.filter(c => c.uniqueKey).map(c => c.supabaseColumn);
+      const candidateKeys = ['admission_no', 'student_id', 'roll_no', 'username', 'index_number', 'email', 'id', 'code'];
       const seenBatchKeys = new Set<string>();
 
       for (const raw of records) {
@@ -308,27 +338,35 @@ export class DryRunEngine {
           cleanRecord.__updated_at = new Date().toISOString();
           cleanRecord.__source_file = filename;
 
+          let matchIdx = -1;
           if (uniqueColNames.length > 0) {
-            const idx = currentDb.findIndex(ex => {
-              return uniqueColNames.every(col => {
-                const exVal = String(ex[col] ?? '').trim().toLowerCase();
-                const cleanVal = String(cleanRecord[col] ?? '').trim().toLowerCase();
-                return exVal !== '' && exVal === cleanVal;
-              });
+            matchIdx = currentDb.findIndex(ex => {
+              return uniqueColNames.every(col => areCellsEqual(ex[col], cleanRecord[col]));
             });
-
-            if (idx >= 0) {
-              // Update existing record
-              currentDb[idx] = { ...currentDb[idx], ...cleanRecord };
-            } else {
-              // Insert new record
-              if (!cleanRecord.id) {
-                cleanRecord.id = `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-              }
-              currentDb.push(cleanRecord);
-            }
           } else {
-            // No unique key -> insert
+            for (const ck of candidateKeys) {
+              if (cleanRecord[ck] !== undefined && cleanRecord[ck] !== null && String(cleanRecord[ck]).trim() !== '') {
+                matchIdx = currentDb.findIndex(ex => areCellsEqual(ex[ck], cleanRecord[ck]));
+                if (matchIdx >= 0) break;
+              }
+            }
+            if (matchIdx < 0) {
+              matchIdx = currentDb.findIndex(ex => {
+                return Object.keys(cleanRecord).every(k => areCellsEqual(cleanRecord[k], ex[k]));
+              });
+            }
+          }
+
+          if (matchIdx >= 0) {
+            const existing = currentDb[matchIdx];
+            const isIdentical = Object.keys(cleanRecord).every(k => areCellsEqual(cleanRecord[k], existing[k]));
+            if (!isIdentical) {
+              // Row has updated cells -> update in-place!
+              currentDb[matchIdx] = { ...existing, ...cleanRecord };
+            }
+            // If identical: do nothing! No duplicate rows!
+          } else {
+            // Truly new row -> insert
             if (!cleanRecord.id) {
               cleanRecord.id = `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
             }

@@ -6,11 +6,14 @@ import {
   SupabaseTableInfo, 
   LiveSchedulerStatus, 
   SyncInterval, 
+  SyncSettings,
   WorksheetMapping, 
   AutomatedRunDiagnosticResult,
   WorkerConnectionStatus,
   LiveSyncHistoryItem,
-  LogMessage
+  LogMessage,
+  AiWorkbookAnalysisResult,
+  AiWorkbookPreset
 } from '../types';
 
 export interface SupabaseDiagnostic {
@@ -157,6 +160,105 @@ export class ApiClient {
         analyzedAt: data.analyzedAt,
         fileHash: data.fileHash,
         base64Data: data.base64Data,
+        rawWorkbookBase64: data.rawWorkbookBase64 || data.base64Data,
+        detectedArchetype: data.detectedArchetype,
+        archetypeTitle: data.archetypeTitle,
+        archetypeBadge: data.archetypeBadge,
+        archetypeSummary: data.archetypeSummary,
+        archetypeFeatures: data.archetypeFeatures,
+        archetypeRecommendations: data.archetypeRecommendations,
+      };
+
+      return {
+        success: true,
+        analysis,
+        base64Data: data.base64Data,
+      };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async fetchGoogleSheet(urlOrId: string): Promise<{
+    success: boolean;
+    analysis?: WorkbookAnalysis;
+    base64Data?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/sheets/fetch-google-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: urlOrId }),
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        return { success: false, error: data.error };
+      }
+
+      const analysis: WorkbookAnalysis = {
+        filename: data.filename,
+        fileSize: data.fileSize,
+        fileSizeFormatted: data.fileSizeFormatted,
+        totalWorksheets: data.totalWorksheets,
+        worksheets: data.worksheets,
+        analyzedAt: data.analyzedAt,
+        fileHash: data.fileHash,
+        base64Data: data.base64Data,
+        rawWorkbookBase64: data.rawWorkbookBase64 || data.base64Data,
+        detectedArchetype: data.detectedArchetype,
+        archetypeTitle: data.archetypeTitle,
+        archetypeBadge: data.archetypeBadge,
+        archetypeSummary: data.archetypeSummary,
+        archetypeFeatures: data.archetypeFeatures,
+        archetypeRecommendations: data.archetypeRecommendations,
+      };
+
+      return {
+        success: true,
+        analysis,
+        base64Data: data.base64Data,
+      };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async loadPresetWorkbook(presetId: 'timetable' | 'donations' | 'teacher_allocations'): Promise<{
+    success: boolean;
+    analysis?: WorkbookAnalysis;
+    base64Data?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/sheets/load-preset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presetId }),
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        return { success: false, error: data.error };
+      }
+
+      const analysis: WorkbookAnalysis = {
+        filename: data.filename,
+        fileSize: data.fileSize,
+        fileSizeFormatted: data.fileSizeFormatted,
+        totalWorksheets: data.totalWorksheets,
+        worksheets: data.worksheets,
+        analyzedAt: data.analyzedAt,
+        fileHash: data.fileHash,
+        base64Data: data.base64Data,
+        rawWorkbookBase64: data.rawWorkbookBase64 || data.base64Data,
+        detectedArchetype: data.detectedArchetype,
+        archetypeTitle: data.archetypeTitle,
+        archetypeBadge: data.archetypeBadge,
+        archetypeSummary: data.archetypeSummary,
+        archetypeFeatures: data.archetypeFeatures,
+        archetypeRecommendations: data.archetypeRecommendations,
       };
 
       return {
@@ -199,12 +301,13 @@ export class ApiClient {
     }
   }
 
-  static async createNextcloudFolder(config: NextcloudConfig, folderName: string): Promise<{
+  static async createNextcloudFolder(config: NextcloudConfig, folderPathOrName?: string): Promise<{
     success: boolean;
     message?: string;
     error?: string;
   }> {
     try {
+      const folder = folderPathOrName || config.sourceFolder || 'ExcelImports';
       const res = await fetch('/api/nextcloud/create-folder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -212,9 +315,11 @@ export class ApiClient {
           url: config.url,
           username: config.username,
           appPassword: config.appPassword,
-          folderName,
+          sourceFolder: folder,
+          folderName: folder,
         }),
       });
+
       return await res.json();
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -898,6 +1003,403 @@ export class ApiClient {
   }> {
     try {
       const res = await fetch('/api/sync/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ==========================================
+  // Permanent Secrets & Mappings Persistence
+  // ==========================================
+  static async savePermanentSecrets(payload: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    syncSettings?: SyncSettings;
+    geminiApiKey?: string;
+  }): Promise<{
+    success: boolean;
+    savedOnDisk?: boolean;
+    savedInDb?: boolean;
+    savedAt?: string;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/secrets/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async loadPermanentSecrets(): Promise<{
+    success: boolean;
+    secrets?: {
+      nextcloud?: NextcloudConfig;
+      supabase?: SupabaseConfig;
+      syncSettings?: SyncSettings;
+      geminiApiKey?: string;
+      savedAt?: string;
+    } | null;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/secrets/load', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async importPermanentSecrets(secrets: any): Promise<{
+    success: boolean;
+    secrets?: any;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/secrets/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(secrets),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async savePermanentMappings(payload: {
+    mappings: WorksheetMapping[];
+    workbookInfo?: any;
+    supabase?: SupabaseConfig;
+  }): Promise<{
+    success: boolean;
+    savedOnDisk?: boolean;
+    syncedToSupabase?: boolean;
+    savedAt?: string;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/mappings/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async loadPermanentMappings(): Promise<{
+    success: boolean;
+    mappings?: WorksheetMapping[];
+    workbookInfo?: any;
+    savedAt?: string;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/mappings/load', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async syncMappingsToSupabase(payload: {
+    mappings: WorksheetMapping[];
+    workbookInfo?: any;
+    supabase: SupabaseConfig;
+  }): Promise<{
+    success: boolean;
+    worksheetsCount?: number;
+    columnsCount?: number;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/mappings/sync-to-supabase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async analyzeWorkbookWithAi(payload: {
+    workbook: WorkbookAnalysis;
+    supabaseTables?: SupabaseTableInfo[];
+    consolidationMode?: string;
+  }): Promise<{
+    success: boolean;
+    aiPowered?: boolean;
+    fallbackActive?: boolean;
+    fallbackNotice?: string;
+    result?: AiWorkbookAnalysisResult;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/ai/analyze-workbook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ==========================================
+  // Industrial Standard AI Presets Management
+  // ==========================================
+  static async getPresets(): Promise<{
+    success: boolean;
+    presets: AiWorkbookPreset[];
+    count?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/presets', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, presets: [], error: e.message };
+    }
+  }
+
+  static async savePreset(payload: {
+    preset: Partial<AiWorkbookPreset>;
+    supabase?: SupabaseConfig;
+  }): Promise<{
+    success: boolean;
+    preset?: AiWorkbookPreset;
+    savedOnDisk?: boolean;
+    syncedToSupabase?: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/presets/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async deletePreset(
+    id: string,
+    supabase?: SupabaseConfig
+  ): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      const res = await fetch(`/api/presets/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ supabase }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async loadPresetDetails(presetId: string): Promise<{
+    success: boolean;
+    preset?: AiWorkbookPreset;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/presets/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presetId }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async createPresetWithAi(payload: {
+    workbook: WorkbookAnalysis;
+    supabaseTables?: SupabaseTableInfo[];
+    customName?: string;
+    customDescription?: string;
+    tags?: string[];
+  }): Promise<{
+    success: boolean;
+    preset?: AiWorkbookPreset;
+    aiPowered?: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/ai/create-preset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ==========================================
+  // Coolify & Server Unified State Management
+  // ==========================================
+  static async getFullServerState(): Promise<{
+    success: boolean;
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    syncSettings?: SyncSettings;
+    mappings?: WorksheetMapping[];
+    workbookInfo?: any;
+    presets?: AiWorkbookPreset[];
+    geminiApiKey?: string;
+    workerStatus?: LiveSchedulerStatus;
+    envSources?: Record<string, boolean>;
+    savedAt?: string;
+    serverBootTime?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/config/full-state', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async saveFullServerState(payload: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    syncSettings?: SyncSettings;
+    mappings?: WorksheetMapping[];
+    presets?: AiWorkbookPreset[];
+    workbookInfo?: any;
+    geminiApiKey?: string;
+  }): Promise<{
+    success: boolean;
+    savedOnDisk?: boolean;
+    syncedToSupabase?: boolean;
+    savedAt?: string;
+    status?: LiveSchedulerStatus;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/config/save-full-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async syncWithBrowser(payload: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    syncSettings?: SyncSettings;
+    mappings?: WorksheetMapping[];
+    presets?: AiWorkbookPreset[];
+    workbookInfo?: any;
+    geminiApiKey?: string;
+  }): Promise<{
+    success: boolean;
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    syncSettings?: SyncSettings;
+    mappings?: WorksheetMapping[];
+    presets?: AiWorkbookPreset[];
+    workerStatus?: LiveSchedulerStatus;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/config/sync-with-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async startWorkerDaemon(): Promise<{ success: boolean; message?: string; status?: LiveSchedulerStatus }> {
+    try {
+      const res = await fetch('/api/worker/start', { method: 'POST' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, message: e.message };
+    }
+  }
+
+  static async stopWorkerDaemon(): Promise<{ success: boolean; message?: string; status?: LiveSchedulerStatus }> {
+    try {
+      const res = await fetch('/api/worker/stop', { method: 'POST' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, message: e.message };
+    }
+  }
+
+  static async triggerWorkerRunNow(payload?: any): Promise<{
+    success: boolean;
+    result?: any;
+    status?: LiveSchedulerStatus;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/worker/run-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async cacheActiveWorkbook(payload: {
+    base64Data: string;
+    filename?: string;
+  }): Promise<{
+    success: boolean;
+    filename?: string;
+    fileSize?: number;
+    fileHash?: string;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/workbook/cache-active', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

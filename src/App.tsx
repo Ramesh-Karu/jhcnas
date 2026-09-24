@@ -37,6 +37,7 @@ import { ImportHistoryView } from './components/ImportHistoryView';
 import { ErrorsView } from './components/ErrorsView';
 import { LogsView } from './components/LogsView';
 import { SettingsView } from './components/SettingsView';
+import { ServedSheetsMatrixView } from './components/ServedSheetsMatrixView';
 import { AiAssistantModal } from './components/AiAssistantModal';
 import { SampleWorkbookModal } from './components/SampleWorkbookModal';
 import { SecretsVaultModal } from './components/SecretsVaultModal';
@@ -80,11 +81,78 @@ export default function App() {
     }
   };
 
+  // Coolify server disk sync status
+  const [serverSyncTime, setServerSyncTime] = useState<string | null>(null);
+  const [isSyncingServer, setIsSyncingServer] = useState(false);
+
+  // Load unified Coolify server state & sync with browser localStorage
+  const syncServerAndLocalStorage = async () => {
+    setIsSyncingServer(true);
+    try {
+      const serverState = await ApiClient.getFullServerState();
+      if (serverState.success) {
+        // 1. If server has environment variables or disk credentials from Coolify, hydrate local state
+        if (serverState.nextcloud?.url) {
+          setNextcloud(prev => {
+            const updated = { ...prev, ...serverState.nextcloud };
+            StorageService.saveNextcloudConfig(updated);
+            return updated;
+          });
+        }
+        if (serverState.supabase?.url) {
+          setSupabase(prev => {
+            const updated = { ...prev, ...serverState.supabase };
+            StorageService.saveSupabaseConfig(updated);
+            return updated;
+          });
+        }
+        if (serverState.syncSettings) {
+          setSyncSettings(prev => {
+            const updated = { ...prev, ...serverState.syncSettings };
+            StorageService.saveSyncSettings(updated);
+            return updated;
+          });
+        }
+        if (serverState.mappings && serverState.mappings.length > 0) {
+          setMappings(serverState.mappings);
+          StorageService.saveMappings(serverState.mappings);
+        }
+        if (serverState.workerStatus) {
+          setSchedulerStatus(serverState.workerStatus);
+        }
+        setServerSyncTime(serverState.savedAt || new Date().toISOString());
+
+        // 2. Push whatever client has in localStorage (mappings, presets, etc.) to the server disk
+        const currentMappings = StorageService.getMappings();
+        const currentPresets = StorageService.getAiPresets();
+        if (currentMappings.length > 0 || currentPresets.length > 0) {
+          ApiClient.saveFullServerState({
+            nextcloud: serverState.nextcloud,
+            supabase: serverState.supabase,
+            syncSettings: serverState.syncSettings,
+            mappings: currentMappings.length > 0 ? currentMappings : serverState.mappings,
+            presets: currentPresets,
+            workbookInfo: currentAnalysis ? {
+              filename: currentAnalysis.filename,
+              fileHash: currentAnalysis.fileHash,
+              totalWorksheets: currentAnalysis.totalWorksheets
+            } : undefined,
+          }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync with Coolify server state notice:', e);
+    } finally {
+      setIsSyncingServer(false);
+    }
+  };
+
   // Initialize sample data on first visit, load real files from Nextcloud & poll production scheduler
   useEffect(() => {
     StorageService.initSampleIfNeeded();
     handleFetchNextcloudFiles();
     handleFetchSchedulerStatus();
+    syncServerAndLocalStorage();
 
     // Poll live production scheduler state every 10 seconds
     const interval = setInterval(() => {
@@ -122,30 +190,65 @@ export default function App() {
   // Sync Cycle State
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Update handlers with persistence
+  // Update handlers with dual persistence (Browser LocalStorage + Coolify Server Disk)
   const handleSaveNextcloud = (cfg: NextcloudConfig) => {
     setNextcloud(cfg);
     StorageService.saveNextcloudConfig(cfg);
+    ApiClient.saveFullServerState({
+      nextcloud: cfg,
+      supabase,
+      syncSettings,
+      mappings,
+    }).then(() => setServerSyncTime(new Date().toISOString())).catch(() => {});
   };
 
   const handleSaveSupabase = (cfg: SupabaseConfig) => {
     setSupabase(cfg);
     StorageService.saveSupabaseConfig(cfg);
+    ApiClient.saveFullServerState({
+      nextcloud,
+      supabase: cfg,
+      syncSettings,
+      mappings,
+    }).then(() => setServerSyncTime(new Date().toISOString())).catch(() => {});
   };
 
   const handleSaveSettings = (s: SyncSettings) => {
     setSyncSettings(s);
     StorageService.saveSyncSettings(s);
+    ApiClient.saveFullServerState({
+      nextcloud,
+      supabase,
+      syncSettings: s,
+      mappings,
+    }).then(() => setServerSyncTime(new Date().toISOString())).catch(() => {});
   };
 
   const handleSaveMappings = (newMappings: WorksheetMapping[]) => {
     setMappings(newMappings);
     StorageService.saveMappings(newMappings);
+    ApiClient.saveFullServerState({
+      nextcloud,
+      supabase,
+      syncSettings,
+      mappings: newMappings,
+      workbookInfo: currentAnalysis ? {
+        filename: currentAnalysis.filename,
+        fileHash: currentAnalysis.fileHash,
+        totalWorksheets: newMappings.length
+      } : undefined,
+    }).then(() => setServerSyncTime(new Date().toISOString())).catch(() => {});
   };
 
   const handleUpdateAnalysis = (analysis: WorkbookAnalysis) => {
     setCurrentAnalysis(analysis);
     StorageService.saveCurrentAnalysis(analysis);
+    if (analysis.base64Data) {
+      ApiClient.cacheActiveWorkbook({
+        base64Data: analysis.base64Data,
+        filename: analysis.filename
+      }).catch(console.warn);
+    }
   };
 
   const handleUpdateDatabase = (tableName: string, newRecords: any[]) => {
@@ -493,6 +596,20 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'served_mappings' && (
+            <ServedSheetsMatrixView
+              mappings={mappings}
+              currentAnalysis={currentAnalysis}
+              files={files}
+              importLogs={importLogs}
+              supabaseConfig={supabase}
+              nextcloudConfig={nextcloud}
+              onNavigate={setCurrentTab}
+              onSaveMappings={handleSaveMappings}
+              onTriggerSync={handleTriggerSync}
+            />
+          )}
+
           {currentTab === 'import' && (
             <ImportDryRunView
               currentAnalysis={currentAnalysis}
@@ -530,6 +647,7 @@ export default function App() {
           {currentTab === 'history' && (
             <ImportHistoryView
               logs={importLogs}
+              onNavigate={setCurrentTab}
             />
           )}
 
