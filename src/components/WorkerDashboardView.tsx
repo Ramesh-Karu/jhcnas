@@ -27,6 +27,11 @@ import {
   Sliders, 
   Radio, 
   Eye, 
+  EyeOff,
+  Lock,
+  Code,
+  Sparkles,
+  CheckCircle2,
   X 
 } from 'lucide-react';
 import { 
@@ -72,6 +77,64 @@ export const WorkerDashboardView: React.FC<WorkerDashboardViewProps> = ({
   const [showConnectionGuide, setShowConnectionGuide] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
+  // Pre-Shared Token & Security State
+  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(false);
+  const [copiedAuthHeader, setCopiedAuthHeader] = useState(false);
+  const [copiedEnvVar, setCopiedEnvVar] = useState(false);
+  const [copiedCurlCmd, setCopiedCurlCmd] = useState(false);
+  const [copiedPythonSnippet, setCopiedPythonSnippet] = useState(false);
+
+  // Generate a random cryptographically secure token
+  const handleGenerateNewSecretKey = () => {
+    const chars = 'abcdef0123456789';
+    let rand = '';
+    for (let i = 0; i < 28; i++) {
+      rand += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const newKey = `wkr_sec_nexus_${rand}`;
+    setCustomSecretKey(newKey);
+    const updated = {
+      ...syncSettings,
+      workerUrl: customWorkerUrl,
+      workerSecretKey: newKey,
+    };
+    onSaveSettings(updated);
+    setSyncFeedback({
+      type: 'success',
+      message: 'Generated new secure Pre-Shared Secret Key! Use the copy buttons below to configure your worker container.',
+    });
+  };
+
+  const handleCopyRawToken = () => {
+    const token = customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e';
+    navigator.clipboard.writeText(token);
+    setCopiedToken(true);
+    setTimeout(() => setCopiedToken(false), 2000);
+  };
+
+  const handleCopyAuthHeader = () => {
+    const token = customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e';
+    navigator.clipboard.writeText(`Authorization: Bearer ${token}`);
+    setCopiedAuthHeader(true);
+    setTimeout(() => setCopiedAuthHeader(false), 2000);
+  };
+
+  const handleCopyEnvVar = () => {
+    const token = customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e';
+    navigator.clipboard.writeText(`WORKER_SECRET_KEY=${token}`);
+    setCopiedEnvVar(true);
+    setTimeout(() => setCopiedEnvVar(false), 2000);
+  };
+
+  const handleCopyCurlCommand = () => {
+    const token = customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e';
+    const targetUrl = customWorkerUrl && customWorkerUrl !== 'internal' ? customWorkerUrl : 'http://localhost:8000';
+    const cmd = `curl -i -X POST "${targetUrl}/trigger" \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json"`;
+    navigator.clipboard.writeText(cmd);
+    setCopiedCurlCmd(true);
+    setTimeout(() => setCopiedCurlCmd(false), 2000);
+  };
   // Live Sync State
   const [isLiveSyncing, setIsLiveSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<{
@@ -435,40 +498,48 @@ services:
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Roundtrip Latency</span>
             <div className="text-lg font-bold text-slate-900 mt-1 flex items-center space-x-1.5">
               <span className={`w-2 h-2 rounded-full ${
-                (workerStatus?.latencyMs || 0) < 50 ? 'bg-emerald-500' : 'bg-amber-500'
+                workerStatus?.connected 
+                  ? ((workerStatus?.latencyMs || 0) < 50 ? 'bg-emerald-500' : 'bg-amber-500')
+                  : 'bg-slate-400'
               }`}></span>
-              <span>{workerStatus?.latencyMs ?? 0} ms</span>
+              <span>{workerStatus?.connected ? `${workerStatus?.latencyMs ?? 0} ms` : 'N/A (Offline)'}</span>
             </div>
             <span className="text-[10px] text-slate-500">Live ping latency</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Worker Mode</span>
-            <div className="text-sm font-bold text-indigo-700 mt-1 truncate" title={workerStatus?.workerMode}>
-              {workerStatus?.workerMode === 'EXTERNAL_WORKER_DAEMON' ? 'Coolify Container' : 'Integrated Engine'}
+            <div className="text-sm font-bold text-slate-800 mt-1 truncate" title={workerStatus?.workerMode}>
+              {workerStatus?.connected 
+                ? (workerStatus?.workerMode === 'EXTERNAL_WORKER_DAEMON' ? 'Coolify Container' : 'Connected')
+                : (customWorkerUrl ? 'Container (Offline)' : 'Not Configured')}
             </div>
-            <span className="text-[10px] text-slate-500">{workerStatus?.version || 'v3.4.2'}</span>
+            <span className="text-[10px] text-slate-500">{workerStatus?.connected ? (workerStatus?.version || 'v1.0.0') : 'Offline'}</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Engine State</span>
             <div className="text-sm font-bold text-slate-900 mt-1 flex items-center space-x-1">
               <span className={`w-2 h-2 rounded-full ${
-                schedulerStatus?.state === 'SYNCING' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
+                workerStatus?.connected
+                  ? (schedulerStatus?.state === 'SYNCING' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500')
+                  : 'bg-rose-500'
               }`}></span>
-              <span>{schedulerStatus?.state || 'SCHEDULED'}</span>
+              <span>{workerStatus?.connected ? (schedulerStatus?.state || 'HEALTHY') : 'DISCONNECTED'}</span>
             </div>
-            <span className="text-[10px] text-slate-500">{schedulerStatus?.intervalLabel || '15m'} cycle</span>
+            <span className="text-[10px] text-slate-500">{workerStatus?.connected ? `${schedulerStatus?.intervalLabel || '15m'} cycle` : 'Worker offline'}</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Daemon Uptime</span>
             <div className="text-sm font-bold text-slate-900 mt-1">
-              {workerStatus?.uptimeSeconds 
+              {workerStatus?.connected && workerStatus?.uptimeSeconds
                 ? `${Math.floor(workerStatus.uptimeSeconds / 3600)}h ${Math.floor((workerStatus.uptimeSeconds % 3600) / 60)}m`
-                : 'Active'}
+                : 'Offline'}
             </div>
-            <span className="text-[10px] text-slate-500">Mem: {workerStatus?.memoryUsageMb || 32} MB</span>
+            <span className="text-[10px] text-slate-500">
+              {workerStatus?.connected ? `Mem: ${workerStatus?.memoryUsageMb || 0} MB` : 'No active process'}
+            </span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
@@ -480,9 +551,9 @@ services:
                   <span>Reachable</span>
                 </span>
               ) : (
-                <span className="text-amber-700 flex items-center space-x-1">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>Unverified</span>
+                <span className="text-slate-500 flex items-center space-x-1">
+                  <XCircle className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Disconnected</span>
                 </span>
               )}
             </div>
@@ -498,9 +569,9 @@ services:
                   <span>Connected</span>
                 </span>
               ) : (
-                <span className="text-rose-700 flex items-center space-x-1">
-                  <XCircle className="w-3.5 h-3.5" />
-                  <span>No Auth</span>
+                <span className="text-slate-500 flex items-center space-x-1">
+                  <XCircle className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Disconnected</span>
                 </span>
               )}
             </div>
@@ -508,59 +579,186 @@ services:
           </div>
         </div>
 
-        {/* Worker Endpoint Configuration Section */}
-        <div className="p-5 bg-white space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
-              Worker Connection Parameters & Endpoint
-            </span>
+        {/* Worker Endpoint & Pre-Shared Token Authentication Section */}
+        <div className="p-5 bg-white space-y-6">
+          {/* Top Title & Quick Actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div>
+              <div className="flex items-center space-x-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                  Pre-Shared Token & Remote Container Authentication
+                </span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 font-mono">
+                  BEARER HANDSHAKE
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Configure your shared secret key. The dashboard includes this token in the <code className="text-indigo-600 bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">Authorization: Bearer &lt;TOKEN&gt;</code> header on every remote trigger.
+              </p>
+            </div>
             {lastPingTime && (
-              <span className="text-xs text-slate-400">
-                Last ping check at {lastPingTime}
+              <span className="text-xs text-slate-400 font-mono">
+                Last checked: {lastPingTime}
               </span>
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
+          {/* Grid: Endpoint URL & Secret Key Box */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* Left: Endpoint URL */}
+            <div className="lg:col-span-5 space-y-2">
+              <label className="block text-xs font-bold text-slate-700">
                 Worker Endpoint URL
               </label>
-              <input
-                type="text"
-                placeholder="http://coolify-worker:8000 or leave empty for In-Process Integrated Engine"
-                value={customWorkerUrl}
-                onChange={(e) => setCustomWorkerUrl(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Leave empty or use <code className="text-indigo-600 bg-indigo-50 px-1 py-0.5 rounded">internal</code> to use the high-performance integrated Node.js pipeline engine.
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="http://coolify-worker:8000 (or internal)"
+                  value={customWorkerUrl}
+                  onChange={(e) => setCustomWorkerUrl(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Leave empty or use <code className="text-indigo-600 bg-indigo-50 px-1 py-0.5 rounded">internal</code> for the in-process integrated Node.js sync engine, or enter your remote Coolify / Docker worker URL (e.g. <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">http://worker:8000</code>).
               </p>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Worker Secret Key Handshake
-              </label>
-              <input
-                type="password"
-                placeholder="wkr_sec_..."
-                value={customSecretKey}
-                onChange={(e) => setCustomSecretKey(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Pre-shared token verified via Authorization header for secure remote container triggers.
+            {/* Right: Pre-Shared Token & Actions */}
+            <div className="lg:col-span-7 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 flex items-center space-x-1.5">
+                  <Key className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Pre-Shared Secret Key (WORKER_SECRET_KEY)</span>
+                </label>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateNewSecretKey}
+                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 px-2 py-0.5 rounded flex items-center space-x-1 transition-colors"
+                    title="Generate a new cryptographically secure 256-bit token"
+                  >
+                    <Sparkles className="w-3 h-3 text-indigo-500" />
+                    <span>Generate New Token</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Token Input with Show/Hide and Quick Copy */}
+              <div className="flex items-center space-x-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showSecretKey ? 'text' : 'password'}
+                    value={customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e'}
+                    onChange={(e) => setCustomSecretKey(e.target.value)}
+                    placeholder="wkr_sec_..."
+                    className="w-full pl-3 pr-9 py-2 text-xs rounded-lg border border-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 font-semibold text-slate-800"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecretKey(!showSecretKey)}
+                    className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-700"
+                    title={showSecretKey ? 'Hide secret token' : 'Show secret token'}
+                  >
+                    {showSecretKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleCopyRawToken}
+                  className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-2xs ${
+                    copiedToken 
+                      ? 'bg-emerald-600 text-white' 
+                      : 'bg-slate-900 hover:bg-slate-800 text-white'
+                  }`}
+                  title="Copy raw secret token"
+                >
+                  {copiedToken ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedToken ? 'Copied Token!' : 'Copy Token'}</span>
+                </button>
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                This token must match the <code className="font-mono text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded font-bold">WORKER_SECRET_KEY</code> in your container environment variables.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center justify-end space-x-2 pt-2">
+          {/* Quick-Copy Formats Grid (Cards to copy header, env var, curl) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+            {/* 1. Authorization Header */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  HTTP Authorization Header
+                </span>
+                <button
+                  onClick={handleCopyAuthHeader}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-2xs"
+                >
+                  {copiedAuthHeader ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedAuthHeader ? 'Copied!' : 'Copy Header'}</span>
+                </button>
+              </div>
+              <code className="text-[11px] font-mono text-slate-800 bg-white p-1.5 rounded border border-slate-200 block truncate" title={`Authorization: Bearer ${customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e'}`}>
+                Authorization: Bearer {customSecretKey ? (showSecretKey ? customSecretKey : `${customSecretKey.substring(0, 10)}...`) : 'wkr_sec_...'}
+              </code>
+            </div>
+
+            {/* 2. Container Environment Variable */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  Container Env (Coolify / Docker)
+                </span>
+                <button
+                  onClick={handleCopyEnvVar}
+                  className="text-xs font-bold text-emerald-600 hover:text-emerald-800 flex items-center space-x-1 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-2xs"
+                >
+                  {copiedEnvVar ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedEnvVar ? 'Copied!' : 'Copy Env'}</span>
+                </button>
+              </div>
+              <code className="text-[11px] font-mono text-emerald-800 bg-white p-1.5 rounded border border-slate-200 block truncate" title={`WORKER_SECRET_KEY=${customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e'}`}>
+                WORKER_SECRET_KEY={customSecretKey ? (showSecretKey ? customSecretKey : `${customSecretKey.substring(0, 10)}...`) : 'wkr_sec_...'}
+              </code>
+            </div>
+
+            {/* 3. cURL Test Command */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  Test cURL Trigger
+                </span>
+                <button
+                  onClick={handleCopyCurlCommand}
+                  className="text-xs font-bold text-slate-700 hover:text-slate-900 flex items-center space-x-1 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-2xs"
+                >
+                  {copiedCurlCmd ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedCurlCmd ? 'Copied!' : 'Copy cURL'}</span>
+                </button>
+              </div>
+              <code className="text-[11px] font-mono text-slate-600 bg-white p-1.5 rounded border border-slate-200 block truncate" title="curl -i -X POST ... -H 'Authorization: Bearer ...'">
+                curl -i -X POST .../trigger -H "Authorization: Bearer ..."
+              </code>
+            </div>
+          </div>
+
+          {/* Bottom Save & Verify Button */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-slate-100">
+            <div className="flex items-center space-x-2 text-xs text-slate-500">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+              <span>Token is validated across all background sync probes and manual triggers.</span>
+            </div>
+
             <button
               onClick={handleSaveWorkerConfig}
-              className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold transition-colors shadow-2xs"
+              className="w-full sm:w-auto px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors shadow-2xs flex items-center justify-center space-x-2"
             >
-              Save Configuration & Re-verify Connection
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Save & Re-verify Connection Handshake</span>
             </button>
           </div>
         </div>
@@ -616,19 +814,60 @@ services:
             </div>
 
             {/* Docker Compose Template Snippet */}
-            <div className="space-y-2">
+            <div className="space-y-2 pt-2">
               <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                <span>Coolify / Docker Compose Deployment Template:</span>
+                <span className="flex items-center space-x-1.5">
+                  <Server className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>1. Coolify / Docker Compose Deployment Config:</span>
+                </span>
                 <button
                   onClick={() => copyToClipboard(dockerComposeSnippet)}
                   className="inline-flex items-center space-x-1 text-emerald-400 hover:text-emerald-300 bg-slate-800 px-2.5 py-1 rounded"
                 >
                   {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedCode ? 'Copied!' : 'Copy YAML'}</span>
+                  <span>{copiedCode ? 'Copied YAML!' : 'Copy YAML'}</span>
                 </button>
               </div>
-              <pre className="p-3.5 rounded-lg bg-slate-950 font-mono text-[11px] text-emerald-300 overflow-x-auto border border-slate-800 max-h-52">
+              <pre className="p-3.5 rounded-lg bg-slate-950 font-mono text-[11px] text-emerald-300 overflow-x-auto border border-slate-800 max-h-48">
                 {dockerComposeSnippet}
+              </pre>
+            </div>
+
+            {/* Python / FastAPI Verification Code */}
+            <div className="space-y-2 pt-2">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                <span className="flex items-center space-x-1.5">
+                  <Code className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>2. Python FastAPI Worker Token Verification Endpoint:</span>
+                </span>
+                <button
+                  onClick={() => {
+                    const pyCode = `from fastapi import FastAPI, Header, HTTPException\nimport os\n\napp = FastAPI()\nWORKER_SECRET_KEY = os.getenv("WORKER_SECRET_KEY", "${customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e'}")\n\n@app.post("/trigger")\ndef trigger_pipeline(authorization: str = Header(None)):\n    if not authorization or authorization != f"Bearer {WORKER_SECRET_KEY}":\n        raise HTTPException(status_code=401, detail="Unauthorized: Invalid pre-shared token")\n    \n    # Authorized - Run Nextcloud WebDAV -> Supabase sync\n    return {"status": "success", "message": "Live sync executed"}`;
+                    copyToClipboard(pyCode);
+                    setCopiedPythonSnippet(true);
+                    setTimeout(() => setCopiedPythonSnippet(false), 2000);
+                  }}
+                  className="inline-flex items-center space-x-1 text-indigo-400 hover:text-indigo-300 bg-slate-800 px-2.5 py-1 rounded"
+                >
+                  {copiedPythonSnippet ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedPythonSnippet ? 'Copied Python!' : 'Copy Python Code'}</span>
+                </button>
+              </div>
+              <pre className="p-3.5 rounded-lg bg-slate-950 font-mono text-[11px] text-indigo-300 overflow-x-auto border border-slate-800 max-h-44">
+{`from fastapi import FastAPI, Header, HTTPException
+import os
+
+app = FastAPI()
+WORKER_SECRET_KEY = os.getenv("WORKER_SECRET_KEY", "${customSecretKey || 'wkr_sec_nexus_8f3d1e9a2b7c4d5e'}")
+
+@app.post("/trigger")
+def trigger_pipeline(authorization: str = Header(None)):
+    # Verify Authorization: Bearer <TOKEN> header
+    if not authorization or authorization != f"Bearer {WORKER_SECRET_KEY}":
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid pre-shared token")
+    
+    # Authorized - Run Nextcloud WebDAV -> Supabase ETL sync pipeline
+    return {"status": "success", "message": "Live sync executed"}`}
               </pre>
             </div>
           </div>

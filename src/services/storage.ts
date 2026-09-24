@@ -134,17 +134,32 @@ export class StorageService {
 
   static getSyncSettings(): SyncSettings {
     const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (raw) return JSON.parse(raw);
-    return {
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        // Clean out legacy fake placeholder worker URL and dummy timestamps
+        if (parsed.workerUrl === 'http://coolify-worker:8000') {
+          parsed.workerUrl = '';
+        }
+        if (parsed.workerStatus === 'healthy' && !parsed.workerUrl) {
+          parsed.workerStatus = 'idle';
+        }
+        return parsed;
+      } catch {}
+    }
+    const defaultSettings: SyncSettings = {
       syncInterval: '15m',
-      autoSyncEnabled: true,
-      backupToStorage: true,
+      autoSyncEnabled: false,
+      backupToStorage: false,
       storageBucket: 'excel-archives',
-      workerUrl: 'http://coolify-worker:8000',
-      workerStatus: 'healthy',
-      lastSyncAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-      nextSyncAt: new Date(Date.now() + 1000 * 60 * 3).toISOString()
+      workerUrl: '',
+      workerSecretKey: '',
+      workerStatus: 'idle',
+      lastSyncAt: undefined,
+      nextSyncAt: undefined
     };
+    this.saveSyncSettings(defaultSettings);
+    return defaultSettings;
   }
 
   static saveSyncSettings(s: SyncSettings): void {

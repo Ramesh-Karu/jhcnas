@@ -1100,15 +1100,7 @@ export interface ServerLogEntry {
   details?: any;
 }
 
-const serverLogStore: ServerLogEntry[] = [
-  {
-    id: `log-init-${Date.now()}`,
-    timestamp: new Date().toISOString(),
-    level: 'info',
-    component: 'WorkerDaemon',
-    message: 'Worker execution & scheduler engine booted successfully. Listening for Nextcloud & Supabase pipeline events.',
-  }
-];
+const serverLogStore: ServerLogEntry[] = [];
 
 export function logServerEvent(
   level: 'info' | 'warn' | 'error' | 'success',
@@ -1859,31 +1851,39 @@ app.post('/api/worker/ping', async (req, res) => {
     let isExternalReachable = false;
     let externalLatencyMs = 0;
     let externalDetails: any = null;
+    let externalError: string | null = null;
 
-    if (workerUrl && typeof workerUrl === 'string' && workerUrl.startsWith('http') && !workerUrl.includes('coolify-worker')) {
+    const hasWorkerUrl = typeof workerUrl === 'string' && workerUrl.trim() !== '' && workerUrl.trim() !== 'internal';
+
+    if (hasWorkerUrl) {
       const pingStart = Date.now();
       try {
-        const cleanUrl = workerUrl.replace(/\/+$/, '');
+        const cleanUrl = workerUrl.trim().replace(/\/+$/, '');
         const wRes = await fetch(`${cleanUrl}/health`, {
           method: 'GET',
           headers: secretKey ? { 'Authorization': `Bearer ${secretKey}` } : {},
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(4000),
         });
         externalLatencyMs = Date.now() - pingStart;
         if (wRes.ok) {
           isExternalReachable = true;
           externalDetails = await wRes.json().catch(() => ({}));
+        } else {
+          isExternalReachable = false;
+          externalError = `Worker HTTP ${wRes.status}: ${wRes.statusText}`;
         }
-      } catch {
+      } catch (err: any) {
         isExternalReachable = false;
+        externalError = err.message || 'Connection refused / Unreachable';
       }
     }
 
-    // Measure Nextcloud & Supabase connectivity
+    // Measure Nextcloud & Supabase connectivity with real calls
     let nextcloudReachable = false;
-    if (nextcloud?.url) {
+    if (nextcloud?.url && nextcloud.url.trim() !== '') {
       try {
-        const ncRes = await fetch(`${nextcloud.url.replace(/\/+$/, '')}/status.php`, { signal: AbortSignal.timeout(4000) });
+        const cleanNcUrl = nextcloud.url.trim().replace(/\/+$/, '');
+        const ncRes = await fetch(`${cleanNcUrl}/status.php`, { signal: AbortSignal.timeout(4000) });
         nextcloudReachable = ncRes.ok;
       } catch {
         nextcloudReachable = false;
@@ -1891,11 +1891,12 @@ app.post('/api/worker/ping', async (req, res) => {
     }
 
     let supabaseReachable = false;
-    if (supabase?.url) {
+    if (supabase?.url && supabase.url.trim() !== '') {
       const k = supabase.serviceRoleKey || supabase.serviceKey || supabase.anonKey;
-      if (k) {
+      if (k && k.trim() !== '') {
         try {
-          const sbRes = await fetch(`${supabase.url.trim().replace(/\/+$/, '')}/rest/v1/`, {
+          const cleanSbUrl = supabase.url.trim().replace(/\/+$/, '');
+          const sbRes = await fetch(`${cleanSbUrl}/rest/v1/`, {
             headers: { 'apikey': k, 'Authorization': `Bearer ${k}` },
             signal: AbortSignal.timeout(4000),
           });
@@ -1907,41 +1908,45 @@ app.post('/api/worker/ping', async (req, res) => {
     }
 
     const currentStatus = schedulerInstance.getStatus();
-    const isExternalMode = workerUrl && workerUrl.startsWith('http') && !workerUrl.includes('coolify-worker');
-    const isConnected = isExternalMode ? isExternalReachable : true;
-    const latencyMs = isExternalMode ? externalLatencyMs : Math.max(2, Date.now() - t0);
+    
+    // Strict connection determination:
+    // If workerUrl is set, connection is only true if worker endpoint responded with HTTP 200.
+    // If no workerUrl is set, connected is false.
+    const isConnected = hasWorkerUrl ? isExternalReachable : false;
+    const latencyMs = hasWorkerUrl && isExternalReachable ? externalLatencyMs : 0;
+
+    let statusMessage = '';
+    if (hasWorkerUrl) {
+      if (isExternalReachable) {
+        statusMessage = `Connected to external worker daemon at ${workerUrl} (${latencyMs}ms latency).`;
+      } else {
+        statusMessage = `Disconnected: Unable to reach worker at ${workerUrl} (${externalError || 'Network unreachable'}).`;
+      }
+    } else {
+      statusMessage = 'No remote worker configured. Enter your Worker Endpoint URL and Secret Key below.';
+    }
 
     const connectionReport = {
       success: true,
       connected: isConnected,
-      workerMode: isExternalMode ? 'EXTERNAL_WORKER_DAEMON' : 'INTEGRATED_PRODUCTION_ENGINE',
-      workerEndpoint: isExternalMode ? workerUrl : 'Integrated In-Process Engine (Node.js/Express)',
+      workerMode: hasWorkerUrl ? 'EXTERNAL_WORKER_DAEMON' : 'UNCONFIGURED',
+      workerEndpoint: hasWorkerUrl ? workerUrl : 'Not Configured',
       latencyMs,
-      handshakeVerified: true,
-      version: externalDetails?.version || 'v3.4.2-production',
-      uptimeSeconds: Math.floor((Date.now() - SERVER_BOOT_TIME) / 1000),
-      memoryUsageMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      handshakeVerified: isConnected,
+      version: externalDetails?.version || (isConnected ? 'v1.0.0' : 'offline'),
+      uptimeSeconds: isConnected ? (externalDetails?.uptime || Math.floor((Date.now() - SERVER_BOOT_TIME) / 1000)) : 0,
+      memoryUsageMb: isConnected ? (externalDetails?.memoryMb || Math.round(process.memoryUsage().heapUsed / 1024 / 1024)) : 0,
       lastHeartbeat: new Date().toISOString(),
-      state: currentStatus.state,
+      state: isConnected ? 'HEALTHY' : (hasWorkerUrl ? 'UNREACHABLE' : 'UNCONFIGURED'),
       activeInterval: currentStatus.intervalLabel,
       nextRunAt: currentStatus.nextRunAt,
-      secretsMatched: true,
+      secretsMatched: isConnected,
       diagnostics: {
         nextcloudReachable,
         supabaseReachable,
-        message: isConnected
-          ? (isExternalMode
-              ? `Connected to external worker daemon at ${workerUrl} (${latencyMs}ms latency).`
-              : `Connected to Integrated Engine. All scheduler and pipeline workers active (${latencyMs}ms latency).`)
-          : `External worker endpoint ${workerUrl} is unreachable. Fallback integrated engine available.`,
+        message: statusMessage,
       },
     };
-
-    logServerEvent(
-      isConnected ? 'info' : 'warn',
-      'WorkerPing',
-      `Worker handshake check: ${isConnected ? 'CONNECTED' : 'DISCONNECTED'} (${latencyMs}ms latency)`
-    );
 
     return res.json(connectionReport);
   } catch (err: any) {
@@ -1952,14 +1957,11 @@ app.post('/api/worker/ping', async (req, res) => {
 app.get('/api/worker/connection-status', (_req, res) => {
   const currentStatus = schedulerInstance.getStatus();
   return res.json({
-    success: true,
-    connected: true,
-    workerMode: currentStatus.engineMode,
-    workerEndpoint: currentStatus.workerEndpoint,
+    connected: false,
     state: currentStatus.state,
     interval: currentStatus.intervalLabel,
-    lastHeartbeat: new Date().toISOString(),
-    uptimeSeconds: Math.floor((Date.now() - SERVER_BOOT_TIME) / 1000),
+    nextRunAt: currentStatus.nextRunAt,
+    lastRunAt: currentStatus.lastRunAt,
   });
 });
 
