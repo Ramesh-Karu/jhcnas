@@ -2681,69 +2681,70 @@ async function smartSyncRecordsToSupabase(params: {
   let firstError: any = null;
   const returnedRecords: any[] = [];
 
-  // Step 4: Execute targeted in-place updates for modified rows
-  for (const item of toUpdate) {
+  // Step 4: Fast batch upsert for modified rows using PostgREST resolution=merge-duplicates
+  const UPDATE_BATCH_SIZE = 250;
+  for (let i = 0; i < toUpdate.length; i += UPDATE_BATCH_SIZE) {
+    const rawBatch = toUpdate.slice(i, i + UPDATE_BATCH_SIZE);
+    const updateRecords = normalizeBatchForPostgREST(rawBatch.map(u => u.incoming));
+    
     try {
-      const patchUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?${encodeURIComponent(item.keyCol)}=eq.${encodeURIComponent(String(item.keyVal))}`;
-      const patchRes = await fetch(patchUrl, {
-        method: 'PATCH',
+      const upsertUrl = resolvedKeyCol 
+        ? `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?on_conflict=${encodeURIComponent(resolvedKeyCol)}`
+        : `${supUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+        
+      const upRes = await fetch(upsertUrl, {
+        method: 'POST',
         headers: {
           'apikey': supKey,
           'Authorization': `Bearer ${supKey}`,
           'Content-Type': 'application/json',
-          'Prefer': 'return=representation',
+          'Prefer': 'resolution=merge-duplicates, return=representation',
         },
-        body: JSON.stringify(item.incoming),
-        signal: AbortSignal.timeout(10000),
+        body: JSON.stringify(updateRecords),
+        signal: AbortSignal.timeout(15000),
       });
 
-      if (patchRes.ok) {
-        updatedCount++;
-        const patchedData = await patchRes.json().catch(() => []);
-        if (Array.isArray(patchedData)) returnedRecords.push(...patchedData);
+      if (upRes.ok) {
+        updatedCount += rawBatch.length;
+        const upData = await upRes.json().catch(() => []);
+        if (Array.isArray(upData)) returnedRecords.push(...upData);
       } else {
-        // Fallback to upsert on conflict
-        const errText = await patchRes.text().catch(() => '');
-        console.warn(`[Smart Sync] In-place PATCH failed for ${item.keyCol}=${item.keyVal}, falling back to merge-duplicates: ${errText}`);
-        
-        const upsertUrl = item.keyCol 
-          ? `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?on_conflict=${encodeURIComponent(item.keyCol)}`
-          : `${supUrl}/rest/v1/${encodeURIComponent(tableName)}`;
-          
-        const upRes = await fetch(upsertUrl, {
-          method: 'POST',
-          headers: {
-            'apikey': supKey,
-            'Authorization': `Bearer ${supKey}`,
-            'Content-Type': 'application/json',
-            'Prefer': 'resolution=merge-duplicates, return=representation',
-          },
-          body: JSON.stringify([item.incoming]),
-          signal: AbortSignal.timeout(10000),
-        });
+        // Targeted PATCH fallback for this batch with concurrency limit
+        let batchPatched = 0;
+        await Promise.all(rawBatch.slice(0, 50).map(async (item) => {
+          try {
+            const patchUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?${encodeURIComponent(item.keyCol)}=eq.${encodeURIComponent(String(item.keyVal))}`;
+            const pRes = await fetch(patchUrl, {
+              method: 'PATCH',
+              headers: {
+                'apikey': supKey,
+                'Authorization': `Bearer ${supKey}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=representation',
+              },
+              body: JSON.stringify(item.incoming),
+              signal: AbortSignal.timeout(4000),
+            });
+            if (pRes.ok) {
+              batchPatched++;
+            }
+          } catch {}
+        }));
 
-        if (upRes.ok) {
-          updatedCount++;
-          const upData = await upRes.json().catch(() => []);
-          if (Array.isArray(upData)) returnedRecords.push(...upData);
+        if (batchPatched > 0) {
+          updatedCount += batchPatched;
+          failedCount += (rawBatch.length - batchPatched);
         } else {
-          failedCount++;
-          if (!firstError) {
-            firstError = {
-              status: patchRes.status,
-              errorText: errText,
-              diagnostic: diagnoseSupabaseError(patchRes.status, errText, tableName, item.incoming),
-            };
-          }
+          failedCount += rawBatch.length;
         }
       }
     } catch (e: any) {
-      failedCount++;
+      failedCount += rawBatch.length;
       if (!firstError) {
         firstError = {
           status: 500,
           errorText: e.message,
-          diagnostic: diagnoseSupabaseError(500, e.message, tableName, item.incoming),
+          diagnostic: diagnoseSupabaseError(500, e.message, tableName, rawBatch[0]?.incoming),
         };
       }
     }
@@ -3900,7 +3901,17 @@ async function executeFullPipelineCore(params: {
       fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
       saveWorkbookPermanently(curFilename, buffer);
     } else {
-      // 1. Fetch from Nextcloud WebDAV
+      // 1. Check local permanent storage first for instantaneous processing
+      const localPath = path.join(WORKBOOKS_DIR, curFilename.replace(/[/\\]/g, '_'));
+      if (fs.existsSync(localPath)) {
+        try {
+          buffer = fs.readFileSync(localPath);
+          fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+          console.log(`[Sync Engine] Loaded '${curFilename}' from permanent server disk storage (${buffer.byteLength} bytes)`);
+        } catch {}
+      }
+
+      // 2. Fetch fresh copy from Nextcloud WebDAV if connected
       if (nextcloud?.url) {
         try {
           const host = nextcloud.url.replace(/\/+$/, '');
@@ -3913,7 +3924,7 @@ async function executeFullPipelineCore(params: {
           const fileRes = await fetch(targetUrl, {
             method: 'GET',
             headers: { Authorization: authHeader },
-            signal: AbortSignal.timeout(12000),
+            signal: AbortSignal.timeout(3500),
           }).catch(() => null);
 
           if (fileRes && fileRes.ok) {
@@ -3921,22 +3932,10 @@ async function executeFullPipelineCore(params: {
             buffer = Buffer.from(arrayBuf);
             fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
             saveWorkbookPermanently(curFilename, buffer);
-            console.log(`[Sync Engine] Fetched '${curFilename}' from Nextcloud WebDAV (${buffer.byteLength} bytes)`);
+            console.log(`[Sync Engine] Fetched fresh '${curFilename}' from Nextcloud WebDAV (${buffer.byteLength} bytes)`);
           }
         } catch (ncErr: any) {
-          console.warn(`[Sync Engine] Nextcloud fetch notice for ${curFilename}:`, ncErr.message);
-        }
-      }
-
-      // 2. Check local permanent storage for this specific workbook
-      if (!buffer) {
-        const localPath = path.join(WORKBOOKS_DIR, curFilename.replace(/[/\\]/g, '_'));
-        if (fs.existsSync(localPath)) {
-          try {
-            buffer = fs.readFileSync(localPath);
-            fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-            console.log(`[Sync Engine] Loaded '${curFilename}' from permanent server disk storage (${buffer.byteLength} bytes)`);
-          } catch {}
+          console.warn(`[Sync Engine] Nextcloud fast fetch notice for ${curFilename}:`, ncErr.message);
         }
       }
 
@@ -3982,18 +3981,44 @@ async function executeFullPipelineCore(params: {
       continue;
     }
 
-    // Identify mappings for this specific workbook
-    let matchingMappings = activeMappings.filter((m: any) => {
+    // Identify all matching and auto-generated mappings for EVERY sheet in this workbook
+    const existingWbMappings = activeMappings.filter((m: any) => {
       const matchFile = m.workbookName && m.workbookName.toLowerCase() === curFilename.toLowerCase();
       const matchSheet = wb.SheetNames.some(s => s.toLowerCase() === (m.worksheetName || '').toLowerCase());
       return matchFile || matchSheet;
     });
 
-    // If no explicit mappings found for sheets in this workbook, create standard mappings for each sheet
-    if (matchingMappings.length === 0) {
-      matchingMappings = wb.SheetNames.map(sheetName => {
-        const ws = wb.Sheets[sheetName];
-        const range = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+    const commonTargetTable = existingWbMappings[0]?.supabaseTable || 'students';
+    const primaryTemplateMapping = existingWbMappings[0];
+
+    const matchingMappings: any[] = [];
+    for (const sheetName of wb.SheetNames) {
+      // Check if this sheet has an explicit mapping
+      const explicit = existingWbMappings.find((m: any) => (m.worksheetName || '').toLowerCase() === sheetName.toLowerCase());
+      if (explicit) {
+        matchingMappings.push(explicit);
+        continue;
+      }
+
+      // If no explicit mapping for this specific sheet, auto-construct one using the workbook's primary template or headers
+      const ws = wb.Sheets[sheetName];
+      const range = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+
+      if (primaryTemplateMapping && Array.isArray(primaryTemplateMapping.columns) && primaryTemplateMapping.columns.length > 0) {
+        matchingMappings.push({
+          id: `auto-${curFilename}-${sheetName}`,
+          workbookName: curFilename,
+          worksheetName: sheetName,
+          supabaseTable: commonTargetTable,
+          headerRow: primaryTemplateMapping.headerRow || 1,
+          dataStartRow: primaryTemplateMapping.dataStartRow || 2,
+          dataEndRow: primaryTemplateMapping.dataEndRow,
+          sectionHeadingTargetCol: primaryTemplateMapping.sectionHeadingTargetCol,
+          columns: primaryTemplateMapping.columns,
+          enabled: true,
+          syncPolicy: 'BIDIRECTIONAL'
+        });
+      } else {
         const cols: any[] = [];
         for (let c = range.s.c; c <= Math.min(range.e.c, 30); c++) {
           const letter = XLSX.utils.encode_col(c);
@@ -4010,18 +4035,18 @@ async function executeFullPipelineCore(params: {
             transformation: 'trim'
           });
         }
-        return {
+        matchingMappings.push({
           id: `auto-${curFilename}-${sheetName}`,
           workbookName: curFilename,
           worksheetName: sheetName,
-          supabaseTable: sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+          supabaseTable: commonTargetTable || sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
           headerRow: 1,
           dataStartRow: 2,
           columns: cols,
           enabled: true,
           syncPolicy: 'BIDIRECTIONAL'
-        };
-      });
+        });
+      }
     }
 
     // Process each mapped sheet in this workbook
