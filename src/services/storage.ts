@@ -444,18 +444,72 @@ export class StorageService {
     }
   }
 
+  private static _cachedBaselines: Record<string, SyncBaselineRecord> | null = null;
+
   static getSyncBaselines(): Record<string, SyncBaselineRecord> {
+    if (this._cachedBaselines) {
+      return this._cachedBaselines;
+    }
     const raw = localStorage.getItem(STORAGE_KEYS.SYNC_BASELINES);
     if (raw) {
       try {
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          this._cachedBaselines = parsed;
+          return parsed;
+        }
       } catch {}
     }
     return {};
   }
 
   static saveSyncBaselines(baselines: Record<string, SyncBaselineRecord>): void {
-    localStorage.setItem(STORAGE_KEYS.SYNC_BASELINES, JSON.stringify(baselines));
+    // Retain full baseline records in memory
+    this._cachedBaselines = baselines;
+
+    if (!baselines || typeof baselines !== 'object') {
+      localStorage.removeItem(STORAGE_KEYS.SYNC_BASELINES);
+      return;
+    }
+
+    // Build a compact, lightweight representation by stripping heavy syncedValues payload (which takes 95% of space)
+    const compactBaselines: Record<string, Partial<SyncBaselineRecord>> = {};
+    for (const [key, b] of Object.entries(baselines)) {
+      if (!b) continue;
+      compactBaselines[key] = {
+        recordKey: b.recordKey,
+        tableName: b.tableName,
+        primaryKeyCol: b.primaryKeyCol,
+        primaryKeyValue: b.primaryKeyValue,
+        excelHash: b.excelHash,
+        supabaseHash: b.supabaseHash,
+        lastSyncedAt: b.lastSyncedAt
+      };
+    }
+
+    try {
+      localStorage.setItem(STORAGE_KEYS.SYNC_BASELINES, JSON.stringify(compactBaselines));
+    } catch (quotaErr) {
+      console.warn('LocalStorage quota limit reached for sync baselines, pruning older baselines:', quotaErr);
+      try {
+        // Keep most recently synced 500 baseline records
+        const sortedEntries = Object.entries(compactBaselines).sort((a, b) => {
+          const timeA = a[1]?.lastSyncedAt ? new Date(a[1].lastSyncedAt).getTime() : 0;
+          const timeB = b[1]?.lastSyncedAt ? new Date(b[1].lastSyncedAt).getTime() : 0;
+          return timeB - timeA;
+        });
+
+        const pruned = Object.fromEntries(sortedEntries.slice(0, 500));
+        localStorage.setItem(STORAGE_KEYS.SYNC_BASELINES, JSON.stringify(pruned));
+      } catch (nestedErr) {
+        console.warn('LocalStorage quota still exceeded for baselines, keeping in-memory only:', nestedErr);
+        try {
+          // Minimal fallback with top 100
+          const sortedEntries = Object.entries(compactBaselines).slice(0, 100);
+          localStorage.setItem(STORAGE_KEYS.SYNC_BASELINES, JSON.stringify(Object.fromEntries(sortedEntries)));
+        } catch {}
+      }
+    }
   }
 
   static updateSyncBaseline(recordKey: string, baseline: SyncBaselineRecord): void {
@@ -603,6 +657,9 @@ export class StorageService {
   }
 
   static clearAllData(): void {
+    this._cachedAnalysis = null;
+    this._cachedDbState = null;
+    this._cachedBaselines = null;
     localStorage.removeItem(STORAGE_KEYS.CURRENT_ANALYSIS);
     localStorage.removeItem(STORAGE_KEYS.MAPPINGS);
     localStorage.removeItem(STORAGE_KEYS.IMPORT_LOGS);
@@ -610,6 +667,7 @@ export class StorageService {
     localStorage.removeItem(STORAGE_KEYS.WORKER_LOGS);
     localStorage.removeItem(STORAGE_KEYS.DB_STATE);
     localStorage.removeItem(STORAGE_KEYS.CONFLICTS);
+    localStorage.removeItem(STORAGE_KEYS.SYNC_BASELINES);
     localStorage.removeItem(STORAGE_KEYS.SAMPLE_LOADED);
   }
 
