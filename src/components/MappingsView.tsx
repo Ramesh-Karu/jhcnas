@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   GitFork, 
   Plus, 
@@ -64,8 +64,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 }) => {
   const [activeSheetId, setActiveSheetId] = useState<string>(mappings[0]?.id || '');
   const [currentMappings, setCurrentMappings] = useState<WorksheetMapping[]>(mappings);
+  const [selectedWorkbookFilter, setSelectedWorkbookFilter] = useState<string>('ALL');
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [sheetSearch, setSheetSearch] = useState<string>('');
+  const [isPullingSupabase, setIsPullingSupabase] = useState<boolean>(false);
 
   // Live Supabase tables state
   const [supabaseTables, setSupabaseTables] = useState<SupabaseTableInfo[]>([]);
@@ -77,8 +79,63 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   const [showAiPresetsModal, setShowAiPresetsModal] = useState<boolean>(false);
   const [presetPrefill, setPresetPrefill] = useState<boolean>(false);
 
+  // Unique workbooks detected across all mappings
+  const uniqueWorkbooks = useMemo(() => {
+    const set = new Set<string>();
+    currentMappings.forEach(m => {
+      if (m.workbookName && typeof m.workbookName === 'string') set.add(m.workbookName.trim());
+    });
+    if (currentAnalysis?.filename) {
+      set.add(currentAnalysis.filename.trim());
+    }
+    return Array.from(set);
+  }, [currentMappings, currentAnalysis]);
+
+  // Filtered sheets based on workbook selector and search
+  const visibleSheetMappings = useMemo(() => {
+    return currentMappings.filter(m => {
+      const matchWb = selectedWorkbookFilter === 'ALL' || (m.workbookName || '').toLowerCase() === selectedWorkbookFilter.toLowerCase();
+      const matchSearch = !sheetSearch.trim() || 
+        (m.worksheetName || '').toLowerCase().includes(sheetSearch.toLowerCase().trim()) ||
+        (m.supabaseTable || '').toLowerCase().includes(sheetSearch.toLowerCase().trim()) ||
+        (m.workbookName || '').toLowerCase().includes(sheetSearch.toLowerCase().trim());
+      return matchWb && matchSearch;
+    });
+  }, [currentMappings, selectedWorkbookFilter, sheetSearch]);
+
   // Active mapping reference
-  const activeMapping = currentMappings.find(m => m.id === activeSheetId) || currentMappings[0];
+  const activeMapping = currentMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0] || currentMappings[0];
+
+  // Pull all past mappings from Supabase PostgreSQL & Server Disk
+  const handlePullFromSupabase = async () => {
+    setIsPullingSupabase(true);
+    try {
+      const res = await ApiClient.loadPermanentMappings();
+      if (res.success && Array.isArray(res.mappings) && res.mappings.length > 0) {
+        // Merge with current mappings by composite key
+        const mapByKey = new Map<string, WorksheetMapping>();
+        currentMappings.forEach(m => {
+          const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+          mapByKey.set(key, m);
+        });
+        res.mappings.forEach((m: any) => {
+          const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+          mapByKey.set(key, m);
+        });
+        const merged = Array.from(mapByKey.values());
+        setCurrentMappings(merged);
+        onSaveMappings(merged);
+        setSaveMessage(`📥 Successfully pulled and merged ${res.mappings.length} mappings from Supabase PostgreSQL & Server Storage! Total ${merged.length} sheets available.`);
+      } else {
+        setSaveMessage('No additional remote mappings found in Supabase.');
+      }
+    } catch (e: any) {
+      setSaveMessage(`Pull error: ${e.message}`);
+    } finally {
+      setIsPullingSupabase(false);
+      setTimeout(() => setSaveMessage(null), 4500);
+    }
+  };
 
   // Fetch Supabase schema
   const fetchSupabaseSchema = useCallback(async () => {
@@ -524,14 +581,25 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         </div>
 
         <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+          <button
+            id="btn-pull-from-supabase"
+            onClick={handlePullFromSupabase}
+            disabled={isPullingSupabase}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg border border-blue-300 bg-blue-50 hover:bg-blue-100 text-xs font-semibold text-blue-800 shadow-2xs transition-colors"
+            title="Pull all past and current worksheet mappings from Supabase PostgreSQL database tables"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isPullingSupabase ? 'animate-spin' : ''}`} />
+            <span>{isPullingSupabase ? 'Pulling...' : 'Pull from Supabase'}</span>
+          </button>
+
           {currentAnalysis && (
             <button
               onClick={handleClearStaleMappings}
               className="inline-flex items-center space-x-1 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-xs font-semibold text-amber-800 hover:bg-amber-100 shadow-2xs"
-              title="Clear unwanted sample mappings and map only the sheets from your uploaded file"
+              title="Map sheets for current active workbook while preserving past workbook maps"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Map Only Current Excel</span>
+              <span>Regenerate Current File Map</span>
             </button>
           )}
 
@@ -759,21 +827,67 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
             </div>
           </div>
 
-          {/* Sheet Selector Tabs */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
+          {/* Workbook Filter & Multi-Sheet Selector Tabs */}
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Worksheet Routing Tabs ({currentMappings.length})</span>
+                <span>Worksheet Routing Tabs ({visibleSheetMappings.length} of {currentMappings.length} total mapped sheets)</span>
               </span>
               <span className="text-xs text-slate-500">
-                Switch between Excel sheets in your workbook
+                Switch between worksheets across all workbooks
               </span>
             </div>
 
+            {/* Workbook Filter Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 pt-0.5 border-b border-slate-100">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap mr-1">
+                Filter Workbook:
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedWorkbookFilter('ALL')}
+                className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${
+                  selectedWorkbookFilter === 'ALL'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                <span>📚 All Workbooks</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${selectedWorkbookFilter === 'ALL' ? 'bg-slate-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                  {currentMappings.length}
+                </span>
+              </button>
+
+              {uniqueWorkbooks.map(wbName => {
+                const sheetCount = currentMappings.filter(m => (m.workbookName || '').toLowerCase() === wbName.toLowerCase()).length;
+                const isSelected = selectedWorkbookFilter.toLowerCase() === wbName.toLowerCase();
+                return (
+                  <button
+                    key={wbName}
+                    type="button"
+                    onClick={() => setSelectedWorkbookFilter(wbName)}
+                    className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${
+                      isSelected
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-3 h-3" />
+                    <span>{wbName}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-emerald-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                      {sheetCount}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Sheet Tabs List */}
             <div className="flex border-b border-slate-200 space-x-2 pb-0.5 overflow-x-auto">
-              {currentMappings.map((m) => {
-                const isActive = m.id === activeMapping.id;
+              {visibleSheetMappings.map((m) => {
+                const isActive = m.id === activeMapping?.id;
+                const showWbPrefix = selectedWorkbookFilter === 'ALL' && m.workbookName;
                 return (
                   <button
                     key={m.id}
@@ -784,6 +898,11 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                         : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'
                     }`}
                   >
+                    {showWbPrefix && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 font-mono">
+                        {m.workbookName}
+                      </span>
+                    )}
                     <span>{m.worksheetName}</span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 font-mono font-semibold">
                       ➔ {m.supabaseTable}

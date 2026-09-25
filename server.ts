@@ -3252,15 +3252,118 @@ app.get('/api/workbooks', (_req, res) => {
   }
 });
 
-app.get('/api/mappings/load', (_req, res) => {
+app.get('/api/mappings/load', async (req, res) => {
   try {
-    const data = loadPermanentMappings();
+    const diskData = loadPermanentMappings();
+    const diskMappings = Array.isArray(diskData?.mappings) ? diskData.mappings : [];
+
+    // Map existing disk mappings by composite key
+    const mappingMap = new Map<string, any>();
+    for (const m of diskMappings) {
+      const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+      mappingMap.set(key, m);
+    }
+
+    // Check if Supabase credentials are available from secrets or query
+    const secrets = loadPermanentSecrets();
+    const supUrl = (req.query.url as string) || secrets?.supabase?.url || process.env.SUPABASE_URL;
+    const supKey = (req.query.key as string) || secrets?.supabase?.serviceKey || secrets?.supabase?.serviceRoleKey || secrets?.supabase?.anonKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+
+    let pulledFromSupabase = false;
+    let supabaseCount = 0;
+
+    if (supUrl && supKey) {
+      try {
+        const cleanUrl = supUrl.trim().replace(/\/+$/, '');
+        const cleanKey = supKey.trim();
+
+        // 1. Fetch worksheet_mappings from Supabase
+        const wsRes = await fetch(`${cleanUrl}/rest/v1/worksheet_mappings?select=*&limit=1000`, {
+          method: 'GET',
+          headers: {
+            'apikey': cleanKey,
+            'Authorization': `Bearer ${cleanKey}`,
+          },
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => null);
+
+        // 2. Fetch column_mappings from Supabase
+        const colRes = await fetch(`${cleanUrl}/rest/v1/column_mappings?select=*&limit=5000`, {
+          method: 'GET',
+          headers: {
+            'apikey': cleanKey,
+            'Authorization': `Bearer ${cleanKey}`,
+          },
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => null);
+
+        if (wsRes && wsRes.ok) {
+          const remoteWs = await wsRes.json().catch(() => []);
+          const remoteCols = (colRes && colRes.ok) ? await colRes.json().catch(() => []) : [];
+
+          if (Array.isArray(remoteWs) && remoteWs.length > 0) {
+            pulledFromSupabase = true;
+            supabaseCount = remoteWs.length;
+
+            for (const rws of remoteWs) {
+              const wsName = rws.worksheet_name || rws.sheet_name || '';
+              const wbName = rws.workbook_name || rws.file_name || 'students.xlsx';
+              const targetTable = rws.supabase_table || rws.target_table || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+              const key = `${wbName.toLowerCase()}::${wsName.toLowerCase()}`;
+
+              // Get matching column mappings from remote
+              const matchingCols = remoteCols
+                .filter((c: any) => (c.worksheet_name || '').toLowerCase() === wsName.toLowerCase() || (c.target_table || '').toLowerCase() === targetTable.toLowerCase())
+                .map((c: any, cIdx: number) => ({
+                  id: `cm-sup-${cIdx}`,
+                  excelColumn: c.excel_column || c.excel_column_letter || 'A',
+                  excelHeader: c.excel_header || c.excel_column_header || c.supabase_column || `Column_${cIdx + 1}`,
+                  supabaseColumn: c.supabase_column || c.supabase_column_name || `col_${cIdx + 1}`,
+                  dataType: c.data_type || 'text',
+                  required: Boolean(c.required || c.is_required),
+                  uniqueKey: Boolean(c.unique_key || c.is_unique_key),
+                  defaultValue: c.default_value || undefined,
+                  transformation: c.transformation || c.transformation_rule || 'none',
+                }));
+
+              const existing = mappingMap.get(key);
+              if (!existing) {
+                mappingMap.set(key, {
+                  id: `wm-sup-${Date.now()}-${wsName.replace(/[^a-z0-9_]/gi, '_')}`,
+                  workbookName: wbName,
+                  worksheetName: wsName,
+                  supabaseTable: targetTable,
+                  headerRow: rws.header_row || 1,
+                  dataStartRow: rws.data_start_row || 2,
+                  dataEndRow: rws.data_end_row || undefined,
+                  sectionHeadingTargetCol: rws.section_heading_target_col || undefined,
+                  syncPolicy: rws.sync_policy || 'EXCEL_TO_DB',
+                  enabled: rws.enabled !== false && rws.is_active !== false,
+                  columns: matchingCols.length > 0 ? matchingCols : (rws.columns || []),
+                });
+              } else if (matchingCols.length > 0 && (!existing.columns || existing.columns.length === 0)) {
+                existing.columns = matchingCols;
+                mappingMap.set(key, existing);
+              }
+            }
+          }
+        }
+      } catch (supErr: any) {
+        console.warn('[Mappings] Supabase mappings fetch notice:', supErr.message);
+      }
+    }
+
+    const allMappings = Array.from(mappingMap.values());
+
     return res.json({
       success: true,
-      mappings: data?.mappings || [],
-      workbookInfo: data?.workbookInfo || null,
-      savedAt: data?.savedAt || null,
-      message: data ? 'Loaded permanently stored mappings' : 'No permanent mappings found on server disk',
+      mappings: allMappings,
+      totalCount: allMappings.length,
+      pulledFromSupabase,
+      supabaseCount,
+      workbookInfo: diskData?.workbookInfo || null,
+      savedAt: diskData?.savedAt || new Date().toISOString(),
+      message: `Loaded ${allMappings.length} mappings (${diskMappings.length} from disk${pulledFromSupabase ? `, ${supabaseCount} from Supabase PostgreSQL` : ''})`,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });

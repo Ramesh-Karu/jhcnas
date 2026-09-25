@@ -115,8 +115,28 @@ export default function App() {
           });
         }
         if (serverState.mappings && serverState.mappings.length > 0) {
-          setMappings(serverState.mappings);
-          StorageService.saveMappings(serverState.mappings);
+          // Merge server mappings with client mappings
+          const clientMappings = StorageService.getMappings();
+          const mapByKey = new Map<string, WorksheetMapping>();
+          clientMappings.forEach(m => {
+            const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+            mapByKey.set(key, m);
+          });
+          serverState.mappings.forEach((m: any) => {
+            const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+            mapByKey.set(key, m);
+          });
+          const merged = Array.from(mapByKey.values());
+          setMappings(merged);
+          StorageService.saveMappings(merged);
+        } else {
+          // Also try pulling directly from Supabase & server disk
+          ApiClient.loadPermanentMappings().then(res => {
+            if (res.success && res.mappings && res.mappings.length > 0) {
+              setMappings(res.mappings);
+              StorageService.saveMappings(res.mappings);
+            }
+          }).catch(() => {});
         }
         if (serverState.workerStatus) {
           setSchedulerStatus(serverState.workerStatus);
@@ -226,17 +246,39 @@ export default function App() {
   };
 
   const handleSaveMappings = (newMappings: WorksheetMapping[]) => {
-    setMappings(newMappings);
-    StorageService.saveMappings(newMappings);
+    // Non-destructive merge with existing mappings by key so past workbook mappings are permanently retained
+    const mapByKey = new Map<string, WorksheetMapping>();
+    mappings.forEach(m => {
+      const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+      mapByKey.set(key, m);
+    });
+    newMappings.forEach(m => {
+      const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+      mapByKey.set(key, m);
+    });
+    const merged = Array.from(mapByKey.values());
+
+    setMappings(merged);
+    StorageService.saveMappings(merged);
+    ApiClient.savePermanentMappings({
+      mappings: merged,
+      workbookInfo: currentAnalysis ? {
+        filename: currentAnalysis.filename,
+        fileHash: currentAnalysis.fileHash,
+        totalWorksheets: merged.length
+      } : undefined,
+      supabase,
+    }).catch(() => {});
+
     ApiClient.saveFullServerState({
       nextcloud,
       supabase,
       syncSettings,
-      mappings: newMappings,
+      mappings: merged,
       workbookInfo: currentAnalysis ? {
         filename: currentAnalysis.filename,
         fileHash: currentAnalysis.fileHash,
-        totalWorksheets: newMappings.length
+        totalWorksheets: merged.length
       } : undefined,
     }).then(() => setServerSyncTime(new Date().toISOString())).catch(() => {});
   };
