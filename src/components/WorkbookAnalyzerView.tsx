@@ -45,6 +45,7 @@ import {
   NavigationTab, 
   WorksheetMapping, 
   NextcloudConfig,
+  NextcloudFile,
   SupabaseConfig,
   SupabaseTableInfo,
   MultiSheetConsolidationMode,
@@ -99,6 +100,8 @@ interface WorkbookAnalyzerViewProps {
   nextcloudConfig?: NextcloudConfig;
   supabaseConfig?: SupabaseConfig;
   onSaveMappings?: (mappings: WorksheetMapping[]) => void;
+  files?: NextcloudFile[];
+  onSelectFileForAnalysis?: (file: NextcloudFile) => void;
 }
 
 export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
@@ -110,12 +113,15 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   onUpdateMappingHeaderDataRow,
   nextcloudConfig,
   supabaseConfig,
-  onSaveMappings
+  onSaveMappings,
+  files,
+  onSelectFileForAnalysis
 }) => {
   const [selectedSheetIndex, setSelectedSheetIndex] = useState<number>(0);
   const [sheetSearch, setSheetSearch] = useState<string>('');
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isFetchingNextcloud, setIsFetchingNextcloud] = useState<boolean>(false);
+  const [selectedNextcloudFilename, setSelectedNextcloudFilename] = useState<string>('');
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
   const [showPasteModal, setShowPasteModal] = useState<boolean>(false);
   const [pastedContent, setPastedContent] = useState<string>('');
@@ -486,11 +492,15 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     }
   };
 
-  const handleFetchFromNextcloud = async () => {
+  const handleFetchFromNextcloud = async (customFilename?: string) => {
     if (!nextcloudConfig) return;
     setIsFetchingNextcloud(true);
     try {
-      const res = await ApiClient.fetchAndParseWorkbook(nextcloudConfig, undefined, 'students.xlsx');
+      const targetFilename = customFilename || selectedNextcloudFilename || currentAnalysis?.filename || (files && files[0]?.filename) || 'students.xlsx';
+      const targetFile = files?.find(f => f.filename === targetFilename);
+      const filePath = targetFile?.path;
+
+      const res = await ApiClient.fetchAndParseWorkbook(nextcloudConfig, filePath, targetFilename);
       if (res.success && res.analysis) {
         const initialPlans = SchemaGenerator.generateSchemas(res.analysis, consolidationMode, effectiveSheetToTableMap, supabaseTables);
         const autoMappings = SchemaGenerator.generateMappingsFromPlans(res.analysis, initialPlans, consolidationMode, effectiveSheetToTableMap);
@@ -501,8 +511,9 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
         }
 
         setSelectedSheetIndex(0);
-        setSaveSuccessNotice('Successfully fetched students.xlsx (3,336 rows, 22 columns) directly from Nextcloud!');
-        setTimeout(() => setSaveSuccessNotice(null), 5000);
+        const totalRowsAll = res.analysis.worksheets.reduce((acc, ws) => acc + (ws.totalRows || 0), 0);
+        setSaveSuccessNotice(`Successfully fetched ${res.analysis.filename} (${totalRowsAll.toLocaleString()} rows across ${res.analysis.worksheets.length} sheets) directly from Nextcloud WebDAV!`);
+        setTimeout(() => setSaveSuccessNotice(null), 6000);
       } else {
         alert('Failed to fetch file from Nextcloud: ' + (res.error || 'Check WebDAV configuration'));
       }
@@ -836,16 +847,37 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
           </div>
 
           {nextcloudConfig && (
-            <button
-              id="btn-fetch-nextcloud-real"
-              onClick={handleFetchFromNextcloud}
-              disabled={isFetchingNextcloud}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-700 hover:bg-emerald-100 text-xs font-medium transition-colors disabled:opacity-50"
-              title="Download & parse real students.xlsx directly from Nextcloud WebDAV"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 ${isFetchingNextcloud ? 'animate-spin' : ''}`} />
-              <span>{isFetchingNextcloud ? 'Downloading...' : 'Fetch Nextcloud File'}</span>
-            </button>
+            <div className="inline-flex items-center space-x-1.5">
+              {files && files.length > 1 && (
+                <select
+                  value={selectedNextcloudFilename || currentAnalysis?.filename || files[0]?.filename}
+                  onChange={(e) => {
+                    const fn = e.target.value;
+                    setSelectedNextcloudFilename(fn);
+                    handleFetchFromNextcloud(fn);
+                  }}
+                  disabled={isFetchingNextcloud}
+                  className="px-2 py-1.5 rounded-lg border border-emerald-300 bg-white text-emerald-900 text-xs font-semibold shadow-2xs focus:ring-1 focus:ring-emerald-500"
+                  title="Choose Nextcloud file to fetch & analyze"
+                >
+                  {files.map(f => (
+                    <option key={f.id} value={f.filename}>
+                      {f.filename} ({f.fileSizeFormatted})
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                id="btn-fetch-nextcloud-real"
+                onClick={() => handleFetchFromNextcloud()}
+                disabled={isFetchingNextcloud}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-700 hover:bg-emerald-100 text-xs font-medium transition-colors disabled:opacity-50"
+                title={`Download & parse '${selectedNextcloudFilename || currentAnalysis?.filename || 'monitored file'}' directly from Nextcloud WebDAV`}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 ${isFetchingNextcloud ? 'animate-spin' : ''}`} />
+                <span>{isFetchingNextcloud ? 'Downloading...' : `Fetch Nextcloud (${selectedNextcloudFilename || currentAnalysis?.filename || 'File'})`}</span>
+              </button>
+            </div>
           )}
 
           <button

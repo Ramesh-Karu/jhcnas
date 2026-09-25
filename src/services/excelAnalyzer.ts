@@ -97,7 +97,7 @@ export class ExcelAnalyzer {
     totalCols: number,
     rawMerges: XLSX.Range[]
   ): { isDivider: boolean; extractedHeading?: string } {
-    // 1. Check if this row intersects a merged range spanning 2+ columns with a year or section definition
+    // 1. Check if this row intersects a merged range spanning 2+ columns with a year, section, or footer/disclaimer definition
     const mergesInRow = rawMerges.filter(m => m.s.r <= r && r <= m.e.r && m.e.c > m.s.c);
     for (const m of mergesInRow) {
       const originCell = ws[XLSX.utils.encode_cell(m.s)];
@@ -111,8 +111,10 @@ export class ExcelAnalyzer {
         /\d{4}\s*[-/]\s*\d{2,4}/.test(rawText) ||
         /^(year|academic\s*year|batch)/i.test(rawText);
       const isSectionPattern = /^(grade|class|section|term|semester)\s*[:;]?\s*\w+/i.test(rawText);
+      const isFooterOrDisclaimer =
+        /(reserved\s*for|this\s*space|decision\s*of|secretary|principal|signature|signed|prepared\s*by|checked\s*by|authorized\s*by|note\s*:|notes\s*:|instructions\s*:|for\s*office\s*use|செயலாளர்|அதிபர்|கையொப்பம்|குறிப்பு|தீர்மானம்|அலுவலக)/i.test(rawText);
 
-      if (spanCols >= 2 && (isYearPattern || isSectionPattern)) {
+      if (spanCols >= 2 && (isYearPattern || isSectionPattern || isFooterOrDisclaimer)) {
         return { isDivider: true, extractedHeading: rawText };
       }
 
@@ -134,14 +136,30 @@ export class ExcelAnalyzer {
       return { isDivider: true }; // blank divider row
     }
 
+    // Check if entire row is a repeated merged note/disclaimer text
+    const uniqueVals = Array.from(new Set(nonNullVals));
+    if (uniqueVals.length === 1 && uniqueVals[0].length > 15) {
+      const val = uniqueVals[0];
+      if (/(reserved|space|decision|secretary|principal|signature|note|instruction|செயலாளர்|அதிபர்|கையொப்பம்|குறிப்பு)/i.test(val)) {
+        return { isDivider: true, extractedHeading: val };
+      }
+    }
+
+    // Check if any value matches disclaimer/footer pattern
+    const joined = nonNullVals.join(' ').trim();
+    if (
+      /(this\s*space\s*should\s*be\s*reserved|reserved\s*for\s*the\s*decision|decision\s*of\s*the\s*secretary|principal['']s\s*signature|signature\s*of\s*the\s*principal|for\s*office\s*use\s*only|செயலாளரின்\s*தீர்மானம்)/i.test(joined)
+    ) {
+      return { isDivider: true, extractedHeading: joined };
+    }
+
     // If only 1 or 2 cells populated across the row and matches year or section pattern
     if (nonNullVals.length <= 2) {
-      const joined = nonNullVals.join(' ').trim();
       if (
         /^(year\s*[-:]?\s*)?(19\d{2}|20\d{2})([-/\s]+(19\d{2}|20\d{2}))?$/i.test(joined) ||
         /year[- ]?\d{4}/i.test(joined) ||
         /^(academic\s*year|batch|grade|class|section)\s*[:;]?\s*[0-9a-zA-Z\s_-]+/i.test(joined) ||
-        /^(total|grand\s*total|subtotal)$/i.test(joined)
+        /^(total|grand\s*total|subtotal|மொத்தம்)$/i.test(joined)
       ) {
         return { isDivider: true, extractedHeading: joined };
       }

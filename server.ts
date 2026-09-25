@@ -734,7 +734,7 @@ function savePermanentPresets(presets: any[]): boolean {
 }
 
 // Industrial Standard: Identifies if a row is a merged year header, section divider,
-// or category banner so that it is NEVER treated or inserted as a data row.
+// or category banner / footer disclaimer so that it is NEVER treated or inserted as a data row.
 function isServerYearOrSectionDividerRow(
   ws: any,
   r: number,
@@ -742,7 +742,7 @@ function isServerYearOrSectionDividerRow(
   merges: any[],
   getVal: (r: number, c: number) => any
 ): { isDivider: boolean; extractedHeading?: string } {
-  // 1. Check if row intersects a merge spanning 2+ columns with a year or section definition
+  // 1. Check if row intersects a merge spanning 2+ columns with a year, section, or footer/disclaimer definition
   const rowMerges = (merges || []).filter((m: any) => m.s.r <= r && r <= m.e.r && m.e.c > m.s.c);
   for (const m of rowMerges) {
     const rawVal = String(getVal(m.s.r, m.s.c) || '').trim();
@@ -754,8 +754,10 @@ function isServerYearOrSectionDividerRow(
       /\d{4}\s*[-/]\s*\d{2,4}/.test(rawVal) ||
       /^(year|academic\s*year|batch)/i.test(rawVal);
     const isSection = /^(grade|class|section|term|semester)\s*[:;]?\s*\w+/i.test(rawVal);
+    const isFooterOrDisclaimer =
+      /(reserved\s*for|this\s*space|decision\s*of|secretary|principal|signature|signed|prepared\s*by|checked\s*by|authorized\s*by|note\s*:|notes\s*:|instructions\s*:|for\s*office\s*use|செயலாளர்|அதிபர்|கையொப்பம்|குறிப்பு|தீர்மானம்|அலுவலக)/i.test(rawVal);
 
-    if (spanCols >= 2 && (isYear || isSection)) {
+    if (spanCols >= 2 && (isYear || isSection || isFooterOrDisclaimer)) {
       return { isDivider: true, extractedHeading: rawVal };
     }
 
@@ -775,13 +777,29 @@ function isServerYearOrSectionDividerRow(
     return { isDivider: true }; // empty row
   }
 
+  // Check if entire row is a repeated merged note/disclaimer text
+  const uniqueVals = Array.from(new Set(nonNullVals));
+  if (uniqueVals.length === 1 && uniqueVals[0].length > 15) {
+    const val = uniqueVals[0];
+    if (/(reserved|space|decision|secretary|principal|signature|note|instruction|செயலாளர்|அதிபர்|கையொப்பம்|குறிப்பு)/i.test(val)) {
+      return { isDivider: true, extractedHeading: val };
+    }
+  }
+
+  // Check if any value matches disclaimer/footer pattern
+  const joined = nonNullVals.join(' ').trim();
+  if (
+    /(this\s*space\s*should\s*be\s*reserved|reserved\s*for\s*the\s*decision|decision\s*of\s*the\s*secretary|principal['']s\s*signature|signature\s*of\s*the\s*principal|for\s*office\s*use\s*only|செயலாளரின்\s*தீர்மானம்)/i.test(joined)
+  ) {
+    return { isDivider: true, extractedHeading: joined };
+  }
+
   if (nonNullVals.length <= 2) {
-    const joined = nonNullVals.join(' ').trim();
     if (
       /^(year\s*[-:]?\s*)?(19\d{2}|20\d{2})([-/\s]+(19\d{2}|20\d{2}))?$/i.test(joined) ||
       /year[- ]?\d{4}/i.test(joined) ||
       /^(academic\s*year|batch|grade|class|section)\s*[:;]?\s*[0-9a-zA-Z\s_-]+/i.test(joined) ||
-      /^(total|grand\s*total|subtotal)$/i.test(joined)
+      /^(total|grand\s*total|subtotal|மொத்தம்)$/i.test(joined)
     ) {
       return { isDivider: true, extractedHeading: joined };
     }
@@ -2273,9 +2291,13 @@ async function smartSyncRecordsToSupabase(params: {
 }> {
   const { supUrl, supKey, tableName, records, onConflict } = params;
 
-  // Clean records - sanitize empty cells and placeholder tokens
-  const cleanedRecords = records.map((r: any) => {
+  // Clean records - sanitize empty cells, placeholder tokens, and filter out non-data footer/disclaimer rows
+  const cleanedRecords: Record<string, any>[] = [];
+  for (const r of records) {
     const clean: Record<string, any> = {};
+    let nonNullCount = 0;
+    let hasDisclaimer = false;
+
     for (const [k, v] of Object.entries(r)) {
       if (!k.startsWith('__')) {
         if (k === 'id' && (v === '' || v === null || v === undefined)) {
@@ -2290,11 +2312,22 @@ async function smartSyncRecordsToSupabase(params: {
           clean[k] = null;
         } else {
           clean[k] = v;
+          if (k !== 'created_at' && k !== 'updated_at') {
+            nonNullCount++;
+            if (typeof v === 'string' && /(this\s*space\s*should\s*be\s*reserved|reserved\s*for\s*the\s*decision|decision\s*of\s*the\s*secretary|principal['']s\s*signature|signature\s*of\s*the\s*principal|for\s*office\s*use\s*only|செயலாளரின்\s*தீர்மானம்)/i.test(v)) {
+              hasDisclaimer = true;
+            }
+          }
         }
       }
     }
-    return clean;
-  });
+
+    if (nonNullCount === 0 || hasDisclaimer) {
+      continue; // Discard empty rows and footer disclaimer rows
+    }
+
+    cleanedRecords.push(clean);
+  }
 
   if (cleanedRecords.length === 0) {
     return {
@@ -2645,18 +2678,57 @@ async function smartSyncRecordsToSupabase(params: {
           }
         }
 
-        if (insertRes.ok) {
-          const data = await insertRes.json().catch(() => []);
-          insertedCount += batch.length;
-          if (Array.isArray(data)) returnedRecords.push(...data);
-        } else {
-          failedCount += batch.length;
-          if (!firstError) {
-            firstError = {
-              status: insertRes.status,
-              errorText: errText,
-              diagnostic: diagnoseSupabaseError(insertRes.status, errText, tableName, batch[0]),
-            };
+        // Auto-heal 23502: NOT NULL column violation by filtering out rows with null values for that column
+        if (!insertRes.ok && (errText.includes('violates not-null constraint') || errText.includes('23502'))) {
+          const colMatch = errText.match(/null value in column "([^"]+)"/i);
+          const violatingCol = colMatch ? colMatch[1] : null;
+          if (violatingCol) {
+            const filteredBatch = batch.filter((r: any) => r[violatingCol] !== null && r[violatingCol] !== undefined && String(r[violatingCol]).trim() !== '');
+            if (filteredBatch.length > 0) {
+              insertRes = await fetch(insertUrl, {
+                method: 'POST',
+                headers: {
+                  'apikey': supKey,
+                  'Authorization': `Bearer ${supKey}`,
+                  'Content-Type': 'application/json',
+                  'Prefer': resolvedKeyCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
+                },
+                body: JSON.stringify(filteredBatch),
+              });
+              if (!insertRes.ok) {
+                errText = await insertRes.text().catch(() => '');
+              }
+            }
+          }
+        }
+
+        // Fallback: If batch insert failed, try individual row inserts so valid rows succeed
+        if (!insertRes.ok && batch.length > 1) {
+          let batchSuccessCount = 0;
+          for (const singleRow of batch) {
+            try {
+              const singleRes = await fetch(insertUrl, {
+                method: 'POST',
+                headers: {
+                  'apikey': supKey,
+                  'Authorization': `Bearer ${supKey}`,
+                  'Content-Type': 'application/json',
+                  'Prefer': resolvedKeyCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
+                },
+                body: JSON.stringify([singleRow]),
+                signal: AbortSignal.timeout(5000),
+              });
+              if (singleRes.ok) {
+                batchSuccessCount++;
+                const singleData = await singleRes.json().catch(() => []);
+                if (Array.isArray(singleData)) returnedRecords.push(...singleData);
+              }
+            } catch {}
+          }
+          if (batchSuccessCount > 0) {
+            insertedCount += batchSuccessCount;
+            failedCount += (batch.length - batchSuccessCount);
+            continue;
           }
         }
       } else {

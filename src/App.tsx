@@ -592,6 +592,8 @@ export default function App() {
               nextcloudConfig={nextcloud}
               supabaseConfig={supabase}
               onSaveMappings={handleSaveMappings}
+              files={files}
+              onSelectFileForAnalysis={handleSelectFileForAnalysis}
             />
           )}
 
