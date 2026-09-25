@@ -115,16 +115,23 @@ export default function App() {
           });
         }
         if (serverState.mappings && serverState.mappings.length > 0) {
-          // Merge server mappings with client mappings
+          // Merge server mappings with client mappings by workbook & worksheet key
+          const getMappingKey = (m: any) => {
+            const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
+            const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
+            if (wb && ws) return `${wb}::${ws}`;
+            if (ws) return ws;
+            return m.id || `wm-${Math.random()}`;
+          };
           const clientMappings = StorageService.getMappings();
           const mapByKey = new Map<string, WorksheetMapping>();
           clientMappings.forEach(m => {
-            const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-            mapByKey.set(key, m);
+            mapByKey.set(getMappingKey(m), m);
           });
           serverState.mappings.forEach((m: any) => {
-            const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-            mapByKey.set(key, m);
+            const key = getMappingKey(m);
+            const prev = mapByKey.get(key);
+            mapByKey.set(key, { ...prev, ...m });
           });
           const merged = Array.from(mapByKey.values());
           setMappings(merged);
@@ -246,15 +253,23 @@ export default function App() {
   };
 
   const handleSaveMappings = (newMappings: WorksheetMapping[]) => {
-    // Non-destructive merge with existing mappings by key so past workbook mappings are permanently retained
+    // Non-destructive merge with existing mappings by composite key (workbookName::worksheetName)
+    const getMappingKey = (m: WorksheetMapping) => {
+      const wb = (m.workbookName || currentAnalysis?.filename || '').toLowerCase().trim();
+      const ws = (m.worksheetName || '').toLowerCase().trim();
+      if (wb && ws) return `${wb}::${ws}`;
+      if (ws) return ws;
+      return m.id || `wm-${Math.random()}`;
+    };
+
     const mapByKey = new Map<string, WorksheetMapping>();
     mappings.forEach(m => {
-      const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-      mapByKey.set(key, m);
+      mapByKey.set(getMappingKey(m), m);
     });
     newMappings.forEach(m => {
-      const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-      mapByKey.set(key, m);
+      const key = getMappingKey(m);
+      const prev = mapByKey.get(key);
+      mapByKey.set(key, { ...prev, ...m });
     });
     const merged = Array.from(mapByKey.values());
 
@@ -488,20 +503,26 @@ export default function App() {
   };
 
   const handleApplyAiSuggestions = (suggestedMapping: WorksheetMapping) => {
-    const existingIndex = mappings.findIndex(m => m.worksheetName === suggestedMapping.worksheetName);
+    const targetWb = (suggestedMapping.workbookName || currentAnalysis?.filename || '').toLowerCase().trim();
+    const existingIndex = mappings.findIndex(m => 
+      (!targetWb || (m.workbookName || '').toLowerCase().trim() === targetWb) &&
+      m.worksheetName.toLowerCase().trim() === suggestedMapping.worksheetName.toLowerCase().trim()
+    );
     let updated: WorksheetMapping[];
     if (existingIndex >= 0) {
       updated = [...mappings];
-      updated[existingIndex] = suggestedMapping;
+      updated[existingIndex] = { ...suggestedMapping, workbookName: suggestedMapping.workbookName || currentAnalysis?.filename || 'Workbook.xlsx' };
     } else {
-      updated = [...mappings, suggestedMapping];
+      updated = [...mappings, { ...suggestedMapping, workbookName: suggestedMapping.workbookName || currentAnalysis?.filename || 'Workbook.xlsx' }];
     }
     handleSaveMappings(updated);
   };
 
-  const handleUpdateMappingHeaderDataRow = (sheetName: string, headerRow: number, dataStartRow: number) => {
+  const handleUpdateMappingHeaderDataRow = (sheetName: string, headerRow: number, dataStartRow: number, targetWbName?: string) => {
+    const wb = (targetWbName || currentAnalysis?.filename || '').toLowerCase().trim();
     const updated = mappings.map(m => {
-      if (m.worksheetName === sheetName) {
+      const matchWb = !wb || (m.workbookName || '').toLowerCase().trim() === wb;
+      if (matchWb && m.worksheetName.toLowerCase().trim() === sheetName.toLowerCase().trim()) {
         return { ...m, headerRow, dataStartRow };
       }
       return m;

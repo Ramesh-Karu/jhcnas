@@ -69,40 +69,6 @@ function ensureDataDir() {
       }
     }
   }
-
-  // Pre-seed archetype workbooks so they are permanently available
-  try {
-    const timetablePath = path.join(WORKBOOKS_DIR, 'Class_Wise_Time_Table.xlsx');
-    if (!fs.existsSync(timetablePath)) {
-      fs.writeFileSync(timetablePath, generateMasterTimetableWorkbook());
-    }
-
-    const donationsPath = path.join(WORKBOOKS_DIR, 'Donation_Details.xlsx');
-    if (!fs.existsSync(donationsPath)) {
-      fs.writeFileSync(donationsPath, generateDonationsLedgerWorkbook());
-    }
-
-    const teacherPath = path.join(WORKBOOKS_DIR, 'Teacher_Allocations.xlsx');
-    if (!fs.existsSync(teacherPath)) {
-      fs.writeFileSync(teacherPath, generateTeacherAllocationsWorkbook());
-    }
-
-    const inventoryPath = path.join(WORKBOOKS_DIR, 'JHC_Inventory.xlsx');
-    if (!fs.existsSync(inventoryPath)) {
-      fs.writeFileSync(inventoryPath, generateJhcInventoryWorkbook());
-    }
-
-    const studentsPath = path.join(WORKBOOKS_DIR, 'students.xlsx');
-    if (!fs.existsSync(studentsPath)) {
-      if (fs.existsSync(CACHED_WORKBOOK_FILE)) {
-        fs.copyFileSync(CACHED_WORKBOOK_FILE, studentsPath);
-      } else {
-        fs.writeFileSync(studentsPath, generateMasterTimetableWorkbook());
-      }
-    }
-  } catch (e) {
-    console.warn('Notice seeding default workbooks:', e);
-  }
 }
 
 // Fallback manual parser for .env if environment variable was not passed into container process
@@ -485,13 +451,9 @@ function saveUnifiedCoolifyState(state: any): boolean {
     // 1. Save secrets.json
     savePermanentSecrets(mergedSecrets);
 
-    // 2. Save mappings.json
+    // 2. Save mappings.json non-destructively so all workbooks are preserved
     if (state.mappings && Array.isArray(state.mappings)) {
-      savePermanentMappings({
-        mappings: state.mappings,
-        workbookInfo: state.workbookInfo,
-        savedAt: new Date().toISOString(),
-      });
+      mergeAndSavePermanentMappings(state.mappings, state.workbookInfo);
     }
 
     // 3. Save presets.json
@@ -590,6 +552,14 @@ function savePermanentMappings(data: any): boolean {
   }
 }
 
+function getMappingCompositeKey(m: any): string {
+  const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
+  const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
+  if (wb && ws) return `${wb}::${ws}`;
+  if (ws) return ws;
+  return m.id || `wm-${Math.random()}`;
+}
+
 function mergeAndSavePermanentMappings(newMappings: any[], workbookInfo?: any): any {
   ensureDataDir();
   const existing = loadPermanentMappings() || { mappings: [] };
@@ -597,12 +567,13 @@ function mergeAndSavePermanentMappings(newMappings: any[], workbookInfo?: any): 
   
   const mapByKey = new Map<string, any>();
   for (const m of existingList) {
-    const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+    const key = getMappingCompositeKey(m);
     mapByKey.set(key, m);
   }
   for (const m of (Array.isArray(newMappings) ? newMappings : [])) {
-    const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-    mapByKey.set(key, m);
+    const key = getMappingCompositeKey(m);
+    const prev = mapByKey.get(key);
+    mapByKey.set(key, { ...prev, ...m });
   }
   
   const mergedMappings = Array.from(mapByKey.values());
@@ -3072,7 +3043,7 @@ app.post('/api/mappings/save', async (req, res) => {
         const supKey = supabase.serviceKey || supabase.serviceRoleKey || supabase.anonKey;
 
         // 1. Upsert workbook metadata (with both 'name' and 'file_name' for full compatibility)
-        const wbName = payload.mappings[0]?.workbookName || workbookInfo?.filename || 'students.xlsx';
+        const wbName = payload.mappings[0]?.workbookName || workbookInfo?.filename || 'Workbook.xlsx';
         const wbPayload = [{
           name: wbName,
           file_name: wbName,
@@ -3187,15 +3158,88 @@ app.post('/api/mappings/save', async (req, res) => {
 });
 
 // Served Sheets & Mapping Hubs Permanent Storage Endpoints
-app.get('/api/served-sheets', (_req, res) => {
+app.get('/api/served-sheets', async (req, res) => {
   try {
     const store = loadServedSheetsStore();
     const mappingsData = loadPermanentMappings();
     const storedWorkbooks = getPermanentlyStoredWorkbooks();
+    const presets = loadPermanentPresets();
+    
+    // Map of all served sheets by composite key
+    const servedMap = new Map<string, any>();
+    
+    // 1. Add from stored served sheets
+    if (Array.isArray(store.servedSheets)) {
+      for (const s of store.servedSheets) {
+        const key = getMappingCompositeKey(s);
+        servedMap.set(key, s);
+      }
+    }
+    
+    // 2. Add from permanent mappings
+    if (Array.isArray(mappingsData?.mappings)) {
+      for (const m of mappingsData.mappings) {
+        const key = getMappingCompositeKey(m);
+        if (!servedMap.has(key)) {
+          servedMap.set(key, {
+            sheetName: m.worksheetName,
+            workbookName: m.workbookName || 'Workbook',
+            targetTable: m.supabaseTable,
+            syncPolicy: m.syncPolicy || 'BIDIRECTIONAL',
+            primaryMergeKey: m.columns?.find((c: any) => c.uniqueKey)?.supabaseColumn || null,
+            skipMergedYearRows: m.skipMergedYearRows !== false,
+            isEnabled: m.enabled !== false,
+            columnsCount: m.columns?.length || 0,
+            mapping: m,
+          });
+        }
+      }
+    }
+
+    // 3. Query Supabase worksheet_mappings if credentials available
+    const secrets = loadPermanentSecrets();
+    const supUrl = (req.query.url as string) || secrets?.supabase?.url || process.env.SUPABASE_URL;
+    const supKey = (req.query.key as string) || secrets?.supabase?.serviceKey || secrets?.supabase?.serviceRoleKey || secrets?.supabase?.anonKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+    if (supUrl && supKey) {
+      try {
+        const cleanUrl = supUrl.trim().replace(/\/+$/, '');
+        const cleanKey = supKey.trim();
+        const wsRes = await fetch(`${cleanUrl}/rest/v1/worksheet_mappings?select=*&limit=1000`, {
+          headers: { 'apikey': cleanKey, 'Authorization': `Bearer ${cleanKey}` },
+          signal: AbortSignal.timeout(3000),
+        }).catch(() => null);
+
+        if (wsRes && wsRes.ok) {
+          const remoteWs = await wsRes.json().catch(() => []);
+          if (Array.isArray(remoteWs)) {
+            for (const r of remoteWs) {
+              const wsName = r.worksheet_name || r.sheet_name || '';
+              const wbName = r.workbook_name || r.file_name || 'Workbook.xlsx';
+              const targetTable = r.supabase_table || r.target_table || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+              const key = `${wbName.toLowerCase()}::${wsName.toLowerCase()}`;
+              if (!servedMap.has(key)) {
+                servedMap.set(key, {
+                  sheetName: wsName,
+                  workbookName: wbName,
+                  targetTable,
+                  syncPolicy: r.sync_policy || 'BIDIRECTIONAL',
+                  primaryMergeKey: r.primary_merge_key || null,
+                  skipMergedYearRows: true,
+                  isEnabled: r.enabled !== false && r.is_active !== false,
+                  columnsCount: r.columns_count || 0,
+                  mapping: null,
+                });
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
     return res.json({
       success: true,
-      servedSheets: store.servedSheets || [],
-      presets: store.presets || [],
+      servedSheets: Array.from(servedMap.values()),
+      presets: presets || store.presets || [],
       workbooks: storedWorkbooks,
       mappings: mappingsData?.mappings || [],
       savedAt: store.savedAt || mappingsData?.savedAt || null,
@@ -3260,7 +3304,7 @@ app.get('/api/mappings/load', async (req, res) => {
     // Map existing disk mappings by composite key
     const mappingMap = new Map<string, any>();
     for (const m of diskMappings) {
-      const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+      const key = getMappingCompositeKey(m);
       mappingMap.set(key, m);
     }
 
@@ -3969,17 +4013,24 @@ async function executeFullPipelineCore(params: {
 
     // Fallbacks if nothing discovered
     if (fileSet.size === 0) {
-      if (fs.existsSync(CACHED_WORKBOOK_FILE)) {
-        fileSet.add('students.xlsx');
-      } else {
-        fileSet.add('students.xlsx');
-        fileSet.add('Class_Wise_Time_Table.xlsx');
-        fileSet.add('Donation_Details.xlsx');
-        fileSet.add('Teacher_Allocations.xlsx');
-      }
+      console.warn('[Sync Engine] No active mappings or workbooks found to synchronize.');
     }
 
     filesToProcess = Array.from(fileSet);
+  }
+
+  if (filesToProcess.length === 0) {
+    return {
+      success: false,
+      filename: 'None',
+      filesSynced: [],
+      totalInserted: 0,
+      totalUpdated: 0,
+      totalFailed: 0,
+      syncResults: [],
+      errors: [{ error: 'No active mappings or Excel workbooks configured to synchronize. Please configure or map your sheets first.' }],
+      executedAt: new Date().toISOString()
+    };
   }
 
   const syncResults: any[] = [];
@@ -3998,7 +4049,7 @@ async function executeFullPipelineCore(params: {
     let buffer: Buffer | null = null;
     let fileSha256 = '';
 
-    // A. Buffer resolution (base64 param, Nextcloud WebDAV, permanent workbooks storage, or sample generator)
+    // A. Buffer resolution (base64 param, Nextcloud WebDAV, or permanent workbooks storage)
     if (base64Workbook && (filesToProcess.length === 1 || curFilename === targetFilename)) {
       buffer = Buffer.from(base64Workbook, 'base64');
       fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -4021,13 +4072,13 @@ async function executeFullPipelineCore(params: {
           const user = nextcloud.username || 'truenas_admin';
           const pass = nextcloud.appPassword;
           const folder = (nextcloud.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
-          const targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${curFilename}`;
+          const targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${encodeURIComponent(curFilename)}`;
           const authHeader = `Basic ${getBasicAuth(user, pass)}`;
 
           const fileRes = await fetch(targetUrl, {
             method: 'GET',
             headers: { Authorization: authHeader },
-            signal: AbortSignal.timeout(3500),
+            signal: AbortSignal.timeout(5000),
           }).catch(() => null);
 
           if (fileRes && fileRes.ok) {
@@ -4041,38 +4092,14 @@ async function executeFullPipelineCore(params: {
           console.warn(`[Sync Engine] Nextcloud fast fetch notice for ${curFilename}:`, ncErr.message);
         }
       }
-
-      // 3. Check fallback cached workbook
-      if (!buffer && fs.existsSync(CACHED_WORKBOOK_FILE) && curFilename === 'students.xlsx') {
-        try {
-          buffer = fs.readFileSync(CACHED_WORKBOOK_FILE);
-          fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-        } catch {}
-      }
-
-      // 4. Generate archetype sample workbook matching filename or table
-      if (!buffer) {
-        const lowerName = curFilename.toLowerCase();
-        let sampleBuf: Buffer;
-        if (lowerName.includes('timetable') || lowerName.includes('time table') || activeMappings.some((m: any) => m.supabaseTable?.includes('timetable'))) {
-          sampleBuf = generateMasterTimetableWorkbook();
-        } else if (lowerName.includes('donation') || lowerName.includes('ledger') || activeMappings.some((m: any) => m.supabaseTable?.includes('donation') || m.supabaseTable?.includes('sdc'))) {
-          sampleBuf = generateDonationsLedgerWorkbook();
-        } else if (lowerName.includes('teacher') || lowerName.includes('allocation') || activeMappings.some((m: any) => m.supabaseTable?.includes('teacher'))) {
-          sampleBuf = generateTeacherAllocationsWorkbook();
-        } else if (lowerName.includes('inventory') || lowerName.includes('stock')) {
-          sampleBuf = generateJhcInventoryWorkbook();
-        } else {
-          sampleBuf = generateMasterTimetableWorkbook();
-        }
-
-        buffer = sampleBuf;
-        fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-        saveWorkbookPermanently(curFilename, buffer);
-      }
     }
 
-    if (!buffer) continue;
+    if (!buffer) {
+      console.warn(`[Sync Engine] Could not locate or download '${curFilename}', skipping.`);
+      errors.push({ filename: curFilename, error: `Workbook file '${curFilename}' could not be located on disk or fetched from Nextcloud.` });
+      continue;
+    }
+
     if (!primarySha256) primarySha256 = fileSha256;
     processedFiles.push(curFilename);
 
@@ -4084,26 +4111,40 @@ async function executeFullPipelineCore(params: {
       continue;
     }
 
-    // Identify all matching and auto-generated mappings for EVERY sheet in this workbook
+    // Identify all matching mappings for sheets in this workbook
     const existingWbMappings = activeMappings.filter((m: any) => {
-      const matchFile = m.workbookName && m.workbookName.toLowerCase() === curFilename.toLowerCase();
-      const matchSheet = wb.SheetNames.some(s => s.toLowerCase() === (m.worksheetName || '').toLowerCase());
-      return matchFile || matchSheet;
+      const matchFile = m.workbookName && (
+        m.workbookName.toLowerCase().trim() === curFilename.toLowerCase().trim() ||
+        path.basename(m.workbookName).toLowerCase() === path.basename(curFilename).toLowerCase()
+      );
+      return matchFile;
     });
 
-    const commonTargetTable = existingWbMappings[0]?.supabaseTable || 'students';
+    const commonTargetTable = existingWbMappings[0]?.supabaseTable || null;
     const primaryTemplateMapping = existingWbMappings[0];
 
     const matchingMappings: any[] = [];
     for (const sheetName of wb.SheetNames) {
-      // Check if this sheet has an explicit mapping
-      const explicit = existingWbMappings.find((m: any) => (m.worksheetName || '').toLowerCase() === sheetName.toLowerCase());
+      // 1. Check if this sheet has an explicit workbook mapping
+      const explicit = existingWbMappings.find((m: any) => (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim());
       if (explicit) {
         matchingMappings.push(explicit);
         continue;
       }
 
-      // If no explicit mapping for this specific sheet, auto-construct one using the workbook's primary template or headers
+      // 2. Check if this sheet has a global mapping with matching worksheetName
+      const globalExplicit = activeMappings.find((m: any) => (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim());
+      if (globalExplicit) {
+        matchingMappings.push({
+          ...globalExplicit,
+          workbookName: curFilename
+        });
+        continue;
+      }
+
+      // 3. Fallback: auto-construct routing using workbook's target table or clean sheet name (NEVER 'students')
+      const cleanSheetTable = sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || 'records';
+      const resolvedTable = commonTargetTable || cleanSheetTable;
       const ws = wb.Sheets[sheetName];
       const range = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
 
@@ -4112,14 +4153,14 @@ async function executeFullPipelineCore(params: {
           id: `auto-${curFilename}-${sheetName}`,
           workbookName: curFilename,
           worksheetName: sheetName,
-          supabaseTable: commonTargetTable,
+          supabaseTable: resolvedTable,
           headerRow: primaryTemplateMapping.headerRow || 1,
           dataStartRow: primaryTemplateMapping.dataStartRow || 2,
           dataEndRow: primaryTemplateMapping.dataEndRow,
           sectionHeadingTargetCol: primaryTemplateMapping.sectionHeadingTargetCol,
           columns: primaryTemplateMapping.columns,
           enabled: true,
-          syncPolicy: 'BIDIRECTIONAL'
+          syncPolicy: primaryTemplateMapping.syncPolicy || 'BIDIRECTIONAL'
         });
       } else {
         const cols: any[] = [];
@@ -4142,7 +4183,7 @@ async function executeFullPipelineCore(params: {
           id: `auto-${curFilename}-${sheetName}`,
           workbookName: curFilename,
           worksheetName: sheetName,
-          supabaseTable: commonTargetTable || sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+          supabaseTable: resolvedTable,
           headerRow: 1,
           dataStartRow: 2,
           columns: cols,

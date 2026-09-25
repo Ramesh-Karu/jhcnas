@@ -399,9 +399,15 @@ export const SupabaseView: React.FC<SupabaseViewProps> = ({
     setTimeout(() => setStatusNotice(null), 3000);
   };
 
-  const mappedTables = mappings.map(m => m.supabaseTable).filter(Boolean);
   const discoveredTableNames = remoteSchemaTables.map(t => t.name);
-  const allAvailableTables = Array.from(new Set([...discoveredTableNames, ...mappedTables]));
+  const mappedTables = mappings
+    .map(m => m.supabaseTable)
+    .filter(Boolean)
+    .filter(t => t !== 'students' || discoveredTableNames.includes('students'));
+  // When connected, show real discovered tables from user's Supabase database
+  const allAvailableTables = Array.from(new Set(
+    discoveredTableNames.length > 0 ? discoveredTableNames : mappedTables
+  ));
   const currentTableSchema = remoteSchemaTables.find(t => t.name === selectedTable);
   const currentRecords = remoteRows || [];
 

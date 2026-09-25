@@ -673,7 +673,9 @@ export class StorageService {
 
   static initSampleIfNeeded(): void {
     const isLoaded = localStorage.getItem(STORAGE_KEYS.SAMPLE_LOADED);
-    if (!isLoaded) {
+    const existingMappings = this.getMappings();
+    const existingAnalysis = this.getCurrentAnalysis();
+    if (!isLoaded && existingMappings.length === 0 && !existingAnalysis) {
       this.loadSampleData();
     }
   }

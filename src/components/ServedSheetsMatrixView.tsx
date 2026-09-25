@@ -30,7 +30,8 @@ import {
   BookOpen,
   Activity,
   Key,
-  Info
+  Info,
+  Folder
 } from 'lucide-react';
 import { 
   WorksheetMapping, 
@@ -74,6 +75,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
   const [viewMode, setViewMode] = useState<MatrixViewMode>('SHEETS_MATRIX');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [tableFilter, setTableFilter] = useState<string>('ALL');
+  const [selectedWorkbookFilter, setSelectedWorkbookFilter] = useState<string>('ALL');
   const [presetFilter, setPresetFilter] = useState<string>('ALL');
   const [policyFilter, setPolicyFilter] = useState<string>('ALL');
   const [expandedSheetId, setExpandedSheetId] = useState<string | null>(null);
@@ -81,10 +83,12 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
   // Live Presets and Supabase Schema data
   const [presets, setPresets] = useState<AiWorkbookPreset[]>([]);
   const [supabaseTables, setSupabaseTables] = useState<SupabaseTableInfo[]>([]);
+  const [storedServedSheets, setStoredServedSheets] = useState<any[]>([]);
   const [isLoadingMetadata, setIsLoadingMetadata] = useState<boolean>(false);
   const [permanentSavedAt, setPermanentSavedAt] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [isPullingSupabase, setIsPullingSupabase] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const [isSavingPermanent, setIsSavingPermanent] = useState<boolean>(false);
@@ -100,22 +104,90 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
         ApiClient.loadServedSheets()
       ]);
 
+      let pulledMappings: WorksheetMapping[] = [];
+
       if (presetsRes.status === 'fulfilled' && presetsRes.value.success && presetsRes.value.presets) {
         setPresets(presetsRes.value.presets);
       }
-      if (permRes.status === 'fulfilled' && permRes.value.success && permRes.value.savedAt) {
-        setPermanentSavedAt(permRes.value.savedAt);
+      if (permRes.status === 'fulfilled' && permRes.value.success) {
+        if (permRes.value.savedAt) setPermanentSavedAt(permRes.value.savedAt);
+        if (Array.isArray(permRes.value.mappings) && permRes.value.mappings.length > 0) {
+          pulledMappings = permRes.value.mappings;
+        }
       }
-      if (servedRes.status === 'fulfilled' && servedRes.value.success && servedRes.value.savedAt) {
-        setPermanentSavedAt(servedRes.value.savedAt);
+      if (servedRes.status === 'fulfilled' && servedRes.value.success) {
+        if (servedRes.value.savedAt) setPermanentSavedAt(servedRes.value.savedAt);
+        if (Array.isArray(servedRes.value.servedSheets)) {
+          setStoredServedSheets(servedRes.value.servedSheets);
+        }
+        if (Array.isArray(servedRes.value.mappings) && servedRes.value.mappings.length > 0) {
+          pulledMappings = [...pulledMappings, ...servedRes.value.mappings];
+        }
       }
       if (schemaRes.status === 'fulfilled' && (schemaRes.value as any).success && (schemaRes.value as any).tables) {
         setSupabaseTables((schemaRes.value as any).tables);
+      }
+
+      // If remote/disk has mappings, merge non-destructively so all past mappings are available
+      if (pulledMappings.length > 0) {
+        const mapByKey = new Map<string, WorksheetMapping>();
+        mappings.forEach(m => {
+          const key = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+          mapByKey.set(key, m);
+        });
+        pulledMappings.forEach(m => {
+          const key = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+          if (!mapByKey.has(key)) {
+            mapByKey.set(key, m);
+          }
+        });
+        const merged = Array.from(mapByKey.values());
+        if (merged.length > mappings.length) {
+          onSaveMappings(merged);
+        }
       }
     } catch (e) {
       console.warn('Metadata loading notice:', e);
     } finally {
       setIsLoadingMetadata(false);
+    }
+  };
+
+  const handlePullFromSupabase = async () => {
+    setIsPullingSupabase(true);
+    try {
+      const res = await ApiClient.loadPermanentMappings();
+      const servedRes = await ApiClient.loadServedSheets();
+      
+      const combined: WorksheetMapping[] = [
+        ...(Array.isArray(res.mappings) ? res.mappings : []),
+        ...(Array.isArray(servedRes.mappings) ? servedRes.mappings : [])
+      ];
+
+      if (combined.length > 0) {
+        const mapByKey = new Map<string, WorksheetMapping>();
+        mappings.forEach(m => {
+          const key = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+          mapByKey.set(key, m);
+        });
+        combined.forEach(m => {
+          const key = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+          mapByKey.set(key, m);
+        });
+        const merged = Array.from(mapByKey.values());
+        onSaveMappings(merged);
+        if (Array.isArray(servedRes.servedSheets)) {
+          setStoredServedSheets(servedRes.servedSheets);
+        }
+        setCopyFeedback(`📥 Pulled ${combined.length} mappings from Supabase PostgreSQL & Server Disk! Total ${merged.length} active sheets.`);
+      } else {
+        setCopyFeedback('No additional remote mappings found in Supabase.');
+      }
+    } catch (err: any) {
+      setSyncFeedback({ type: 'error', message: `Pull failed: ${err.message}` });
+    } finally {
+      setIsPullingSupabase(false);
+      setTimeout(() => setCopyFeedback(null), 4000);
     }
   };
 
@@ -143,9 +215,21 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
         } : null,
       });
 
+      if (supabaseConfig?.url && (supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey || supabaseConfig.anonKey)) {
+        await ApiClient.syncMappingsToSupabase({
+          mappings,
+          workbookInfo: currentAnalysis ? {
+            filename: currentAnalysis.filename,
+            fileHash: currentAnalysis.fileHash,
+            totalWorksheets: currentAnalysis.worksheets?.length || 0,
+          } : undefined,
+          supabase: supabaseConfig
+        }).catch(() => null);
+      }
+
       if (res.success) {
         setPermanentSavedAt(res.savedAt || new Date().toISOString());
-        setCopyFeedback('🛡️ Served sheets, mapping sheets & mapping hubs permanently secured in server storage!');
+        setCopyFeedback('🛡️ Served sheets, mapping sheets & mapping hubs permanently secured in Supabase PostgreSQL & server storage!');
       } else {
         throw new Error(res.error || 'Failed to save served sheets');
       }
@@ -164,9 +248,9 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
     loadAllMetadata();
   }, [supabaseConfig]);
 
-  // Aggregate Served Sheet Items combining current workbook worksheets and existing mappings
+  // Aggregate Served Sheet Items combining ALL workbook mappings, stored served sheets, and current workbook analysis
   const servedSheets = useMemo(() => {
-    const list: {
+    const sheetMap = new Map<string, {
       id: string;
       sheetName: string;
       workbookName: string;
@@ -194,64 +278,94 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
         failed: number;
         rowsCount: number;
       } | null;
-    }[] = [];
+    }>();
 
-    // 1. First add all sheets from active workbook analysis
+    // Helper to find last sync info in import logs
+    const findLastSync = (wbName: string, wsName: string, tblName: string, fallbackTotalRows?: number) => {
+      for (const log of importLogs) {
+        const detailResults = log.details?.syncResults as any[];
+        if (detailResults && Array.isArray(detailResults)) {
+          const sheetRes = detailResults.find((sr: any) => 
+            (sr.sheetName && sr.sheetName.toLowerCase() === wsName.toLowerCase()) ||
+            (sr.targetTable && sr.targetTable.toLowerCase() === tblName.toLowerCase())
+          );
+          if (sheetRes) {
+            return {
+              timestamp: log.completedAt || log.startedAt,
+              status: sheetRes.status || log.status,
+              inserted: sheetRes.insertedCount ?? 0,
+              updated: sheetRes.updatedCount ?? 0,
+              failed: sheetRes.failedCount ?? 0,
+              rowsCount: sheetRes.rowsCount ?? (fallbackTotalRows || 0),
+            };
+          }
+        }
+        if (log.filename && (log.filename.toLowerCase() === wbName.toLowerCase() || log.filename.includes(wsName.toLowerCase()))) {
+          return {
+            timestamp: log.completedAt || log.startedAt,
+            status: log.status,
+            inserted: log.rowsInserted,
+            updated: log.rowsUpdated,
+            failed: log.rowsFailed,
+            rowsCount: log.rowsProcessed,
+          };
+        }
+      }
+      return null;
+    };
+
+    // 1. Add all mappings from state (covers ALL workbooks: past, present, and remote)
+    mappings.forEach(m => {
+      const wbName = m.workbookName || currentAnalysis?.filename || 'Workbook.xlsx';
+      const wsName = m.worksheetName;
+      if (!wsName) return;
+      const key = `${wbName.toLowerCase().trim()}::${wsName.toLowerCase().trim()}`;
+      const targetTable = m.supabaseTable || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const pkey = m.columns?.find(c => c.uniqueKey)?.supabaseColumn || null;
+      const matchedPreset = presets.find(p => 
+        p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === wsName.toLowerCase() || sm.supabaseTable === targetTable)
+      ) || null;
+
+      const lastSync = findLastSync(wbName, wsName, targetTable);
+
+      sheetMap.set(key, {
+        id: m.id || `wm-${key}`,
+        sheetName: wsName,
+        workbookName: wbName,
+        mapping: m,
+        analysis: null,
+        targetTable,
+        presetMatch: matchedPreset,
+        primaryMergeKey: pkey,
+        syncPolicy: m.syncPolicy || 'BIDIRECTIONAL',
+        isEnabled: m.enabled !== false,
+        skipMergedYearRows: m.skipMergedYearRows !== false,
+        columnsCount: m.columns?.length || 0,
+        lastSyncInfo: lastSync,
+      });
+    });
+
+    // 2. Add or enrich with active workbook analysis if loaded
     if (currentAnalysis && currentAnalysis.worksheets) {
+      const wbName = currentAnalysis.filename || 'Workbook.xlsx';
       currentAnalysis.worksheets.forEach((ws, idx) => {
-        const existingMapping = mappings.find(
-          m => m.worksheetName.toLowerCase() === ws.sheetName.toLowerCase()
-        ) || null;
+        const key = `${wbName.toLowerCase().trim()}::${ws.sheetName.toLowerCase().trim()}`;
+        const existing = sheetMap.get(key);
 
-        const targetTable = existingMapping?.supabaseTable || ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-        
-        // Find matching preset
+        const targetTable = existing?.targetTable || ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const matchedPreset = presets.find(p => 
           p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === ws.sheetName.toLowerCase() || sm.supabaseTable === targetTable) ||
           (p.archetype === currentAnalysis.detectedArchetype)
-        ) || null;
+        ) || existing?.presetMatch || null;
 
-        const pkey = existingMapping?.columns?.find(c => c.uniqueKey)?.supabaseColumn || null;
+        const pkey = existing?.primaryMergeKey || null;
+        const lastSync = findLastSync(wbName, ws.sheetName, targetTable, ws.totalRows) || existing?.lastSyncInfo || null;
 
-        // Find last sync info in import logs for this specific sheet
-        let lastSync: any = null;
-        for (const log of importLogs) {
-          const detailResults = log.details?.syncResults as any[];
-          if (detailResults && Array.isArray(detailResults)) {
-            const sheetRes = detailResults.find((sr: any) => 
-              sr.sheetName?.toLowerCase() === ws.sheetName.toLowerCase() ||
-              sr.targetTable?.toLowerCase() === targetTable.toLowerCase()
-            );
-            if (sheetRes) {
-              lastSync = {
-                timestamp: log.completedAt || log.startedAt,
-                status: sheetRes.status || log.status,
-                inserted: sheetRes.insertedCount ?? 0,
-                updated: sheetRes.updatedCount ?? 0,
-                failed: sheetRes.failedCount ?? 0,
-                rowsCount: sheetRes.rowsCount ?? ws.totalRows,
-              };
-              break;
-            }
-          }
-          if (!lastSync && (log.filename.toLowerCase() === currentAnalysis.filename.toLowerCase() || log.filename.includes('students'))) {
-            lastSync = {
-              timestamp: log.completedAt || log.startedAt,
-              status: log.status,
-              inserted: log.rowsInserted,
-              updated: log.rowsUpdated,
-              failed: log.rowsFailed,
-              rowsCount: log.rowsProcessed,
-            };
-            break;
-          }
-        }
-
-        list.push({
-          id: existingMapping?.id || `sheet-${idx}-${ws.sheetName}`,
+        sheetMap.set(key, {
+          id: existing?.id || `sheet-${idx}-${ws.sheetName}`,
           sheetName: ws.sheetName,
-          workbookName: currentAnalysis.filename,
-          mapping: existingMapping,
+          workbookName: wbName,
+          mapping: existing?.mapping || null,
           analysis: {
             totalRows: ws.totalRows,
             totalColumns: ws.totalColumns,
@@ -263,67 +377,69 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           targetTable,
           presetMatch: matchedPreset,
           primaryMergeKey: pkey,
-          syncPolicy: existingMapping?.syncPolicy || 'BIDIRECTIONAL',
-          isEnabled: existingMapping ? existingMapping.enabled : true,
-          skipMergedYearRows: existingMapping?.skipMergedYearRows !== false,
-          columnsCount: existingMapping?.columns?.length || ws.headers?.length || 0,
+          syncPolicy: existing?.syncPolicy || 'BIDIRECTIONAL',
+          isEnabled: existing ? existing.isEnabled : true,
+          skipMergedYearRows: existing ? existing.skipMergedYearRows : true,
+          columnsCount: existing?.columnsCount || ws.headers?.length || 0,
           lastSyncInfo: lastSync,
         });
       });
     }
 
-    // 2. Add any mappings that belong to other sheets not in current active analysis
-    mappings.forEach(m => {
-      const alreadyIncluded = list.some(item => item.sheetName.toLowerCase() === m.worksheetName.toLowerCase());
-      if (!alreadyIncluded) {
-        const matchedPreset = presets.find(p => 
-          p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === m.worksheetName.toLowerCase() || sm.supabaseTable === m.supabaseTable)
-        ) || null;
-
-        const pkey = m.columns?.find(c => c.uniqueKey)?.supabaseColumn || null;
-
-        let lastSync: any = null;
-        for (const log of importLogs) {
-          const detailResults = log.details?.syncResults as any[];
-          if (detailResults && Array.isArray(detailResults)) {
-            const sheetRes = detailResults.find((sr: any) => 
-              sr.sheetName?.toLowerCase() === m.worksheetName.toLowerCase() ||
-              sr.targetTable?.toLowerCase() === m.supabaseTable.toLowerCase()
-            );
-            if (sheetRes) {
-              lastSync = {
-                timestamp: log.completedAt || log.startedAt,
-                status: sheetRes.status || log.status,
-                inserted: sheetRes.insertedCount ?? 0,
-                updated: sheetRes.updatedCount ?? 0,
-                failed: sheetRes.failedCount ?? 0,
-                rowsCount: sheetRes.rowsCount ?? 0,
-              };
-              break;
-            }
-          }
-        }
-
-        list.push({
-          id: m.id,
-          sheetName: m.worksheetName,
-          workbookName: m.workbookName || 'Workbook',
-          mapping: m,
-          analysis: null,
-          targetTable: m.supabaseTable,
-          presetMatch: matchedPreset,
-          primaryMergeKey: pkey,
-          syncPolicy: m.syncPolicy || 'BIDIRECTIONAL',
-          isEnabled: m.enabled !== false,
-          skipMergedYearRows: m.skipMergedYearRows !== false,
-          columnsCount: m.columns?.length || 0,
+    // 3. Add any stored served sheets from server if not already in map
+    storedServedSheets.forEach(s => {
+      const wbName = s.workbookName || 'Workbook.xlsx';
+      const wsName = s.sheetName;
+      if (!wsName) return;
+      const key = `${wbName.toLowerCase().trim()}::${wsName.toLowerCase().trim()}`;
+      if (!sheetMap.has(key)) {
+        const targetTable = s.targetTable || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const lastSync = findLastSync(wbName, wsName, targetTable);
+        sheetMap.set(key, {
+          id: s.id || `stored-${key}`,
+          sheetName: wsName,
+          workbookName: wbName,
+          mapping: s.mapping || null,
+          analysis: s.analysis || null,
+          targetTable,
+          presetMatch: null,
+          primaryMergeKey: s.primaryMergeKey || null,
+          syncPolicy: s.syncPolicy || 'BIDIRECTIONAL',
+          isEnabled: s.isEnabled !== false,
+          skipMergedYearRows: s.skipMergedYearRows !== false,
+          columnsCount: s.columnsCount || s.mapping?.columns?.length || 0,
           lastSyncInfo: lastSync,
         });
       }
     });
 
-    return list;
-  }, [currentAnalysis, mappings, presets, importLogs]);
+    return Array.from(sheetMap.values());
+  }, [currentAnalysis, mappings, presets, importLogs, storedServedSheets]);
+
+  // Unique workbooks detected across all served sheets, mappings, and files
+  const uniqueWorkbooks = useMemo(() => {
+    const set = new Set<string>();
+    servedSheets.forEach(s => {
+      if (s.workbookName && typeof s.workbookName === 'string' && s.workbookName.trim()) {
+        set.add(s.workbookName.trim());
+      }
+    });
+    mappings.forEach(m => {
+      if (m.workbookName && typeof m.workbookName === 'string' && m.workbookName.trim()) {
+        set.add(m.workbookName.trim());
+      }
+    });
+    if (currentAnalysis?.filename) {
+      set.add(currentAnalysis.filename.trim());
+    }
+    files.forEach(f => {
+      const fname = f.filename || (f as any).name;
+      if (fname && typeof fname === 'string' && fname.trim()) {
+        set.add(fname.trim());
+      }
+    });
+    return Array.from(set);
+  }, [servedSheets, mappings, currentAnalysis, files]);
 
   // Group served sheets by Target Supabase Table (Merged Table Topology)
   const mergedTablesTopology = useMemo(() => {
@@ -456,16 +572,19 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       const matchesSearch = !q || 
         sheet.sheetName.toLowerCase().includes(q) || 
         sheet.targetTable.toLowerCase().includes(q) ||
+        sheet.workbookName.toLowerCase().includes(q) ||
         (sheet.primaryMergeKey && sheet.primaryMergeKey.toLowerCase().includes(q)) ||
         (sheet.presetMatch && sheet.presetMatch.name.toLowerCase().includes(q));
 
+      const matchesWb = selectedWorkbookFilter === 'ALL' || 
+        sheet.workbookName.toLowerCase().trim() === selectedWorkbookFilter.toLowerCase().trim();
       const matchesTable = tableFilter === 'ALL' || sheet.targetTable.toLowerCase() === tableFilter.toLowerCase();
       const matchesPreset = presetFilter === 'ALL' || (sheet.presetMatch?.id === presetFilter);
       const matchesPolicy = policyFilter === 'ALL' || sheet.syncPolicy === policyFilter;
 
-      return matchesSearch && matchesTable && matchesPreset && matchesPolicy;
+      return matchesWb && matchesSearch && matchesTable && matchesPreset && matchesPolicy;
     });
-  }, [servedSheets, searchQuery, tableFilter, presetFilter, policyFilter]);
+  }, [servedSheets, searchQuery, tableFilter, presetFilter, policyFilter, selectedWorkbookFilter]);
 
   // Filtered Merged Tables
   const filteredMergedTables = useMemo(() => {
@@ -473,13 +592,15 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch = !q || 
         tbl.tableName.toLowerCase().includes(q) || 
-        tbl.mergedSheets.some(s => s.sheetName.toLowerCase().includes(q)) ||
+        tbl.mergedSheets.some(s => s.sheetName.toLowerCase().includes(q) || s.workbookName.toLowerCase().includes(q)) ||
         tbl.primaryKeys.some(pk => pk.toLowerCase().includes(q));
       
+      const matchesWb = selectedWorkbookFilter === 'ALL' || 
+        tbl.mergedSheets.some(s => s.workbookName.toLowerCase().trim() === selectedWorkbookFilter.toLowerCase().trim());
       const matchesTable = tableFilter === 'ALL' || tbl.tableName.toLowerCase() === tableFilter.toLowerCase();
-      return matchesSearch && matchesTable;
+      return matchesWb && matchesSearch && matchesTable;
     });
-  }, [mergedTablesTopology, searchQuery, tableFilter]);
+  }, [mergedTablesTopology, searchQuery, tableFilter, selectedWorkbookFilter]);
 
   // Filtered History
   const filteredHistory = useMemo(() => {
@@ -490,10 +611,12 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
         row.targetTable.toLowerCase().includes(q) ||
         row.workbookName.toLowerCase().includes(q);
 
+      const matchesWb = selectedWorkbookFilter === 'ALL' || 
+        row.workbookName.toLowerCase().trim() === selectedWorkbookFilter.toLowerCase().trim();
       const matchesTable = tableFilter === 'ALL' || row.targetTable.toLowerCase() === tableFilter.toLowerCase();
-      return matchesSearch && matchesTable;
+      return matchesWb && matchesSearch && matchesTable;
     });
-  }, [unifiedHistoryRows, searchQuery, tableFilter]);
+  }, [unifiedHistoryRows, searchQuery, tableFilter, selectedWorkbookFilter]);
 
   // Trigger one-click synchronization
   const handleExecuteSync = async () => {
@@ -523,7 +646,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
     const payload = {
       exportedAt: new Date().toISOString(),
       permanentSavedAt,
-      workbook: currentAnalysis?.filename || 'students.xlsx',
+      workbook: currentAnalysis?.filename || 'Workbook.xlsx',
       totalServedSheets: servedSheets.length,
       mergedTablesCount: mergedTablesTopology.length,
       sheets: servedSheets.map(s => ({
@@ -686,7 +809,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
             <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Served Sheets</div>
             <div className="text-xl font-bold text-slate-900 mt-0.5">{servedSheets.length}</div>
             <div className="text-[11px] text-slate-500 truncate">
-              {servedSheets.filter(s => s.isEnabled).length} active • {currentAnalysis?.filename || 'students.xlsx'}
+              {servedSheets.filter(s => s.isEnabled).length} active • {currentAnalysis?.filename || 'All Workbooks'}
             </div>
           </div>
         </div>
@@ -813,6 +936,21 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
             </div>
 
+            {/* Workbook Filter Dropdown */}
+            <select
+              value={selectedWorkbookFilter}
+              onChange={(e) => setSelectedWorkbookFilter(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+            >
+              <option value="ALL">All Workbooks ({servedSheets.length} sheets)</option>
+              {uniqueWorkbooks.map(wb => {
+                const count = servedSheets.filter(s => s.workbookName.toLowerCase().trim() === wb.toLowerCase().trim()).length;
+                return (
+                  <option key={wb} value={wb}>{wb} ({count} sheets)</option>
+                );
+              })}
+            </select>
+
             <select
               value={tableFilter}
               onChange={(e) => setTableFilter(e.target.value)}
@@ -839,6 +977,50 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
             )}
           </div>
         </div>
+
+        {/* Workbook Filter Pills Bar */}
+        {uniqueWorkbooks.length > 0 && (
+          <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center space-x-2 overflow-x-auto text-xs">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0 mr-1 flex items-center space-x-1">
+              <Folder className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Workbook Filter:</span>
+            </span>
+            <button
+              onClick={() => setSelectedWorkbookFilter('ALL')}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-colors shadow-2xs ${
+                selectedWorkbookFilter === 'ALL'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              All Workbooks ({servedSheets.length})
+            </button>
+            {uniqueWorkbooks.map(wb => {
+              const count = servedSheets.filter(s => s.workbookName.toLowerCase().trim() === wb.toLowerCase().trim()).length;
+              return (
+                <button
+                  key={wb}
+                  onClick={() => setSelectedWorkbookFilter(wb)}
+                  className={`px-3 py-1 rounded-full text-xs whitespace-nowrap transition-colors shadow-2xs flex items-center space-x-1.5 ${
+                    selectedWorkbookFilter.toLowerCase().trim() === wb.toLowerCase().trim()
+                      ? 'bg-indigo-600 text-white font-semibold'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-3 h-3 text-emerald-500 shrink-0" />
+                  <span>{wb}</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                    selectedWorkbookFilter.toLowerCase().trim() === wb.toLowerCase().trim()
+                      ? 'bg-indigo-700 text-white'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* ========================================================= */}
         {/* VIEW 1: SERVED SHEETS MATRIX                              */}
@@ -1058,7 +1240,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
             <div className="p-3 rounded-lg bg-teal-50 border border-teal-200 text-xs text-teal-800 flex items-center space-x-2">
               <Info className="w-4 h-4 text-teal-600 shrink-0" />
               <span>
-                <strong>Merged Table Topology:</strong> This view reveals which multiple Excel worksheets combine into single unified destination tables in Supabase (e.g. Grades 6, 7, and 8 merging into <code>public.students</code>).
+                <strong>Merged Table Topology:</strong> This view reveals which multiple Excel worksheets combine into single unified destination tables in Supabase.
               </span>
             </div>
 

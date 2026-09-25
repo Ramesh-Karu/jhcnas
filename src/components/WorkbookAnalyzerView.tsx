@@ -363,7 +363,8 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   // Route active sheet to a PostgreSQL table
   const handleRouteSheetToTable = () => {
     if (!activeSheet) return;
-    const targetTable = smartSanitizeIdentifier(targetTableNameInput, 'students');
+    const defaultTblName = activeSheet.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || 'table_data';
+    const targetTable = smartSanitizeIdentifier(targetTableNameInput, defaultTblName);
 
     const columns = activeSheet.headers.map((h, idx) => {
       const cleanName = SchemaGenerator.sanitizeIdentifier(h.name);
@@ -394,7 +395,11 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
       columns,
     };
 
-    const existingIdx = activeMappings.findIndex(m => m.worksheetName.toLowerCase() === activeSheet.sheetName.toLowerCase());
+    const currentWb = (analysis.filename || '').toLowerCase().trim();
+    const existingIdx = activeMappings.findIndex(m => 
+      (m.workbookName || '').toLowerCase().trim() === currentWb &&
+      m.worksheetName.toLowerCase().trim() === activeSheet.sheetName.toLowerCase().trim()
+    );
     let updated: WorksheetMapping[];
     if (existingIdx >= 0) {
       updated = [...activeMappings];
@@ -496,7 +501,11 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     if (!nextcloudConfig) return;
     setIsFetchingNextcloud(true);
     try {
-      const targetFilename = customFilename || selectedNextcloudFilename || currentAnalysis?.filename || (files && files[0]?.filename) || 'students.xlsx';
+      const targetFilename = customFilename || selectedNextcloudFilename || currentAnalysis?.filename || (files && files[0]?.filename) || '';
+      if (!targetFilename) {
+        setIsFetchingNextcloud(false);
+        return;
+      }
       const targetFile = files?.find(f => f.filename === targetFilename);
       const filePath = targetFile?.path;
 
@@ -601,8 +610,10 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
       })),
     };
 
+    const currentWb = (analysis.filename || '').toLowerCase().trim();
     const existingIdx = activeMappings.findIndex(
-      m => m.worksheetName.toLowerCase() === solution.worksheetName.toLowerCase()
+      m => (m.workbookName || '').toLowerCase().trim() === currentWb &&
+           m.worksheetName.toLowerCase().trim() === solution.worksheetName.toLowerCase().trim()
     );
     let updated: WorksheetMapping[];
     if (existingIdx >= 0) {

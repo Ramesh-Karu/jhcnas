@@ -1164,9 +1164,12 @@ def trigger_pipeline(authorization: str = Header(None)):
                   {selectedRun.syncResults.map((sr: any, idx: number) => (
                     <div key={idx} className="p-3 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
                       <div>
+                        {sr.workbookName && (
+                          <div className="text-[10px] text-slate-400 font-mono mb-0.5">{sr.workbookName}</div>
+                        )}
                         <span className="font-bold text-slate-900 font-mono">{sr.sheetName}</span>
                         <span className="text-slate-400 mx-1">→</span>
-                        <span className="text-indigo-600 font-bold font-mono">{sr.targetTable}</span>
+                        <span className="text-indigo-600 font-bold font-mono">public.{sr.targetTable}</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <span className="font-bold text-slate-700">{sr.rowsCount} row(s)</span>

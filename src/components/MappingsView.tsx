@@ -113,14 +113,21 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       const res = await ApiClient.loadPermanentMappings();
       if (res.success && Array.isArray(res.mappings) && res.mappings.length > 0) {
         // Merge with current mappings by composite key
+        const getMappingKey = (m: any) => {
+          const wb = String(m.workbookName || currentAnalysis?.filename || '').toLowerCase().trim();
+          const ws = String(m.worksheetName || '').toLowerCase().trim();
+          if (wb && ws) return `${wb}::${ws}`;
+          if (ws) return ws;
+          return m.id || `wm-${Math.random()}`;
+        };
         const mapByKey = new Map<string, WorksheetMapping>();
         currentMappings.forEach(m => {
-          const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-          mapByKey.set(key, m);
+          mapByKey.set(getMappingKey(m), m);
         });
         res.mappings.forEach((m: any) => {
-          const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
-          mapByKey.set(key, m);
+          const key = getMappingKey(m);
+          const prev = mapByKey.get(key);
+          mapByKey.set(key, { ...prev, ...m });
         });
         const merged = Array.from(mapByKey.values());
         setCurrentMappings(merged);
@@ -409,7 +416,8 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   };
 
   const handleConsolidateAllSheets = (targetTbl: string) => {
-    const cleanTbl = targetTbl.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'students';
+    const fallbackTbl = activeMapping?.supabaseTable || (activeMapping?.worksheetName ? activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') : 'records');
+    const cleanTbl = targetTbl ? targetTbl.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') : fallbackTbl;
     const updated = currentMappings.map(m => ({
       ...m,
       supabaseTable: cleanTbl
@@ -510,7 +518,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       await ApiClient.savePermanentMappings({
         mappings: currentMappings,
         workbookInfo: {
-          filename: currentAnalysis?.filename || activeMapping?.workbookName || 'students.xlsx',
+          filename: currentAnalysis?.filename || activeMapping?.workbookName || 'Workbook.xlsx',
           fileHash: currentAnalysis?.fileHash,
           totalWorksheets: currentMappings.length,
         },
@@ -799,11 +807,11 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => handleConsolidateAllSheets(activeMapping.supabaseTable || 'students')}
+                onClick={() => handleConsolidateAllSheets(activeMapping.supabaseTable || activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
                 className="px-2.5 py-1.5 rounded-lg bg-purple-50 border border-purple-300 text-purple-700 hover:bg-purple-100 font-semibold transition-colors"
                 title="Route all worksheets into a single common Supabase table"
               >
-                Merge All Sheets ➔ public.{activeMapping.supabaseTable || 'students'}
+                Merge All Sheets ➔ public.{activeMapping.supabaseTable || activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_')}
               </button>
 
               <button

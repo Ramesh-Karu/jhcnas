@@ -251,7 +251,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
     try {
       const wb = getEffectiveWorkbook();
-      const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'students.xlsx';
+      const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'Workbook.xlsx';
 
       // Synchronize latest existing records from Supabase in parallel if connected
       const mergedDbState: Record<string, any[]> = { ...databaseState };
@@ -317,7 +317,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     setDiagnosticError(null);
 
     const wb = getEffectiveWorkbook();
-    const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'students.xlsx';
+    const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'Workbook.xlsx';
     const fileHash = currentAnalysis?.fileHash || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
     // Capture updated records locally so they can be dispatched immediately to Supabase
