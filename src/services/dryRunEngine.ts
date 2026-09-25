@@ -5,15 +5,44 @@ import { MappingEngine } from './mappingEngine';
 
 function areCellsEqual(a: any, b: any): boolean {
   if (a === b) return true;
-  if ((a === null || a === undefined || a === '') && (b === null || b === undefined || b === '')) return true;
+  const isNullishA = a === null || a === undefined || a === '';
+  const isNullishB = b === null || b === undefined || b === '';
+  if (isNullishA && isNullishB) return true;
+
   const strA = String(a ?? '').trim();
   const strB = String(b ?? '').trim();
   if (strA === strB) return true;
-  const numA = Number(strA);
-  const numB = Number(strB);
-  if (!isNaN(numA) && !isNaN(numB) && strA !== '' && strB !== '') {
-    return numA === numB;
+
+  const emptyPlaceholders = ['-', '—', '--', 'n/a', 'na', 'nil', 'null', 'none', '?', 'undefined', 'n.a.', 'n/r'];
+  const isPlaceholderA = isNullishA || emptyPlaceholders.includes(strA.toLowerCase());
+  const isPlaceholderB = isNullishB || emptyPlaceholders.includes(strB.toLowerCase());
+  if (isPlaceholderA && isPlaceholderB) return true;
+
+  const cleanNumA = strA.replace(/,/g, '').replace(/%$/, '');
+  const cleanNumB = strB.replace(/,/g, '').replace(/%$/, '');
+  const numA = Number(cleanNumA);
+  const numB = Number(cleanNumB);
+  if (!isNaN(numA) && !isNaN(numB) && cleanNumA !== '' && cleanNumB !== '') {
+    return Math.abs(numA - numB) < 0.00001;
   }
+
+  const lowerA = strA.toLowerCase();
+  const lowerB = strB.toLowerCase();
+  const truthy = ['true', '1', 'yes', 'y', 'active', 'enrolled', 'pass', 'present'];
+  const falsy = ['false', '0', 'no', 'n', 'inactive', 'fail', 'absent'];
+  if (truthy.includes(lowerA) && truthy.includes(lowerB)) return true;
+  if (falsy.includes(lowerA) && falsy.includes(lowerB)) return true;
+
+  if (strA.length >= 10 && strB.length >= 10) {
+    const d1 = strA.substring(0, 10);
+    const d2 = strB.substring(0, 10);
+    if (d1 === d2 && /^\d{4}[-/]\d{2}[-/]\d{2}$/.test(d1)) {
+      return true;
+    }
+  }
+
+  if (lowerA === lowerB) return true;
+
   return false;
 }
 

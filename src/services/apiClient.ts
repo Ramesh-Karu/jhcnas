@@ -393,20 +393,29 @@ export class ApiClient {
     success: boolean;
     tableName?: string;
     upsertedCount?: number;
+    insertedCount?: number;
+    updatedCount?: number;
+    skippedCount?: number;
+    failedCount?: number;
     totalRecords?: number;
     records?: any[];
     error?: string;
     warning?: string;
+    message?: string;
     diagnostic?: SupabaseDiagnostic;
   }> {
     if (!records || records.length === 0) {
-      return { success: true, tableName, upsertedCount: 0, totalRecords: 0, records: [] };
+      return { success: true, tableName, upsertedCount: 0, insertedCount: 0, updatedCount: 0, skippedCount: 0, failedCount: 0, totalRecords: 0, records: [] };
     }
 
     const CHUNK_SIZE = 250;
     const totalRecords = records.length;
     const totalBatches = Math.ceil(totalRecords / CHUNK_SIZE);
     let totalUpserted = 0;
+    let totalInserted = 0;
+    let totalUpdated = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
     const allInserted: any[] = [];
 
     for (let b = 0; b < totalBatches; b++) {
@@ -423,7 +432,7 @@ export class ApiClient {
           currentBatch: currentBatchNum,
           totalBatches,
           successfulCount: totalUpserted,
-          failedCount: 0,
+          failedCount: totalFailed,
           tableName,
           status: 'running',
           message: `Pushing batch ${currentBatchNum}/${totalBatches} (${batch.length} rows) to public.${tableName}...`
@@ -447,6 +456,7 @@ export class ApiClient {
         const data = await res.json();
 
         if (!data.success) {
+          totalFailed += batch.length;
           if (onProgress) {
             onProgress({
               processed: start,
@@ -455,7 +465,7 @@ export class ApiClient {
               currentBatch: currentBatchNum,
               totalBatches,
               successfulCount: totalUpserted,
-              failedCount: batch.length,
+              failedCount: totalFailed,
               tableName,
               status: 'error',
               message: `Batch ${currentBatchNum}/${totalBatches} failed: ${data.error || 'Check Supabase table'}`
@@ -465,14 +475,22 @@ export class ApiClient {
             success: false,
             tableName,
             upsertedCount: totalUpserted,
+            insertedCount: totalInserted,
+            updatedCount: totalUpdated,
+            skippedCount: totalSkipped,
+            failedCount: totalFailed,
             totalRecords,
             error: data.error,
             diagnostic: data.diagnostic,
           };
         }
 
-        const count = data.upsertedCount || batch.length;
+        const count = data.upsertedCount || (data.insertedCount || 0) + (data.updatedCount || 0);
         totalUpserted += count;
+        totalInserted += data.insertedCount || 0;
+        totalUpdated += data.updatedCount || 0;
+        totalSkipped += data.skippedCount || 0;
+
         if (Array.isArray(data.records)) {
           allInserted.push(...data.records);
         }
@@ -488,10 +506,11 @@ export class ApiClient {
             failedCount: 0,
             tableName,
             status: end === totalRecords ? 'success' : 'running',
-            message: `Batch ${currentBatchNum}/${totalBatches} confirmed! (${end}/${totalRecords} rows committed)`
+            message: `Batch ${currentBatchNum}/${totalBatches} confirmed! (${end}/${totalRecords} rows checked, ${totalSkipped} identical skipped)`
           });
         }
       } catch (e: any) {
+        totalFailed += batch.length;
         if (onProgress) {
           onProgress({
             processed: start,
@@ -500,7 +519,7 @@ export class ApiClient {
             currentBatch: currentBatchNum,
             totalBatches,
             successfulCount: totalUpserted,
-            failedCount: batch.length,
+            failedCount: totalFailed,
             tableName,
             status: 'error',
             message: `Network error on batch ${currentBatchNum}: ${e.message}`
@@ -510,6 +529,10 @@ export class ApiClient {
           success: false,
           tableName,
           upsertedCount: totalUpserted,
+          insertedCount: totalInserted,
+          updatedCount: totalUpdated,
+          skippedCount: totalSkipped,
+          failedCount: totalFailed,
           totalRecords,
           error: `Network error pushing to Supabase: ${e.message}`,
         };
@@ -520,8 +543,13 @@ export class ApiClient {
       success: true,
       tableName,
       upsertedCount: totalUpserted,
+      insertedCount: totalInserted,
+      updatedCount: totalUpdated,
+      skippedCount: totalSkipped,
+      failedCount: totalFailed,
       totalRecords,
       records: allInserted,
+      message: `Successfully processed ${totalRecords} records: ${totalSkipped} identical skipped (no duplicates), ${totalUpdated} cell-updated in-place, ${totalInserted} new records inserted.`
     };
   }
 
@@ -1387,6 +1415,231 @@ export class ApiClient {
     }
   }
 
+  static async getGradesServerStorage(): Promise<{
+    success: boolean;
+    exists?: boolean;
+    data?: {
+      files: any[];
+      records: any[];
+      referenceColumns: string[];
+      summary: any;
+      histories: any[];
+      lastSaved: string | null;
+    };
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/storage');
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async saveGradesServerStorage(payload: {
+    files: any[];
+    records: any[];
+    referenceColumns: string[];
+    summary: any;
+    histories: any[];
+  }): Promise<{ success: boolean; message?: string; lastSaved?: string; error?: string }> {
+    try {
+      const res = await fetch('/api/grades/storage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async saveWorkbookFileOnServer(fileName: string, fileData: string): Promise<{
+    success: boolean;
+    message?: string;
+    path?: string;
+    fileSize?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/save-workbook-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName, fileData }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async saveStudentHistoryOnServer(history: any): Promise<{
+    success: boolean;
+    histories?: any[];
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async clearGradesServerStorage(): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      const res = await fetch('/api/grades/storage', { method: 'DELETE' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async getNextcloudGradeSyncConfig(): Promise<{
+    success: boolean;
+    config?: import('../types').NextcloudGradeSyncConfig;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/nextcloud/sync-config');
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async saveNextcloudGradeSyncConfig(config: Partial<import('../types').NextcloudGradeSyncConfig>): Promise<{
+    success: boolean;
+    message?: string;
+    config?: import('../types').NextcloudGradeSyncConfig;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/nextcloud/sync-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async browseNextcloudGradeFiles(params: {
+    url?: string;
+    username?: string;
+    appPassword?: string;
+    sourceFolder?: string;
+  }): Promise<{
+    success: boolean;
+    folderPath?: string;
+    files?: {
+      filename: string;
+      path: string;
+      fileSize: number;
+      fileSizeFormatted: string;
+      lastModified: string;
+      etag: string;
+      isDirectory: boolean;
+      isSpreadsheet: boolean;
+    }[];
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/nextcloud/browse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async pullNextcloudGradeWorkbooks(params: {
+    url?: string;
+    username?: string;
+    appPassword?: string;
+    sourceFolder?: string;
+    selectedFiles?: string[];
+  }): Promise<{
+    success: boolean;
+    filesPulled?: number;
+    recordsCount?: number;
+    message?: string;
+    files?: any[];
+    records?: any[];
+    referenceColumns?: string[];
+    summary?: any;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/nextcloud/pull', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async triggerNextcloudGradeSyncNow(): Promise<{
+    success: boolean;
+    filesPulled?: number;
+    recordsCount?: number;
+    message?: string;
+    files?: any[];
+    records?: any[];
+    referenceColumns?: string[];
+    summary?: any;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/grades/nextcloud/sync-now', {
+        method: 'POST',
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async downloadNextcloudFileBase64(params: {
+    url?: string;
+    username?: string;
+    appPassword?: string;
+    filePath?: string;
+    filename?: string;
+  }): Promise<{
+    success: boolean;
+    filename?: string;
+    fileSize?: number;
+    fileSizeFormatted?: string;
+    base64Data?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/nextcloud/download-file-base64', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
   static async cacheActiveWorkbook(payload: {
     base64Data: string;
     filename?: string;
@@ -1410,3 +1663,4 @@ export class ApiClient {
     }
   }
 }
+

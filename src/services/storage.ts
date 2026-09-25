@@ -498,6 +498,101 @@ export class StorageService {
     localStorage.setItem(STORAGE_KEYS.PRESETS, JSON.stringify(presets));
   }
 
+  static getMergedGradeRecords(): any[] {
+    const raw = localStorage.getItem('nes_merged_grade_records');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  }
+
+  static saveMergedGradeRecords(records: any[]): void {
+    try {
+      localStorage.setItem('nes_merged_grade_records', JSON.stringify(records));
+    } catch (e) {
+      console.warn('LocalStorage quota limit reached for merged records, saving top slice:', e);
+      try {
+        localStorage.setItem('nes_merged_grade_records', JSON.stringify(records.slice(0, 500)));
+      } catch {}
+    }
+  }
+
+  static getStudentHistories(): import('../types').StudentHistoryRecord[] {
+    const raw = localStorage.getItem('nes_student_histories');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  }
+
+  static saveStudentHistories(histories: import('../types').StudentHistoryRecord[]): void {
+    try {
+      localStorage.setItem('nes_student_histories', JSON.stringify(histories));
+    } catch (e) {
+      console.warn('LocalStorage quota limit reached for student histories:', e);
+    }
+  }
+
+  static addStudentHistory(history: import('../types').StudentHistoryRecord): import('../types').StudentHistoryRecord[] {
+    const current = this.getStudentHistories();
+    const updated = [history, ...current.filter(h => h.id !== history.id)];
+    this.saveStudentHistories(updated);
+    return updated;
+  }
+
+  static getNextcloudGradeSyncConfig(): import('../types').NextcloudGradeSyncConfig {
+    const raw = localStorage.getItem('nes_nextcloud_grade_sync_cfg');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        return {
+          url: parsed.url || 'https://cloud.jhcnexus.space',
+          username: parsed.username || 'truenas_admin',
+          appPassword: parsed.appPassword || 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT',
+          sourceFolder: parsed.sourceFolder || '/ExcelImports',
+          selectedFiles: Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : [],
+          autoSyncEnabled: !!parsed.autoSyncEnabled,
+          syncIntervalMinutes: Number(parsed.syncIntervalMinutes) || 15,
+          lastSyncTime: parsed.lastSyncTime || null,
+          nextScheduledSyncTime: parsed.nextScheduledSyncTime || null,
+          lastSyncStatus: parsed.lastSyncStatus || 'idle',
+          lastSyncMessage: parsed.lastSyncMessage || '',
+          lastSyncCount: Number(parsed.lastSyncCount) || 0,
+          history: Array.isArray(parsed.history) ? parsed.history : []
+        };
+      } catch {}
+    }
+    return {
+      url: 'https://cloud.jhcnexus.space',
+      username: 'truenas_admin',
+      appPassword: 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT',
+      sourceFolder: '/ExcelImports',
+      selectedFiles: [],
+      autoSyncEnabled: false,
+      syncIntervalMinutes: 15,
+      lastSyncTime: null,
+      nextScheduledSyncTime: null,
+      lastSyncStatus: 'idle',
+      lastSyncMessage: '',
+      lastSyncCount: 0,
+      history: []
+    };
+  }
+
+  static saveNextcloudGradeSyncConfig(cfg: import('../types').NextcloudGradeSyncConfig): void {
+    try {
+      localStorage.setItem('nes_nextcloud_grade_sync_cfg', JSON.stringify(cfg));
+    } catch (e) {
+      console.warn('LocalStorage error saving Nextcloud grade sync config:', e);
+    }
+  }
+
   static loadSampleData(): void {
     const sample = createComplexSampleWorkbook();
     const { analysis } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);

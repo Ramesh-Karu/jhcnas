@@ -15,7 +15,9 @@ import {
   Terminal, 
   Settings,
   Key,
-  X
+  X,
+  GraduationCap,
+  Sparkles
 } from 'lucide-react';
 import { NavigationTab, LiveSchedulerStatus } from '../types';
 
@@ -46,6 +48,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const navItems = [
     { id: 'dashboard' as NavigationTab, label: 'Dashboard', icon: LayoutDashboard },
+    { 
+      id: 'grade_merger' as NavigationTab, 
+      label: 'Multi-Grade Merger', 
+      icon: GraduationCap,
+      badge: 'CONSOLIDATOR',
+      badgeColor: 'bg-amber-500 text-slate-900 font-bold'
+    },
     { 
       id: 'worker' as NavigationTab, 
       label: 'Worker & Live Sync', 

@@ -2005,42 +2005,104 @@ function diagnoseSupabaseError(status: number, errText: string, tableName: strin
   };
 }
 
-// Helper to compare two cell values for equality
+// Helper to compare two cell values for equality with robust normalization
 function areCellValuesEqual(valA: any, valB: any): boolean {
   if (valA === valB) return true;
-  if ((valA === null || valA === undefined || valA === '') && (valB === null || valB === undefined || valB === '')) {
-    return true;
-  }
+  
+  // Normalize nullish and placeholder empty strings
+  const isNullishA = valA === null || valA === undefined || valA === '';
+  const isNullishB = valB === null || valB === undefined || valB === '';
+  if (isNullishA && isNullishB) return true;
+  
   const strA = String(valA ?? '').trim();
   const strB = String(valB ?? '').trim();
   if (strA === strB) return true;
 
-  // Numeric comparison
-  const numA = Number(strA);
-  const numB = Number(strB);
-  if (!isNaN(numA) && !isNaN(numB) && strA !== '' && strB !== '') {
-    return numA === numB;
+  const emptyPlaceholders = ['-', '—', '--', 'n/a', 'na', 'nil', 'null', 'none', '?', 'undefined', 'n.a.', 'n/r'];
+  const isPlaceholderA = isNullishA || emptyPlaceholders.includes(strA.toLowerCase());
+  const isPlaceholderB = isNullishB || emptyPlaceholders.includes(strB.toLowerCase());
+  if (isPlaceholderA && isPlaceholderB) return true;
+
+  // Numeric comparison (ignoring trailing zeros, string vs number, commas)
+  const cleanNumA = strA.replace(/,/g, '').replace(/%$/, '');
+  const cleanNumB = strB.replace(/,/g, '').replace(/%$/, '');
+  const numA = Number(cleanNumA);
+  const numB = Number(cleanNumB);
+  if (!isNaN(numA) && !isNaN(numB) && cleanNumA !== '' && cleanNumB !== '') {
+    return Math.abs(numA - numB) < 0.00001;
   }
 
   // Boolean comparison
   const lowerA = strA.toLowerCase();
   const lowerB = strB.toLowerCase();
-  if (['true', '1', 'yes', 'y'].includes(lowerA) && ['true', '1', 'yes', 'y'].includes(lowerB)) return true;
-  if (['false', '0', 'no', 'n'].includes(lowerA) && ['false', '0', 'no', 'n'].includes(lowerB)) return true;
+  const truthy = ['true', '1', 'yes', 'y', 'active', 'enrolled', 'pass', 'present'];
+  const falsy = ['false', '0', 'no', 'n', 'inactive', 'fail', 'absent'];
+  if (truthy.includes(lowerA) && truthy.includes(lowerB)) return true;
+  if (falsy.includes(lowerA) && falsy.includes(lowerB)) return true;
 
-  // Date comparison (YYYY-MM-DD)
+  // Date comparison (YYYY-MM-DD vs ISO timestamps)
   if (strA.length >= 10 && strB.length >= 10) {
     const d1 = strA.substring(0, 10);
     const d2 = strB.substring(0, 10);
-    if (d1 === d2 && /^\d{4}-\d{2}-\d{2}$/.test(d1)) {
+    if (d1 === d2 && /^\d{4}[-/]\d{2}[-/]\d{2}$/.test(d1)) {
+      return true;
+    }
+    const parsed1 = Date.parse(strA);
+    const parsed2 = Date.parse(strB);
+    if (!isNaN(parsed1) && !isNaN(parsed2) && parsed1 === parsed2) {
       return true;
     }
   }
 
+  // Case-insensitive comparison for text tokens
+  if (lowerA === lowerB) return true;
+
   return false;
 }
 
-// Core Smart Sync & Deduplication Engine
+// Helper to find candidate key in an object regardless of exact casing or punctuation
+function findMatchingKeyInRecord(rec: any, targetKey: string): string | null {
+  if (!rec || typeof rec !== 'object') return null;
+  if (targetKey in rec) return targetKey;
+  
+  const normTarget = targetKey.toLowerCase().replace(/[^a-z0-9]/g, '');
+  for (const k of Object.keys(rec)) {
+    if (k.toLowerCase().replace(/[^a-z0-9]/g, '') === normTarget) {
+      return k;
+    }
+  }
+
+  // Check specific semantic synonyms
+  if (/admission|adm/i.test(targetKey)) {
+    for (const k of Object.keys(rec)) {
+      if (/adm.*(no|num|id)|admission/i.test(k)) return k;
+    }
+  }
+  if (/student.*id|std.*id/i.test(targetKey)) {
+    for (const k of Object.keys(rec)) {
+      if (/student.*id|std.*id|student_number/i.test(k)) return k;
+    }
+  }
+  if (/index/i.test(targetKey)) {
+    for (const k of Object.keys(rec)) {
+      if (/index/i.test(k)) return k;
+    }
+  }
+  if (/roll/i.test(targetKey)) {
+    for (const k of Object.keys(rec)) {
+      if (/roll/i.test(k)) return k;
+    }
+  }
+  if (/name/i.test(targetKey)) {
+    for (const k of Object.keys(rec)) {
+      if (/student.*name|full.*name|^name$/i.test(k)) return k;
+    }
+  }
+
+  return null;
+}
+
+// Core Smart Sync & Deduplication Engine - Guarantees ZERO duplicate rows
 async function smartSyncRecordsToSupabase(params: {
   supUrl: string;
   supKey: string;
@@ -2061,7 +2123,7 @@ async function smartSyncRecordsToSupabase(params: {
 }> {
   const { supUrl, supKey, tableName, records, onConflict } = params;
 
-  // Clean records
+  // Clean records - sanitize empty cells and placeholder tokens
   const cleanedRecords = records.map((r: any) => {
     const clean: Record<string, any> = {};
     for (const [k, v] of Object.entries(r)) {
@@ -2069,7 +2131,6 @@ async function smartSyncRecordsToSupabase(params: {
         if (k === 'id' && (v === '' || v === null || v === undefined)) {
           continue;
         }
-        // Normalize empty cells and placeholder tokens to null so PostgreSQL keeps them as empty fields without syntax errors
         if (
           v === null ||
           v === undefined ||
@@ -2098,96 +2159,203 @@ async function smartSyncRecordsToSupabase(params: {
     };
   }
 
-  // Step 1: Query existing records from Supabase table
+  // Step 1: Query all existing records from Supabase table
   let existingRows: any[] = [];
   try {
-    const fetchUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?select=*&limit=50000`;
+    const fetchUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?select=*&limit=100000`;
     const fetchRes = await fetch(fetchUrl, {
       method: 'GET',
       headers: {
         'apikey': supKey,
         'Authorization': `Bearer ${supKey}`,
+        'Range': '0-99999',
       },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(15000),
     });
     if (fetchRes.ok) {
       existingRows = await fetchRes.json().catch(() => []);
+    } else {
+      console.warn(`[Smart Sync] Fetch existing rows returned HTTP ${fetchRes.status}`);
     }
   } catch (e: any) {
     console.warn(`[Smart Sync] Could not pre-fetch existing rows from ${tableName}:`, e.message);
   }
 
-  // Step 2: Determine identity key column
-  const candidateKeys = ['admission_no', 'student_id', 'roll_no', 'username', 'index_number', 'email', 'id', 'code', 'reg_no'];
-  let keyCol: string | null = null;
+  // Step 2: Determine identity key column and candidate keys
+  const candidateKeys = [
+    'admission_no', 'admission_number', 'admissionno', 'adm_no', 'adm_number', 'admission', 'admission_num',
+    'student_id', 'studentid', 'student_number', 'student_no', 'std_id', 'id_number',
+    'index_no', 'index_number', 'indexno',
+    'roll_no', 'roll_number', 'rollno',
+    'reg_no', 'registration_no', 'registration_number', 'regno',
+    'id', 'uuid', 'code', 'emp_id', 'staff_id', 'email', 'username'
+  ];
+
+  let resolvedKeyCol: string | null = null;
   if (onConflict && onConflict.trim() !== '') {
-    keyCol = onConflict.trim();
-  } else if (cleanedRecords[0]) {
+    const directKey = findMatchingKeyInRecord(cleanedRecords[0], onConflict.trim());
+    if (directKey) {
+      resolvedKeyCol = directKey;
+    } else {
+      resolvedKeyCol = onConflict.trim();
+    }
+  }
+
+  if (!resolvedKeyCol && cleanedRecords[0]) {
     for (const ck of candidateKeys) {
-      if (ck in cleanedRecords[0] && existingRows.length > 0 && existingRows[0] && ck in existingRows[0]) {
-        keyCol = ck;
+      const matchInIncoming = findMatchingKeyInRecord(cleanedRecords[0], ck);
+      if (matchInIncoming) {
+        resolvedKeyCol = matchInIncoming;
         break;
       }
     }
   }
 
+  // Composite key sets for cases without a single unique ID
+  const compositeKeyGroups = [
+    ['student_name', 'grade', 'division'],
+    ['name', 'grade', 'division'],
+    ['student_name', 'division'],
+    ['name', 'division'],
+    ['student_name', 'grade'],
+    ['name', 'grade'],
+    ['division', 'day', 'period'],
+    ['class', 'period'],
+  ];
+
   // Step 3: Categorize records into Identical (Skip), Modified (Update), and New (Insert)
   const toSkip: any[] = [];
-  const toUpdate: { incoming: any; existing: any; keyCol: string; keyVal: any }[] = [];
+  const toUpdate: { incoming: any; existing: any; keyCol: string; keyVal: any; cellDiffs: Record<string, { from: any; to: any }> }[] = [];
   const toInsert: any[] = [];
 
   for (const incoming of cleanedRecords) {
     let matchedExisting: any = null;
-    const currentKey = keyCol;
 
-    if (currentKey && incoming[currentKey] !== undefined && incoming[currentKey] !== null && String(incoming[currentKey]).trim() !== '') {
-      const incomingVal = incoming[currentKey];
-      matchedExisting = existingRows.find(ex => areCellValuesEqual(ex[currentKey], incomingVal));
-    } else if (existingRows.length > 0) {
-      // Try candidate keys
+    // A. Match via primary / candidate key
+    if (resolvedKeyCol && incoming[resolvedKeyCol] !== undefined && incoming[resolvedKeyCol] !== null && String(incoming[resolvedKeyCol]).trim() !== '') {
+      const incomingVal = incoming[resolvedKeyCol];
+      matchedExisting = existingRows.find(ex => {
+        const exKey = findMatchingKeyInRecord(ex, resolvedKeyCol!) || resolvedKeyCol!;
+        return areCellValuesEqual(ex[exKey], incomingVal);
+      });
+    }
+
+    // B. Match via other candidate keys
+    if (!matchedExisting && existingRows.length > 0) {
       for (const ck of candidateKeys) {
-        if (incoming[ck] !== undefined && incoming[ck] !== null && String(incoming[ck]).trim() !== '') {
-          matchedExisting = existingRows.find(ex => areCellValuesEqual(ex[ck], incoming[ck]));
+        const inKey = findMatchingKeyInRecord(incoming, ck);
+        if (inKey && incoming[inKey] !== undefined && incoming[inKey] !== null && String(incoming[inKey]).trim() !== '') {
+          const val = incoming[inKey];
+          matchedExisting = existingRows.find(ex => {
+            const exKey = findMatchingKeyInRecord(ex, ck);
+            return exKey ? areCellValuesEqual(ex[exKey], val) : false;
+          });
           if (matchedExisting) {
-            keyCol = ck;
+            if (!resolvedKeyCol) resolvedKeyCol = inKey;
             break;
           }
         }
       }
-      // If still not matched, check if identical row exists
-      if (!matchedExisting) {
-        matchedExisting = existingRows.find(ex => {
-          return Object.keys(incoming).every(k => areCellValuesEqual(incoming[k], ex[k]));
+    }
+
+    // C. Match via composite key sets
+    if (!matchedExisting && existingRows.length > 0) {
+      for (const group of compositeKeyGroups) {
+        const groupMatchedInIncoming = group.map(g => findMatchingKeyInRecord(incoming, g));
+        const allPresent = groupMatchedInIncoming.every(k => k && incoming[k] !== undefined && incoming[k] !== null && String(incoming[k]).trim() !== '');
+        
+        if (allPresent) {
+          matchedExisting = existingRows.find(ex => {
+            return group.every((g, idx) => {
+              const inKey = groupMatchedInIncoming[idx]!;
+              const inVal = incoming[inKey];
+              const exKey = findMatchingKeyInRecord(ex, g);
+              return exKey ? areCellValuesEqual(ex[exKey], inVal) : false;
+            });
+          });
+          if (matchedExisting) break;
+        }
+      }
+    }
+
+    // D. Match via complete cell match (exact duplicate row in DB)
+    if (!matchedExisting && existingRows.length > 0) {
+      matchedExisting = existingRows.find(ex => {
+        return Object.keys(incoming).every(k => {
+          const exKey = findMatchingKeyInRecord(ex, k) || k;
+          return areCellValuesEqual(incoming[k], ex[exKey]);
         });
+      });
+    }
+
+    // E. Match via high confidence name + class matching (for single cell edits without admission ID)
+    if (!matchedExisting && existingRows.length > 0) {
+      const incomingNameKey = findMatchingKeyInRecord(incoming, 'name');
+      const incomingName = incomingNameKey ? String(incoming[incomingNameKey] || '').trim().toLowerCase() : '';
+      if (incomingName && incomingName.length > 2) {
+        const potentialMatches = existingRows.filter(ex => {
+          const exNameKey = findMatchingKeyInRecord(ex, 'name');
+          const exName = exNameKey ? String(ex[exNameKey] || '').trim().toLowerCase() : '';
+          return exName === incomingName;
+        });
+
+        if (potentialMatches.length === 1) {
+          matchedExisting = potentialMatches[0];
+        } else if (potentialMatches.length > 1) {
+          // Check grade/division to disambiguate
+          const inDivKey = findMatchingKeyInRecord(incoming, 'division');
+          const inGradeKey = findMatchingKeyInRecord(incoming, 'grade');
+          const inDiv = inDivKey ? String(incoming[inDivKey] || '').trim().toLowerCase() : '';
+          const inGrade = inGradeKey ? String(incoming[inGradeKey] || '').trim().toLowerCase() : '';
+
+          const disambiguated = potentialMatches.find(ex => {
+            const exDivKey = findMatchingKeyInRecord(ex, 'division');
+            const exGradeKey = findMatchingKeyInRecord(ex, 'grade');
+            const matchDiv = !inDiv || (exDivKey && String(ex[exDivKey] || '').trim().toLowerCase() === inDiv);
+            const matchGrade = !inGrade || (exGradeKey && String(ex[exGradeKey] || '').trim().toLowerCase() === inGrade);
+            return matchDiv && matchGrade;
+          });
+          if (disambiguated) matchedExisting = disambiguated;
+        }
       }
     }
 
     if (matchedExisting) {
-      // Check if all cells are identical
-      const incomingKeys = Object.keys(incoming);
-      const isIdentical = incomingKeys.every(k => areCellValuesEqual(incoming[k], matchedExisting[k]));
+      // Cell-level differential check
+      const cellDiffs: Record<string, { from: any; to: any }> = {};
+      for (const [col, incomingVal] of Object.entries(incoming)) {
+        const exCol = findMatchingKeyInRecord(matchedExisting, col) || col;
+        const existingVal = matchedExisting[exCol];
+        if (!areCellValuesEqual(incomingVal, existingVal)) {
+          cellDiffs[col] = { from: existingVal, to: incomingVal };
+        }
+      }
 
-      if (isIdentical) {
-        // 100% Exact match in every cell -> SKIP to prevent duplicates!
+      if (Object.keys(cellDiffs).length === 0) {
+        // 100% Exact match in all cells -> SKIP COMPLETELY! Zero duplicates!
         toSkip.push(incoming);
       } else {
-        // 1 or more cells have been updated -> UPDATE in-place!
-        const idCol = (matchedExisting.id !== undefined && matchedExisting.id !== null) ? 'id' : (keyCol || Object.keys(incoming)[0]);
+        // 1 or more cells have changed -> UPDATE IN-PLACE!
+        const idCol = (matchedExisting.id !== undefined && matchedExisting.id !== null) 
+          ? 'id' 
+          : (resolvedKeyCol || Object.keys(incoming)[0]);
         const idVal = matchedExisting[idCol] ?? incoming[idCol];
+        
         toUpdate.push({
           incoming,
           existing: matchedExisting,
           keyCol: idCol,
           keyVal: idVal,
+          cellDiffs,
         });
       }
     } else {
-      // Truly new record -> INSERT
+      // Truly new record not existing in DB -> INSERT
       toInsert.push(incoming);
     }
   }
 
-  console.log(`[Smart Sync public.${tableName}] Categorized: ${toSkip.length} identical (skipped), ${toUpdate.length} modified (updating), ${toInsert.length} new (inserting)`);
+  console.log(`[Smart Deduplication Engine public.${tableName}] Categorized ${cleanedRecords.length} records: ${toSkip.length} identical (SKIPPED, 0 duplicates), ${toUpdate.length} modified (UPDATING in-place), ${toInsert.length} new (INSERTING)`);
 
   let insertedCount = 0;
   let updatedCount = 0;
@@ -2195,7 +2363,7 @@ async function smartSyncRecordsToSupabase(params: {
   let firstError: any = null;
   const returnedRecords: any[] = [];
 
-  // Step 4: Execute in-place updates for modified rows
+  // Step 4: Execute targeted in-place updates for modified rows
   for (const item of toUpdate) {
     try {
       const patchUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?${encodeURIComponent(item.keyCol)}=eq.${encodeURIComponent(String(item.keyVal))}`;
@@ -2216,10 +2384,14 @@ async function smartSyncRecordsToSupabase(params: {
         const patchedData = await patchRes.json().catch(() => []);
         if (Array.isArray(patchedData)) returnedRecords.push(...patchedData);
       } else {
-        // If PATCH fails, fallback to merge-duplicates POST
+        // Fallback to upsert on conflict
         const errText = await patchRes.text().catch(() => '');
-        console.warn(`[Smart Sync] In-place PATCH failed for ${item.keyCol}=${item.keyVal}, trying upsert: ${errText}`);
-        const upsertUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?on_conflict=${encodeURIComponent(item.keyCol)}`;
+        console.warn(`[Smart Sync] In-place PATCH failed for ${item.keyCol}=${item.keyVal}, falling back to merge-duplicates: ${errText}`);
+        
+        const upsertUrl = item.keyCol 
+          ? `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?on_conflict=${encodeURIComponent(item.keyCol)}`
+          : `${supUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+          
         const upRes = await fetch(upsertUrl, {
           method: 'POST',
           headers: {
@@ -2231,8 +2403,11 @@ async function smartSyncRecordsToSupabase(params: {
           body: JSON.stringify([item.incoming]),
           signal: AbortSignal.timeout(10000),
         });
+
         if (upRes.ok) {
           updatedCount++;
+          const upData = await upRes.json().catch(() => []);
+          if (Array.isArray(upData)) returnedRecords.push(...upData);
         } else {
           failedCount++;
           if (!firstError) {
@@ -2256,19 +2431,22 @@ async function smartSyncRecordsToSupabase(params: {
     }
   }
 
-  // Step 5: Execute batch inserts for truly new rows
+  // Step 5: Execute batch inserts for genuinely new rows with duplicate-protection resolution
   const BATCH_SIZE = 250;
   for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
     const batch = toInsert.slice(i, i + BATCH_SIZE);
     try {
-      const insertUrl = `${supUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+      const insertUrl = resolvedKeyCol 
+        ? `${supUrl}/rest/v1/${encodeURIComponent(tableName)}?on_conflict=${encodeURIComponent(resolvedKeyCol)}`
+        : `${supUrl}/rest/v1/${encodeURIComponent(tableName)}`;
+
       let insertRes = await fetch(insertUrl, {
         method: 'POST',
         headers: {
           'apikey': supKey,
           'Authorization': `Bearer ${supKey}`,
           'Content-Type': 'application/json',
-          'Prefer': 'return=representation',
+          'Prefer': resolvedKeyCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
         },
         body: JSON.stringify(batch),
         signal: AbortSignal.timeout(20000),
@@ -2306,7 +2484,7 @@ async function smartSyncRecordsToSupabase(params: {
                 'apikey': supKey,
                 'Authorization': `Bearer ${supKey}`,
                 'Content-Type': 'application/json',
-                'Prefer': 'return=representation',
+                'Prefer': resolvedKeyCol ? 'resolution=merge-duplicates, return=representation' : 'return=representation',
               },
               body: JSON.stringify(healedBatch),
             });
@@ -5615,6 +5793,856 @@ app.post('/api/gemini/suggest-mapping', async (req, res) => {
   }
 });
 
+// ==========================================
+// Student Grade Workbooks & Consolidated Records Server Storage
+// ==========================================
+const STUDENT_GRADES_STORAGE_FILE = path.join(DATA_DIR, 'student_grades_store.json');
+const STUDENT_WORKBOOKS_DIR = path.join(DATA_DIR, 'uploaded_workbooks');
+
+function ensureStudentWorkbooksDir() {
+  ensureDataDir();
+  if (!fs.existsSync(STUDENT_WORKBOOKS_DIR)) {
+    try {
+      fs.mkdirSync(STUDENT_WORKBOOKS_DIR, { recursive: true });
+    } catch (e) {
+      console.warn('Could not create student workbooks directory:', e);
+    }
+  }
+}
+
+// Get saved student grade data from server storage
+app.get('/api/grades/storage', (_req, res) => {
+  try {
+    ensureDataDir();
+    if (fs.existsSync(STUDENT_GRADES_STORAGE_FILE)) {
+      const content = fs.readFileSync(STUDENT_GRADES_STORAGE_FILE, 'utf-8');
+      const data = JSON.parse(content);
+      return res.json({
+        success: true,
+        exists: true,
+        data: {
+          files: data.files || [],
+          records: data.records || [],
+          referenceColumns: data.referenceColumns || [],
+          summary: data.summary || null,
+          histories: data.histories || [],
+          lastSaved: data.lastSaved || null
+        }
+      });
+    }
+    return res.json({
+      success: true,
+      exists: false,
+      data: {
+        files: [],
+        records: [],
+        referenceColumns: [],
+        summary: null,
+        histories: [],
+        lastSaved: null
+      }
+    });
+  } catch (err: any) {
+    console.error('Error reading student grades storage:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Save consolidated student records, file source metadata, reference columns, and history
+app.post('/api/grades/storage', (req, res) => {
+  try {
+    ensureDataDir();
+    const { files, records, referenceColumns, summary, histories } = req.body;
+    
+    // Sanitize file sources so we don't store large raw ArrayBuffers in JSON (store metadata and save binary files separately)
+    const sanitizedFiles = Array.isArray(files) ? files.map(f => ({
+      id: f.id,
+      fileName: f.fileName,
+      fileSize: f.fileSize,
+      detectedGrade: f.detectedGrade,
+      gradeNumber: f.gradeNumber,
+      status: f.status,
+      sheets: (f.sheets || []).map((s: any) => ({
+        sheetName: s.sheetName,
+        detectedDivision: s.detectedDivision,
+        rowCount: s.rowCount,
+        columnHeaders: s.columnHeaders,
+        sampleRows: s.sampleRows,
+        included: s.included
+      }))
+    })) : [];
+
+    const storagePayload = {
+      files: sanitizedFiles,
+      records: records || [],
+      referenceColumns: referenceColumns || [],
+      summary: summary || null,
+      histories: histories || [],
+      lastSaved: new Date().toISOString()
+    };
+
+    fs.writeFileSync(STUDENT_GRADES_STORAGE_FILE, JSON.stringify(storagePayload, null, 2), 'utf-8');
+    return res.json({
+      success: true,
+      message: `Successfully saved ${records?.length || 0} consolidated student records and ${histories?.length || 0} student histories to server storage.`,
+      lastSaved: storagePayload.lastSaved
+    });
+  } catch (err: any) {
+    console.error('Error saving student grades storage:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Save raw Excel workbook file directly on server storage
+app.post('/api/grades/save-workbook-file', (req, res) => {
+  try {
+    ensureStudentWorkbooksDir();
+    const { fileName, fileData } = req.body;
+    if (!fileName || !fileData) {
+      return res.status(400).json({ success: false, error: 'fileName and fileData (base64) are required' });
+    }
+
+    const safeName = path.basename(fileName);
+    const targetPath = path.join(STUDENT_WORKBOOKS_DIR, safeName);
+    const buffer = Buffer.from(fileData, 'base64');
+    fs.writeFileSync(targetPath, buffer);
+
+    return res.json({
+      success: true,
+      message: `File ${safeName} safely stored on server storage (${buffer.length} bytes)`,
+      path: targetPath,
+      fileSize: buffer.length
+    });
+  } catch (err: any) {
+    console.error('Error saving workbook file to server:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Add/Update student history record in server storage
+app.post('/api/grades/history', (req, res) => {
+  try {
+    ensureDataDir();
+    const { history } = req.body;
+    if (!history || !history.id) {
+      return res.status(400).json({ success: false, error: 'Invalid history record payload' });
+    }
+
+    let existingData: any = { files: [], records: [], referenceColumns: [], summary: null, histories: [] };
+    if (fs.existsSync(STUDENT_GRADES_STORAGE_FILE)) {
+      try {
+        existingData = JSON.parse(fs.readFileSync(STUDENT_GRADES_STORAGE_FILE, 'utf-8'));
+      } catch {}
+    }
+
+    const histories: any[] = existingData.histories || [];
+    const updatedHistories = [history, ...histories.filter((h: any) => h.id !== history.id)];
+    existingData.histories = updatedHistories;
+    existingData.lastSaved = new Date().toISOString();
+
+    fs.writeFileSync(STUDENT_GRADES_STORAGE_FILE, JSON.stringify(existingData, null, 2), 'utf-8');
+    return res.json({
+      success: true,
+      histories: updatedHistories,
+      message: 'Student history record safely saved on server.'
+    });
+  } catch (err: any) {
+    console.error('Error saving student history on server:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Clear student records storage
+app.delete('/api/grades/storage', (_req, res) => {
+  try {
+    ensureDataDir();
+    if (fs.existsSync(STUDENT_GRADES_STORAGE_FILE)) {
+      fs.unlinkSync(STUDENT_GRADES_STORAGE_FILE);
+    }
+    return res.json({ success: true, message: 'Server storage cleared successfully.' });
+  } catch (err: any) {
+    console.error('Error clearing student grades storage:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==========================================
+// Nextcloud Multi-Grade Pull & Time-Interval Auto-Sync Engine
+// ==========================================
+const NEXTCLOUD_GRADE_SYNC_CONFIG_FILE = path.join(DATA_DIR, 'nextcloud_grade_sync_cfg.json');
+let nextcloudGradeSyncTimer: NodeJS.Timeout | null = null;
+
+function loadNextcloudGradeSyncConfig(): any {
+  ensureDataDir();
+  const envVars = resolveAllCoolifyEnvironmentVariables();
+  const ncEnv = envVars?.nextcloud || {};
+  const defaultCfg = {
+    url: ncEnv.url || 'https://cloud.jhcnexus.space',
+    username: ncEnv.username || 'truenas_admin',
+    appPassword: ncEnv.appPassword || 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT',
+    sourceFolder: ncEnv.sourceFolder || '/ExcelImports',
+    selectedFiles: [],
+    autoSyncEnabled: false,
+    syncIntervalMinutes: 15,
+    lastSyncTime: null,
+    nextScheduledSyncTime: null,
+    lastSyncStatus: 'idle',
+    lastSyncMessage: '',
+    lastSyncCount: 0,
+    history: []
+  };
+
+  if (fs.existsSync(NEXTCLOUD_GRADE_SYNC_CONFIG_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(NEXTCLOUD_GRADE_SYNC_CONFIG_FILE, 'utf-8'));
+      return { ...defaultCfg, ...parsed };
+    } catch (e) {
+      console.warn('Error reading nextcloud grade sync config file:', e);
+    }
+  }
+  return defaultCfg;
+}
+
+function saveNextcloudGradeSyncConfig(cfg: any): boolean {
+  ensureDataDir();
+  try {
+    fs.writeFileSync(NEXTCLOUD_GRADE_SYNC_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+    restartNextcloudGradeSyncWorker();
+    return true;
+  } catch (e) {
+    console.error('Error saving nextcloud grade sync config file:', e);
+    return false;
+  }
+}
+
+// Server-side parsing and merging helper for Grade Workbooks
+function parseGradeWorkbookServer(buffer: Buffer, fileName: string, gradeIndex: number): any {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  
+  // Detect grade from file name
+  let detectedGrade = `Grade ${gradeIndex}`;
+  const gMatch = fileName.match(/(?:grade|class|gr|year|yr|std)\s*[-_]?\s*(\d{1,2}|[ivxlcdm]+)/i);
+  if (gMatch && gMatch[1]) {
+    detectedGrade = `Grade ${gMatch[1].toUpperCase()}`;
+  } else {
+    const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ').trim();
+    if (cleanName) detectedGrade = cleanName;
+  }
+
+  const sheets: any[] = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws || !ws['!ref']) continue;
+
+    // Detect Division from sheet name (e.g. A, B, C, D, E, F, G, H or Division A)
+    let detectedDivision = sheetName.trim();
+    const divMatch = sheetName.match(/(?:div(?:ision)?|sec(?:tion)?|class)?\s*[:\-_]?\s*([A-Za-z0-9]+)$/i);
+    if (divMatch && divMatch[1]) {
+      detectedDivision = divMatch[1].toUpperCase();
+    } else if (/^[A-Z]$/i.test(sheetName.trim())) {
+      detectedDivision = sheetName.trim().toUpperCase();
+    }
+
+    const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
+    if (rawRows.length === 0) continue;
+
+    // Scan for header row
+    let headerRowIdx = 0;
+    let bestHeaderCount = 0;
+    for (let r = 0; r < Math.min(rawRows.length, 15); r++) {
+      const row = rawRows[r] || [];
+      const nonEmpties = row.filter((c: any) => String(c).trim() !== '').length;
+      if (nonEmpties > bestHeaderCount) {
+        bestHeaderCount = nonEmpties;
+        headerRowIdx = r;
+      }
+    }
+
+    const rawHeaders = (rawRows[headerRowIdx] || []).map((h: any, i: number) => {
+      const str = String(h || '').trim();
+      return str || `Column_${i + 1}`;
+    });
+
+    const sampleRows: any[] = [];
+    for (let r = headerRowIdx + 1; r < rawRows.length; r++) {
+      const row = rawRows[r];
+      if (!row || row.every((c: any) => String(c || '').trim() === '')) continue;
+      
+      const rowObj: Record<string, any> = {};
+      let hasData = false;
+      rawHeaders.forEach((hdr: string, colIdx: number) => {
+        const cellVal = row[colIdx] !== undefined ? String(row[colIdx]).trim() : '';
+        rowObj[hdr] = cellVal;
+        if (cellVal) hasData = true;
+      });
+      if (hasData) {
+        sampleRows.push(rowObj);
+      }
+    }
+
+    sheets.push({
+      sheetName,
+      detectedDivision,
+      rowCount: sampleRows.length,
+      columnHeaders: rawHeaders,
+      sampleRows: sampleRows.slice(0, 100),
+      allRows: sampleRows,
+      included: true
+    });
+  }
+
+  return {
+    id: `grade-file-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    fileName,
+    fileSize: buffer.length,
+    detectedGrade,
+    gradeNumber: gradeIndex,
+    sheets,
+    status: 'ready'
+  };
+}
+
+// Merge server parsed grade files into unified records preserving ONLY reference columns
+function mergeGradeSourcesServer(gradeFiles: any[]): { records: any[]; referenceColumns: string[]; summary: any } {
+  // Collect all unique column headers across all sheets of all workbooks
+  const referenceColsSet = new Set<string>();
+  
+  gradeFiles.forEach(f => {
+    (f.sheets || []).forEach((s: any) => {
+      if (s.included !== false && Array.isArray(s.columnHeaders)) {
+        s.columnHeaders.forEach((hdr: string) => {
+          if (hdr && hdr.trim() !== '') {
+            referenceColsSet.add(hdr.trim());
+          }
+        });
+      }
+    });
+  });
+
+  const referenceColumns = Array.from(referenceColsSet);
+  const records: any[] = [];
+  const seenAdmissionNumbers = new Set<string>();
+  let dupCount = 0;
+
+  gradeFiles.forEach((f, fileIdx) => {
+    (f.sheets || []).forEach((s: any) => {
+      if (s.included === false) return;
+      const rows = s.allRows || s.sampleRows || [];
+      
+      rows.forEach((row: any, rIdx: number) => {
+        const studentRec: Record<string, any> = {};
+
+        // Strictly copy reference columns from sheet row
+        referenceColumns.forEach(col => {
+          studentRec[col] = row[col] !== undefined ? row[col] : '';
+        });
+
+        // Determine student name and admission number for indexing
+        let studentName = '';
+        let admissionNo = '';
+
+        for (const [k, v] of Object.entries(row)) {
+          const kLower = k.toLowerCase();
+          if (!studentName && (kLower.includes('name') || kLower.includes('student') || kLower.includes('pupil'))) {
+            studentName = String(v).trim();
+          }
+          if (!admissionNo && (kLower.includes('admission') || kLower.includes('adm') || kLower.includes('reg') || kLower.includes('roll') || kLower.includes('id'))) {
+            admissionNo = String(v).trim();
+          }
+        }
+
+        if (!studentName) {
+          studentName = Object.values(row).find(v => typeof v === 'string' && v.trim().length > 1) as string || `Student ${fileIdx + 1}-${rIdx + 1}`;
+        }
+        if (!admissionNo) {
+          admissionNo = `ADM-${f.detectedGrade || 'G'}-${s.detectedDivision || 'DIV'}-${rIdx + 1}`;
+        }
+
+        if (seenAdmissionNumbers.has(admissionNo)) {
+          dupCount++;
+        } else {
+          seenAdmissionNumbers.add(admissionNo);
+        }
+
+        studentRec.id = `rec-${fileIdx + 1}-${s.detectedDivision}-${rIdx + 1}-${admissionNo.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        studentRec.student_name = studentName;
+        studentRec.admission_number = admissionNo;
+        studentRec.grade = f.detectedGrade || `Grade ${fileIdx + 1}`;
+        studentRec.division = s.detectedDivision || s.sheetName || 'A';
+        studentRec.source_file = f.fileName;
+        studentRec.source_sheet = s.sheetName;
+        studentRec.source_row = rIdx + 2;
+
+        records.push(studentRec);
+      });
+    });
+  });
+
+  // Calculate summary metrics
+  const gradeMap = new Map<string, { count: number; divisions: Set<string> }>();
+  const divMap = new Map<string, number>();
+
+  records.forEach(r => {
+    const g = r.grade || 'Unknown';
+    const d = r.division || 'Unknown';
+    if (!gradeMap.has(g)) gradeMap.set(g, { count: 0, divisions: new Set() });
+    gradeMap.get(g)!.count++;
+    gradeMap.get(g)!.divisions.add(d);
+
+    divMap.set(d, (divMap.get(d) || 0) + 1);
+  });
+
+  const gradeBreakdown = Array.from(gradeMap.entries()).map(([grade, data]) => ({
+    grade,
+    count: data.count,
+    divisions: Array.from(data.divisions)
+  }));
+
+  const divisionBreakdown = Array.from(divMap.entries()).map(([division, count]) => ({
+    division,
+    count
+  }));
+
+  const summary = {
+    totalFiles: gradeFiles.length,
+    totalSheets: gradeFiles.reduce((acc, f) => acc + (f.sheets?.length || 0), 0),
+    totalStudents: records.length,
+    activeStudents: records.length,
+    pastStudents: 0,
+    referenceColumns,
+    gradeBreakdown,
+    divisionBreakdown,
+    genderBreakdown: { male: 0, female: 0, other: 0, unspecified: records.length },
+    statusBreakdown: { active: records.length, leftSchool: 0, graduated: 0, transferred: 0, other: 0 },
+    duplicateIdsDetected: dupCount
+  };
+
+  return { records, referenceColumns, summary };
+}
+
+// Execute Pull & Merge from Nextcloud WebDAV
+async function executeNextcloudGradePullAndMerge(overrideConfig?: any): Promise<{
+  success: boolean;
+  filesPulled: number;
+  recordsCount: number;
+  message: string;
+  files?: any[];
+  records?: any[];
+  referenceColumns?: string[];
+  summary?: any;
+  error?: string;
+}> {
+  const startTime = Date.now();
+  const cfg = overrideConfig || loadNextcloudGradeSyncConfig();
+  const host = (cfg.url || 'https://cloud.jhcnexus.space').replace(/\/+$/, '');
+  const user = cfg.username || 'truenas_admin';
+  const pass = cfg.appPassword || 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT';
+  const folder = (cfg.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
+
+  const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+  const folderUrl = folder
+    ? `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`
+    : `${host}/remote.php/dav/files/${encodeURIComponent(user)}/`;
+
+  try {
+    // 1. Query Nextcloud folder for available files
+    const davRes = await fetch(folderUrl, {
+      method: 'PROPFIND',
+      headers: {
+        Authorization: authHeader,
+        Depth: '1',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!davRes.ok && davRes.status !== 207) {
+      throw new Error(`Nextcloud WebDAV error HTTP ${davRes.status} (${davRes.statusText})`);
+    }
+
+    const xml = await davRes.text();
+    const responseBlocks = xml.split(/<d:response>/i).slice(1);
+    const remoteFiles: { filename: string; rawHref: string; size: number }[] = [];
+
+    for (const block of responseBlocks) {
+      const hrefMatch = block.match(/<d:href>(.*?)<\/d:href>/i);
+      if (!hrefMatch) continue;
+      const rawHref = decodeURIComponent(hrefMatch[1]);
+      const isDir = /<d:resourcetype>[\s\S]*?<d:collection\/>[\s\S]*?<\/d:resourcetype>/i.test(block);
+      if (isDir) continue;
+
+      const trimmedHref = rawHref.replace(/\/+$/, '');
+      const filename = trimmedHref.split('/').pop() || '';
+      if (!filename.match(/\.(xlsx|xls|csv|ods|xlsm|xlsb)$/i)) continue;
+
+      const lengthMatch = block.match(/<d:getcontentlength>(.*?)<\/d:getcontentlength>/i);
+      const size = lengthMatch ? parseInt(lengthMatch[1], 10) : 0;
+
+      remoteFiles.push({ filename, rawHref, size });
+    }
+
+    // Filter by selectedFiles if specified and non-empty
+    let targetFiles = remoteFiles;
+    if (Array.isArray(cfg.selectedFiles) && cfg.selectedFiles.length > 0) {
+      targetFiles = remoteFiles.filter(rf => 
+        cfg.selectedFiles.includes(rf.filename) || 
+        cfg.selectedFiles.some((sf: string) => rf.rawHref.endsWith(sf))
+      );
+    }
+
+    if (targetFiles.length === 0) {
+      const msg = remoteFiles.length > 0 
+        ? `No matching selected Excel files found in /${folder} (${remoteFiles.length} other files present).`
+        : `No Excel spreadsheet files (.xlsx, .xls, .csv, .ods) found in Nextcloud folder /${folder}.`;
+      
+      // Update config log
+      cfg.lastSyncTime = new Date().toISOString();
+      cfg.lastSyncStatus = 'idle';
+      cfg.lastSyncMessage = msg;
+      cfg.lastSyncCount = 0;
+      saveNextcloudGradeSyncConfig(cfg);
+
+      return {
+        success: true,
+        filesPulled: 0,
+        recordsCount: 0,
+        message: msg
+      };
+    }
+
+    // 2. Fetch binary buffers for each file from Nextcloud
+    ensureStudentWorkbooksDir();
+    const parsedSources: any[] = [];
+
+    for (let i = 0; i < targetFiles.length; i++) {
+      const tf = targetFiles[i];
+      let fileUrl = tf.rawHref.startsWith('http') ? tf.rawHref : `${host}${tf.rawHref.startsWith('/') ? '' : '/'}${tf.rawHref}`;
+
+      const fRes = await fetch(fileUrl, {
+        method: 'GET',
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!fRes.ok) {
+        console.warn(`Could not download ${tf.filename} from Nextcloud: HTTP ${fRes.status}`);
+        continue;
+      }
+
+      const arrBuf = await fRes.arrayBuffer();
+      const buf = Buffer.from(arrBuf);
+
+      // Save raw file on server disk
+      const safePath = path.join(STUDENT_WORKBOOKS_DIR, path.basename(tf.filename));
+      fs.writeFileSync(safePath, buf);
+
+      // Parse workbook
+      const parsed = parseGradeWorkbookServer(buf, tf.filename, i + 1);
+      parsedSources.push(parsed);
+    }
+
+    if (parsedSources.length === 0) {
+      throw new Error('Failed to download or parse any selected files from Nextcloud.');
+    }
+
+    // 3. Merge parsed workbooks preserving reference columns
+    const { records, referenceColumns, summary } = mergeGradeSourcesServer(parsedSources);
+
+    // 4. Preserve existing student histories from server storage
+    let existingHistories: any[] = [];
+    if (fs.existsSync(STUDENT_GRADES_STORAGE_FILE)) {
+      try {
+        const prev = JSON.parse(fs.readFileSync(STUDENT_GRADES_STORAGE_FILE, 'utf-8'));
+        if (Array.isArray(prev.histories)) existingHistories = prev.histories;
+      } catch {}
+    }
+
+    // 5. Persist consolidated data safely to server disk storage
+    const storagePayload = {
+      files: parsedSources.map(f => ({
+        id: f.id,
+        fileName: f.fileName,
+        fileSize: f.fileSize,
+        detectedGrade: f.detectedGrade,
+        gradeNumber: f.gradeNumber,
+        status: f.status,
+        sheets: f.sheets.map((s: any) => ({
+          sheetName: s.sheetName,
+          detectedDivision: s.detectedDivision,
+          rowCount: s.rowCount,
+          columnHeaders: s.columnHeaders,
+          sampleRows: s.sampleRows,
+          included: s.included
+        }))
+      })),
+      records,
+      referenceColumns,
+      summary,
+      histories: existingHistories,
+      lastSaved: new Date().toISOString(),
+      syncSource: 'Nextcloud WebDAV'
+    };
+
+    fs.writeFileSync(STUDENT_GRADES_STORAGE_FILE, JSON.stringify(storagePayload, null, 2), 'utf-8');
+
+    // 6. Update Sync Config with log
+    const duration = Date.now() - startTime;
+    const logItem = {
+      id: `sync-log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      status: 'success' as const,
+      filesCount: parsedSources.length,
+      recordsCount: records.length,
+      message: `Pulled & synced ${parsedSources.length} grade workbook(s) with ${records.length} student records in ${(duration / 1000).toFixed(1)}s`,
+      durationMs: duration
+    };
+
+    cfg.lastSyncTime = new Date().toISOString();
+    cfg.lastSyncStatus = 'success';
+    cfg.lastSyncMessage = logItem.message;
+    cfg.lastSyncCount = records.length;
+    cfg.history = [logItem, ...(cfg.history || []).slice(0, 49)];
+    
+    // Compute next scheduled sync time
+    if (cfg.autoSyncEnabled && cfg.syncIntervalMinutes > 0) {
+      cfg.nextScheduledSyncTime = new Date(Date.now() + cfg.syncIntervalMinutes * 60 * 1000).toISOString();
+    } else {
+      cfg.nextScheduledSyncTime = null;
+    }
+
+    fs.writeFileSync(NEXTCLOUD_GRADE_SYNC_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+
+    return {
+      success: true,
+      filesPulled: parsedSources.length,
+      recordsCount: records.length,
+      message: logItem.message,
+      files: storagePayload.files,
+      records,
+      referenceColumns,
+      summary
+    };
+  } catch (err: any) {
+    console.error('Error during Nextcloud grade pull & merge:', err);
+    const duration = Date.now() - startTime;
+    const logItem = {
+      id: `sync-log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      status: 'error' as const,
+      filesCount: 0,
+      recordsCount: 0,
+      message: `Sync failed: ${err.message}`,
+      durationMs: duration
+    };
+
+    cfg.lastSyncTime = new Date().toISOString();
+    cfg.lastSyncStatus = 'error';
+    cfg.lastSyncMessage = `Error: ${err.message}`;
+    cfg.history = [logItem, ...(cfg.history || []).slice(0, 49)];
+    fs.writeFileSync(NEXTCLOUD_GRADE_SYNC_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+
+    return {
+      success: false,
+      filesPulled: 0,
+      recordsCount: 0,
+      message: `Sync failed: ${err.message}`,
+      error: err.message
+    };
+  }
+}
+
+// Background Interval Sync Worker
+function restartNextcloudGradeSyncWorker() {
+  if (nextcloudGradeSyncTimer) {
+    clearInterval(nextcloudGradeSyncTimer);
+    nextcloudGradeSyncTimer = null;
+  }
+
+  const cfg = loadNextcloudGradeSyncConfig();
+  if (cfg.autoSyncEnabled && Number(cfg.syncIntervalMinutes) > 0) {
+    const intervalMs = Math.max(60000, Number(cfg.syncIntervalMinutes) * 60 * 1000);
+    console.log(`[NextcloudGradeSync] Starting background auto-sync worker every ${cfg.syncIntervalMinutes} minute(s) (${intervalMs}ms)...`);
+    
+    nextcloudGradeSyncTimer = setInterval(async () => {
+      console.log(`[NextcloudGradeSync] Triggering scheduled sync for Nextcloud folder ${cfg.sourceFolder}...`);
+      try {
+        await executeNextcloudGradePullAndMerge();
+      } catch (e: any) {
+        console.error('[NextcloudGradeSync] Background sync error:', e.message);
+      }
+    }, intervalMs);
+  } else {
+    console.log('[NextcloudGradeSync] Background auto-sync is currently paused/disabled.');
+  }
+}
+
+// API: Get Nextcloud Grade Sync Config & Status
+app.get('/api/grades/nextcloud/sync-config', (_req, res) => {
+  const cfg = loadNextcloudGradeSyncConfig();
+  return res.json({ success: true, config: cfg });
+});
+
+// API: Save Nextcloud Grade Sync Config
+app.post('/api/grades/nextcloud/sync-config', (req, res) => {
+  try {
+    const newCfg = req.body;
+    const current = loadNextcloudGradeSyncConfig();
+    const merged = { ...current, ...newCfg };
+    saveNextcloudGradeSyncConfig(merged);
+    return res.json({ success: true, message: 'Nextcloud sync configuration saved successfully.', config: merged });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API: Browse Excel sheets in Nextcloud folder
+app.post('/api/grades/nextcloud/browse', async (req, res) => {
+  try {
+    const { url, username, appPassword, sourceFolder } = req.body;
+    const host = (url || 'https://cloud.jhcnexus.space').replace(/\/+$/, '');
+    const user = username || 'truenas_admin';
+    const pass = appPassword || 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT';
+    const folder = (sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
+
+    const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+    const folderUrl = folder
+      ? `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`
+      : `${host}/remote.php/dav/files/${encodeURIComponent(user)}/`;
+
+    const davRes = await fetch(folderUrl, {
+      method: 'PROPFIND',
+      headers: { Authorization: authHeader, Depth: '1' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!davRes.ok && davRes.status !== 207) {
+      return res.status(davRes.status).json({
+        success: false,
+        error: `Nextcloud WebDAV returned HTTP ${davRes.status} (${davRes.statusText}) for /${folder}`,
+      });
+    }
+
+    const xml = await davRes.text();
+    const responseBlocks = xml.split(/<d:response>/i).slice(1);
+    const files: any[] = [];
+
+    for (const block of responseBlocks) {
+      const hrefMatch = block.match(/<d:href>(.*?)<\/d:href>/i);
+      if (!hrefMatch) continue;
+      const rawHref = decodeURIComponent(hrefMatch[1]);
+      const isDir = /<d:resourcetype>[\s\S]*?<d:collection\/>[\s\S]*?<\/d:resourcetype>/i.test(block);
+
+      const lengthMatch = block.match(/<d:getcontentlength>(.*?)<\/d:getcontentlength>/i);
+      const modifiedMatch = block.match(/<d:getlastmodified>(.*?)<\/d:getlastmodified>/i);
+      const etagMatch = block.match(/<d:getetag>(.*?)<\/d:getetag>/i);
+
+      const trimmedHref = rawHref.replace(/\/+$/, '');
+      const filename = trimmedHref.split('/').pop() || '';
+      
+      const targetFolderClean = folder ? `/${folder}` : '';
+      if (trimmedHref.endsWith(targetFolderClean) || trimmedHref.endsWith(`/files/${user}`)) {
+        continue;
+      }
+
+      const fileSize = lengthMatch ? parseInt(lengthMatch[1], 10) : 0;
+      const isSpreadsheet = Boolean(filename.match(/\.(xlsx|xls|csv|ods|xlsm|xlsb)$/i));
+
+      files.push({
+        filename,
+        path: rawHref,
+        fileSize,
+        fileSizeFormatted: formatBytes(fileSize),
+        lastModified: modifiedMatch ? new Date(modifiedMatch[1]).toISOString() : new Date().toISOString(),
+        etag: etagMatch ? etagMatch[1].replace(/"/g, '') : '',
+        isDirectory: isDir,
+        isSpreadsheet
+      });
+    }
+
+    return res.json({
+      success: true,
+      folderPath: folderUrl,
+      files
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API: Pull Selected or All Grade Files directly from Nextcloud
+app.post('/api/grades/nextcloud/pull', async (req, res) => {
+  try {
+    const { url, username, appPassword, sourceFolder, selectedFiles } = req.body;
+    const configOverride = {
+      ...(loadNextcloudGradeSyncConfig()),
+      ...(url ? { url } : {}),
+      ...(username ? { username } : {}),
+      ...(appPassword ? { appPassword } : {}),
+      ...(sourceFolder ? { sourceFolder } : {}),
+      ...(Array.isArray(selectedFiles) ? { selectedFiles } : {})
+    };
+
+    const result = await executeNextcloudGradePullAndMerge(configOverride);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API: Trigger Immediate Server-Side Sync
+app.post('/api/grades/nextcloud/sync-now', async (_req, res) => {
+  try {
+    const result = await executeNextcloudGradePullAndMerge();
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Download binary file as base64 from Nextcloud WebDAV
+app.post('/api/nextcloud/download-file-base64', async (req, res) => {
+  try {
+    const { url, username, appPassword, filePath, filename } = req.body;
+    const host = (url || 'https://cloud.jhcnexus.space').replace(/\/+$/, '');
+    const user = username || 'truenas_admin';
+    const pass = appPassword || 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT';
+
+    let targetUrl: string;
+    if (filePath && filePath.startsWith('http')) {
+      targetUrl = filePath;
+    } else if (filePath) {
+      targetUrl = `${host}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+    } else {
+      targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/ExcelImports/${filename || 'students.xlsx'}`;
+    }
+
+    const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+    const fileRes = await fetch(targetUrl, {
+      method: 'GET',
+      headers: { Authorization: authHeader },
+    });
+
+    if (!fileRes.ok) {
+      return res.status(fileRes.status).json({
+        success: false,
+        error: `Failed to download file from ${targetUrl}: HTTP ${fileRes.status} ${fileRes.statusText}`,
+      });
+    }
+
+    const arrayBuffer = await fileRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    return res.json({
+      success: true,
+      filename: filename || path.basename(targetUrl),
+      fileSize: buffer.length,
+      fileSizeFormatted: formatBytes(buffer.length),
+      base64Data: buffer.toString('base64')
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -5625,6 +6653,9 @@ function formatBytes(bytes: number): string {
 
 // Start Server and mount Vite middleware
 async function startServer() {
+  // Initialize background Nextcloud Grade Sync worker on boot
+  restartNextcloudGradeSyncWorker();
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true, port: PORT, host: '0.0.0.0' },

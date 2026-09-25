@@ -38,6 +38,7 @@ import { ErrorsView } from './components/ErrorsView';
 import { LogsView } from './components/LogsView';
 import { SettingsView } from './components/SettingsView';
 import { ServedSheetsMatrixView } from './components/ServedSheetsMatrixView';
+import { MultiGradeMergerView } from './components/MultiGradeMergerView';
 import { AiAssistantModal } from './components/AiAssistantModal';
 import { SampleWorkbookModal } from './components/SampleWorkbookModal';
 import { SecretsVaultModal } from './components/SecretsVaultModal';
@@ -529,6 +530,15 @@ export default function App() {
               isSyncing={isSyncing}
               onOpenSecretsVault={() => setIsSecretsModalOpen(true)}
               schedulerStatus={schedulerStatus ?? undefined}
+            />
+          )}
+
+          {currentTab === 'grade_merger' && (
+            <MultiGradeMergerView
+              supabaseConfig={supabase}
+              nextcloudConfig={nextcloud}
+              files={files}
+              onNavigate={setCurrentTab}
             />
           )}
 

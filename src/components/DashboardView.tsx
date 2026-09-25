@@ -15,7 +15,9 @@ import {
   ShieldCheck,
   Zap,
   Activity,
-  Key
+  Key,
+  GraduationCap,
+  Sparkles
 } from 'lucide-react';
 import { 
   NextcloudConfig, 
@@ -74,6 +76,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            id="btn-quick-grade-merger"
+            onClick={() => onNavigate('grade_merger')}
+            className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg font-bold text-sm text-slate-900 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-orange-500 shadow-2xs transition-colors cursor-pointer"
+          >
+            <GraduationCap className="w-4 h-4 text-slate-950" />
+            <span>Multi-Grade Merger & Archive</span>
+          </button>
           <button
             id="btn-quick-worker"
             onClick={() => onNavigate('worker')}
@@ -337,6 +347,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Multi-Grade Multi-Workbook Feature Spotlight */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-xl p-5 border border-indigo-800/40 text-white flex flex-col md:flex-row items-center justify-between gap-4 shadow-md">
+        <div className="flex items-center space-x-4">
+          <div className="p-3 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-slate-950 shrink-0 shadow-md">
+            <GraduationCap className="w-6 h-6" />
+          </div>
+          <div>
+            <div className="flex items-center space-x-2">
+              <h3 className="font-bold text-white text-base">Multi-Workbook Class Division Consolidator & Student Archive</h3>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                Any Workbooks • Divisions A-H • Exact Reference Columns
+              </span>
+            </div>
+            <p className="text-xs text-slate-300 mt-1 max-w-2xl">
+              Consolidate any number of Excel workbooks and class division sheets into 1 clean master student table. Preserves strictly your original reference columns, and maintains past student histories (left school, graduated, transferred) for historical reference and dashboard tracking.
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={() => onNavigate('grade_merger')}
+          className="shrink-0 inline-flex items-center space-x-2 px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md transition-colors cursor-pointer"
+        >
+          <Sparkles className="w-4 h-4 text-amber-300" />
+          <span>Launch Consolidator</span>
+          <ArrowRight className="w-3.5 h-3.5" />
+        </button>
       </div>
 
       {/* Quick Access Action Grid */}

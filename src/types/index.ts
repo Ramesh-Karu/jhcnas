@@ -1,5 +1,6 @@
 export type NavigationTab = 
   | 'dashboard'
+  | 'grade_merger'
   | 'worker'
   | 'nextcloud'
   | 'supabase'
@@ -547,4 +548,114 @@ export interface LiveSyncHistoryItem {
   errorSummary?: string;
 }
 
+// ==========================================
+// Multi-File Grade & Division Merger Interfaces
+// ==========================================
 
+export interface StudentHistoryRecord {
+  id: string;
+  studentId?: string;
+  admissionNo: string;
+  studentName?: string;
+  grade?: string;
+  division?: string;
+  date: string; // YYYY-MM-DD
+  academicYear?: string;
+  eventType: 'Left School' | 'Graduation' | 'Graduated' | 'Transfer Out' | 'Transfer In' | 'Transferred' | 'Disciplinary / Conduct' | 'Achievement' | 'Remarks / Reference' | 'Re-admission' | 'TC Issued' | 'Promoted' | 'Award Received' | 'Suspended' | string;
+  title: string;
+  description: string;
+  reason?: string;
+  tcOrCertNumber?: string;
+  destinationSchool?: string;
+  addedBy?: string;
+  createdAt: string;
+}
+
+export interface GradeSheetInfo {
+  sheetName: string;
+  detectedDivision: string; // e.g. "A", "B", "C", "D", "E", "F", "G", "H" or custom sheet division
+  rowCount: number;
+  columnHeaders: string[];
+  sampleRows: Record<string, any>[];
+  included: boolean;
+}
+
+export interface GradeFileSource {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  detectedGrade: string; // Custom or auto detected grade / category label
+  gradeNumber: number; // Numeric sequence or custom index
+  sheets: GradeSheetInfo[];
+  rawWorkbookData?: ArrayBuffer | string;
+  isCustomLoaded?: boolean;
+  status: 'ready' | 'processing' | 'error';
+  errorMessage?: string;
+}
+
+export interface UnifiedMergedStudentRecord {
+  id: string;
+  student_id?: string;
+  admission_number?: string;
+  roll_number?: string;
+  student_name: string;
+  grade?: string;
+  grade_number?: number;
+  division?: string;
+  class_section?: string;
+  gender?: string;
+  date_of_birth?: string;
+  parent_contact?: string;
+  parent_email?: string;
+  blood_group?: string;
+  address?: string;
+  attendance_percentage?: number;
+  total_marks?: number;
+  academic_status?: string; // 'Enrolled' | 'Left School' | 'Graduated' | 'Transferred' | 'Alumni' | 'Inactive'
+  source_file?: string;
+  source_sheet?: string;
+  source_row?: number;
+  historyEntries?: StudentHistoryRecord[];
+  [key: string]: any; // Raw exact columns from reference Excel
+}
+
+export interface GradeMergerSummary {
+  totalFiles: number;
+  totalSheets: number;
+  totalStudents: number;
+  activeStudents: number;
+  pastStudents: number; // Students who left school / graduated / transferred
+  referenceColumns: string[]; // Exact reference columns present across Excel files
+  gradeBreakdown: { grade: string; count: number; divisions: string[] }[];
+  divisionBreakdown: { division: string; count: number }[];
+  genderBreakdown: { male: number; female: number; other: number; unspecified: number };
+  statusBreakdown: { active: number; leftSchool: number; graduated: number; transferred: number; other: number };
+  averageAttendance?: number;
+  duplicateIdsDetected: number;
+}
+
+export interface NextcloudGradeSyncLog {
+  id: string;
+  timestamp: string;
+  status: 'success' | 'error';
+  filesCount: number;
+  recordsCount: number;
+  message: string;
+  durationMs: number;
+}
+
+export interface NextcloudGradeSyncConfig {
+  url: string;
+  username: string;
+  appPassword: string;
+  sourceFolder: string;
+  selectedFiles: string[]; // List of specific filenames or empty for all spreadsheets in folder
+  autoSyncEnabled: boolean;
+  syncIntervalMinutes: number; // Interval in minutes (e.g. 1, 5, 15, 30, 60, etc.)
+  lastSyncTime: string | null;
+  nextScheduledSyncTime: string | null;
+  lastSyncStatus: 'idle' | 'in_progress' | 'success' | 'error';
+  lastSyncMessage: string;
+  lastSyncCount: number;
+  history: NextcloudGradeSyncLog[];
+}
