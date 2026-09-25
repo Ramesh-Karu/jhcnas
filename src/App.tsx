@@ -120,8 +120,9 @@ export default function App() {
             const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
             const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
             if (wb && ws) return `${wb}::${ws}`;
-            if (ws) return ws;
-            return m.id || `wm-${Math.random()}`;
+            if (m.id) return String(m.id);
+            if (ws) return `unspecified::${ws}`;
+            return `wm-${Math.random()}`;
           };
           const clientMappings = StorageService.getMappings();
           const mapByKey = new Map<string, WorksheetMapping>();
@@ -253,20 +254,29 @@ export default function App() {
   };
 
   const handleSaveMappings = (newMappings: WorksheetMapping[]) => {
+    const currentWb = currentAnalysis?.filename;
+    const stampedNewMappings = newMappings.map(m => {
+      if (!m.workbookName && currentWb) {
+        return { ...m, workbookName: currentWb };
+      }
+      return m;
+    });
+
     // Non-destructive merge with existing mappings by composite key (workbookName::worksheetName)
     const getMappingKey = (m: WorksheetMapping) => {
-      const wb = (m.workbookName || currentAnalysis?.filename || '').toLowerCase().trim();
-      const ws = (m.worksheetName || '').toLowerCase().trim();
+      const wb = String(m.workbookName || '').toLowerCase().trim();
+      const ws = String(m.worksheetName || '').toLowerCase().trim();
       if (wb && ws) return `${wb}::${ws}`;
-      if (ws) return ws;
-      return m.id || `wm-${Math.random()}`;
+      if (m.id) return String(m.id);
+      if (ws) return `unspecified::${ws}`;
+      return `wm-${Math.random()}`;
     };
 
     const mapByKey = new Map<string, WorksheetMapping>();
     mappings.forEach(m => {
       mapByKey.set(getMappingKey(m), m);
     });
-    newMappings.forEach(m => {
+    stampedNewMappings.forEach(m => {
       const key = getMappingKey(m);
       const prev = mapByKey.get(key);
       mapByKey.set(key, { ...prev, ...m });

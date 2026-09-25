@@ -92,6 +92,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
   const [syncFeedback, setSyncFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const [isSavingPermanent, setIsSavingPermanent] = useState<boolean>(false);
+  const [isRefreshingNextcloud, setIsRefreshingNextcloud] = useState<boolean>(false);
 
   // Fetch presets, permanent mapping metadata, and live Supabase tables
   const loadAllMetadata = async () => {
@@ -618,6 +619,39 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
     });
   }, [unifiedHistoryRows, searchQuery, tableFilter, selectedWorkbookFilter]);
 
+  const handleRefreshAllNextcloudWorkbooks = async () => {
+    setIsRefreshingNextcloud(true);
+    setSyncFeedback(null);
+    try {
+      const res = await ApiClient.refreshAllNextcloudWorkbooks({
+        nextcloud: nextcloudConfig || {} as any,
+        supabase: supabaseConfig || {} as any,
+        mappings,
+      });
+      if (res.success) {
+        setSyncFeedback({
+          type: 'success',
+          message: `🔄 ${res.message || 'Successfully re-downloaded all workbooks from Nextcloud and synchronized all sheets into Supabase!'}`
+        });
+        if (onTriggerSync) {
+          onTriggerSync();
+        }
+      } else {
+        setSyncFeedback({
+          type: 'error',
+          message: `Re-fetch error: ${res.error || 'Failed to re-fetch workbooks from Nextcloud'}`
+        });
+      }
+    } catch (e: any) {
+      setSyncFeedback({
+        type: 'error',
+        message: `Re-fetch error: ${e.message}`
+      });
+    } finally {
+      setIsRefreshingNextcloud(false);
+    }
+  };
+
   // Trigger one-click synchronization
   const handleExecuteSync = async () => {
     if (!onTriggerSync) return;
@@ -760,6 +794,16 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           >
             <GitFork className="w-3.5 h-3.5 text-indigo-600" />
             <span>Edit Mappings</span>
+          </button>
+
+          <button
+            onClick={handleRefreshAllNextcloudWorkbooks}
+            disabled={isRefreshingNextcloud || isSyncing}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-xs font-semibold text-white shadow-2xs transition-colors disabled:opacity-50"
+            title="Automatically re-download all Excel files from Nextcloud WebDAV and sync all sheets into Supabase"
+          >
+            <ArrowDownToLine className={`w-3.5 h-3.5 ${isRefreshingNextcloud ? 'animate-bounce' : ''}`} />
+            <span>{isRefreshingNextcloud ? 'Re-fetching Nextcloud Files...' : 'Re-fetch All Nextcloud Files & Sync'}</span>
           </button>
 
           {onTriggerSync && (

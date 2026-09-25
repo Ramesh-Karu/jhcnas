@@ -628,6 +628,33 @@ export class ApiClient {
     }
   }
 
+  static async refreshAllNextcloudWorkbooks(params: {
+    nextcloud?: NextcloudConfig;
+    supabase?: SupabaseConfig;
+    mappings?: any[];
+  }): Promise<{
+    success: boolean;
+    refreshed?: {
+      downloadedFiles: string[];
+      mappingsAdded: number;
+      executedAt: string;
+    };
+    pipeline?: any;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/nextcloud/refresh-all-workbooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
   static async getWorkerDiagnostics(params: {
     nextcloud: NextcloudConfig;
     supabase: SupabaseConfig;

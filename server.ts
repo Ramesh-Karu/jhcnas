@@ -553,11 +553,13 @@ function savePermanentMappings(data: any): boolean {
 }
 
 function getMappingCompositeKey(m: any): string {
+  if (!m) return `wm-${Math.random()}`;
   const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
   const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
   if (wb && ws) return `${wb}::${ws}`;
-  if (ws) return ws;
-  return m.id || `wm-${Math.random()}`;
+  if (m.id) return String(m.id);
+  if (ws) return `unspecified::${ws}`;
+  return `wm-${Math.random()}`;
 }
 
 function mergeAndSavePermanentMappings(newMappings: any[], workbookInfo?: any): any {
@@ -570,7 +572,12 @@ function mergeAndSavePermanentMappings(newMappings: any[], workbookInfo?: any): 
     const key = getMappingCompositeKey(m);
     mapByKey.set(key, m);
   }
+  
+  const wbFallback = workbookInfo?.filename || '';
   for (const m of (Array.isArray(newMappings) ? newMappings : [])) {
+    if (!m.workbookName && wbFallback) {
+      m.workbookName = wbFallback;
+    }
     const key = getMappingCompositeKey(m);
     const prev = mapByKey.get(key);
     mapByKey.set(key, { ...prev, ...m });
@@ -4556,6 +4563,157 @@ async function executeFullPipelineCore(params: {
   };
 }
 
+// Automated Nextcloud Workbooks Re-Fetch & Auto-Mapping Engine
+async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseConfig?: any, mappingsList?: any[]): Promise<{
+  success: boolean;
+  downloadedFiles: string[];
+  mappingsAdded: number;
+  executedAt: string;
+  error?: string;
+}> {
+  const state = loadUnifiedCoolifyState();
+  const nc = nextcloudConfig || state.nextcloud;
+  const sb = supabaseConfig || state.supabase;
+
+  if (!nc?.url) {
+    console.log('[15m Auto-Refresher] Nextcloud URL not configured, using cached local files.');
+    return { success: false, downloadedFiles: [], mappingsAdded: 0, error: 'Nextcloud URL not configured', executedAt: new Date().toISOString() };
+  }
+
+  const host = nc.url.replace(/\/+$/, '');
+  const user = nc.username || 'truenas_admin';
+  const pass = nc.appPassword;
+  const folder = (nc.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
+  const folderUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`;
+  const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+
+  console.log(`[15m Auto-Refresher] Querying Nextcloud folder '${folder}' at ${host}...`);
+
+  // 1. WebDAV PROPFIND to list all Excel files in Nextcloud
+  const discoveredFiles: string[] = [];
+  try {
+    const propRes = await fetch(folderUrl, {
+      method: 'PROPFIND',
+      headers: {
+        Authorization: authHeader,
+        Depth: '1',
+        'Content-Type': 'application/xml',
+      },
+      body: `<?xml version="1.0" encoding="utf-8" ?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname /><d:getcontenttype /></d:prop></d:propfind>`,
+      signal: AbortSignal.timeout(12000),
+    }).catch(() => null);
+
+    if (propRes && propRes.ok) {
+      const xml = await propRes.text();
+      const hrefMatches = xml.match(/<d:href>([^<]+)<\/d:href>/gi) || [];
+      for (const hm of hrefMatches) {
+        const rawHref = hm.replace(/<\/?d:href>/gi, '').trim();
+        const decoded = decodeURIComponent(rawHref);
+        const fname = decoded.split('/').pop() || '';
+        if (fname && (fname.endsWith('.xlsx') || fname.endsWith('.xls') || fname.endsWith('.csv'))) {
+          discoveredFiles.push(fname);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[15m Auto-Refresher] Nextcloud PROPFIND discovery notice: ${err.message}`);
+  }
+
+  // 2. Download fresh copies of ALL discovered files to server disk storage data/workbooks
+  const downloadedFiles: string[] = [];
+  for (const fname of discoveredFiles) {
+    const fileUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${encodeURIComponent(fname)}`;
+    try {
+      const fRes = await fetch(fileUrl, {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(15000),
+      }).catch(() => null);
+
+      if (fRes && fRes.ok) {
+        const arrayBuf = await fRes.arrayBuffer();
+        const buf = Buffer.from(arrayBuf);
+        saveWorkbookPermanently(fname, buf);
+        downloadedFiles.push(fname);
+        console.log(`[15m Auto-Refresher] Downloaded fresh copy of '${fname}' (${buf.byteLength} bytes) to server storage.`);
+      } else {
+        console.warn(`[15m Auto-Refresher] Download notice for '${fname}': HTTP ${fRes ? fRes.status : 'Timeout/Network'}`);
+      }
+    } catch (dErr: any) {
+      console.warn(`[15m Auto-Refresher] Download exception for '${fname}': ${dErr.message}`);
+    }
+  }
+
+  // 3. Auto-discover worksheets for every downloaded workbook and ensure active mappings exist
+  const existingMappings = loadPermanentMappings()?.mappings || [];
+  const updatedMappings = [...existingMappings];
+  let mappingsAdded = 0;
+
+  for (const fname of downloadedFiles) {
+    const localPath = path.join(WORKBOOKS_DIR, fname.replace(/[/\\]/g, '_'));
+    if (!fs.existsSync(localPath)) continue;
+
+    try {
+      const buf = fs.readFileSync(localPath);
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      for (const sheetName of wb.SheetNames) {
+        const cleanWb = fname.toLowerCase().trim();
+        const cleanWs = sheetName.toLowerCase().trim();
+        const exists = updatedMappings.some((m: any) => 
+          (m.workbookName || '').toLowerCase().trim() === cleanWb &&
+          (m.worksheetName || '').toLowerCase().trim() === cleanWs
+        );
+
+        if (!exists) {
+          const ws = wb.Sheets[sheetName];
+          const range = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+          const cols: any[] = [];
+          if (range.e.c >= range.s.c) {
+            for (let C = range.s.c; C <= Math.min(range.e.c, 100); ++C) {
+              const cell = ws[XLSX.utils.encode_cell({ r: range.s.r, c: C })];
+              const name = cell && cell.v !== undefined ? String(cell.v).trim() : `col_${C + 1}`;
+              const cleanName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || `col_${C + 1}`;
+              cols.push({
+                excelHeader: name,
+                supabaseColumn: cleanName,
+                dataType: 'TEXT',
+                uniqueKey: C === 0
+              });
+            }
+          }
+
+          const defaultTbl = fname.replace(/\.xlsx?$/i, '').toLowerCase().replace(/[^a-z0-9_]/g, '_') + '_' + sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+          updatedMappings.push({
+            id: `auto-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            workbookName: fname,
+            worksheetName: sheetName,
+            supabaseTable: defaultTbl,
+            headerRow: 1,
+            dataStartRow: 2,
+            columns: cols,
+            enabled: true,
+            syncPolicy: 'EXCEL_TO_DB'
+          });
+          mappingsAdded++;
+        }
+      }
+    } catch (parseErr: any) {
+      console.warn(`[15m Auto-Refresher] Could not parse sheets for '${fname}': ${parseErr.message}`);
+    }
+  }
+
+  if (mappingsAdded > 0) {
+    mergeAndSavePermanentMappings(updatedMappings);
+    console.log(`[15m Auto-Refresher] Auto-registered ${mappingsAdded} new sheet mappings.`);
+  }
+
+  return {
+    success: true,
+    downloadedFiles,
+    mappingsAdded,
+    executedAt: new Date().toISOString()
+  };
+}
+
 // Production In-Process Sync Scheduler
 class ProductionScheduler {
   private enabled: boolean = true;
@@ -4696,6 +4854,13 @@ class ProductionScheduler {
     console.log(`[Scheduler] Executing sync cycle (${isManual ? 'Manual Trigger' : 'Scheduled Run'})...`);
 
     try {
+      // Re-fetch fresh copies of all files from Nextcloud WebDAV first
+      try {
+        await syncAndRefreshNextcloudWorkbooks(this.cachedNextcloud, this.cachedSupabase, this.cachedMappings);
+      } catch (refErr: any) {
+        console.warn(`[Scheduler] Pre-sync Nextcloud auto-refresher notice: ${refErr.message}`);
+      }
+
       const result = await executeFullPipelineCore({
         nextcloud: this.cachedNextcloud,
         supabase: this.cachedSupabase,
@@ -4942,6 +5107,28 @@ app.post('/api/config/sync-with-browser', async (req, res) => {
       presets: mergedPresets,
       workerStatus: schedulerInstance.getStatus(),
       message: 'Successfully synchronized browser localStorage with Coolify server disk storage!',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/nextcloud/refresh-all-workbooks', async (req, res) => {
+  try {
+    const { nextcloud, supabase, mappings } = req.body || {};
+    const refRes = await syncAndRefreshNextcloudWorkbooks(nextcloud, supabase, mappings);
+    const pipeRes = await executeFullPipelineCore({
+      nextcloud,
+      supabase,
+      mappings,
+      syncAllFiles: true,
+      triggerType: 'MANUAL_15M_REFRESH'
+    });
+    return res.json({
+      success: true,
+      refreshed: refRes,
+      pipeline: pipeRes,
+      message: `Successfully re-downloaded ${refRes.downloadedFiles.length} files from Nextcloud and synchronized all sheets into Supabase!`
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });

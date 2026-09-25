@@ -114,11 +114,12 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       if (res.success && Array.isArray(res.mappings) && res.mappings.length > 0) {
         // Merge with current mappings by composite key
         const getMappingKey = (m: any) => {
-          const wb = String(m.workbookName || currentAnalysis?.filename || '').toLowerCase().trim();
-          const ws = String(m.worksheetName || '').toLowerCase().trim();
+          const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
+          const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
           if (wb && ws) return `${wb}::${ws}`;
-          if (ws) return ws;
-          return m.id || `wm-${Math.random()}`;
+          if (m.id) return String(m.id);
+          if (ws) return `unspecified::${ws}`;
+          return `wm-${Math.random()}`;
         };
         const mapByKey = new Map<string, WorksheetMapping>();
         currentMappings.forEach(m => {
