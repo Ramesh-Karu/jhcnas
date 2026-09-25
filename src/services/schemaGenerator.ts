@@ -10,27 +10,11 @@ import {
   DataType,
   TransformationType
 } from '../types';
+import { smartSanitizeIdentifier, translateTamilHeader, containsTamil } from './tamilTranslator';
 
 export class SchemaGenerator {
   static sanitizeIdentifier(raw: string): string {
-    if (!raw) return 'col';
-    let s = raw.trim().toLowerCase();
-    // Replace non-alphanumeric with underscore
-    s = s.replace(/[^a-z0-9_]/g, '_');
-    // Collapse multiple underscores
-    s = s.replace(/_+/g, '_');
-    // Remove leading/trailing underscores
-    s = s.replace(/^_+|_+$/g, '');
-    // Avoid starting with number
-    if (/^[0-9]/.test(s)) {
-      s = `col_${s}`;
-    }
-    // Reserved keywords in Postgres
-    const reserved = ['user', 'order', 'group', 'table', 'select', 'where', 'limit', 'offset', 'primary', 'check', 'index', 'column', 'values', 'database'];
-    if (reserved.includes(s)) {
-      s = `${s}_val`;
-    }
-    return s || 'column_val';
+    return smartSanitizeIdentifier(raw, 'col');
   }
 
   static dataTypeToPostgresType(type: DataType): string {

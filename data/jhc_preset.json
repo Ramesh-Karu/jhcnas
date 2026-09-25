@@ -12,10 +12,11 @@
     "Stock Audit",
     "Multi-Book",
     "Departments",
-    "Ledger"
+    "Ledger",
+    "Tamil-Supported"
   ],
-  "createdAt": "2026-09-25T07:19:48.610Z",
-  "updatedAt": "2026-09-25T07:19:48.611Z",
+  "createdAt": "2026-09-25T10:15:57.624Z",
+  "updatedAt": "2026-09-25T10:15:57.625Z",
   "sheetMappings": [
     {
       "id": "wm-jhc-0",
@@ -51,7 +52,7 @@
           "id": "c-0-2",
           "excelColumn": "C",
           "excelHeader": "பிரிவும் இலக்கமும்",
-          "supabaseColumn": "பிரிவும்_இலக்கமும்",
+          "supabaseColumn": "section_and_number",
           "dataType": "text",
           "required": false,
           "uniqueKey": false,
@@ -71,21 +72,21 @@
           "id": "c-0-4",
           "excelColumn": "E",
           "excelHeader": "பேரேட்டில் காட்டியவாறான மீதி",
-          "supabaseColumn": "பேரேட்டில்_காட்டியவாறான_மீதி",
-          "dataType": "text",
+          "supabaseColumn": "ledger_balance",
+          "dataType": "integer",
           "required": false,
           "uniqueKey": false,
-          "transformation": "trim"
+          "transformation": "parse_number"
         },
         {
           "id": "c-0-5",
           "excelColumn": "F",
           "excelHeader": "உண்மையான கையிருப்பு மீதி",
-          "supabaseColumn": "உண்மையான_கையிருப்பு_மீதி",
-          "dataType": "text",
+          "supabaseColumn": "actual_balance_on_hand",
+          "dataType": "integer",
           "required": false,
           "uniqueKey": false,
-          "transformation": "trim"
+          "transformation": "parse_number"
         },
         {
           "id": "c-0-6",
@@ -717,7 +718,7 @@
           "dataType": "text",
           "required": false,
           "uniqueKey": false,
-          "transformation": "trim"
+          "transformation": "normalize_phone"
         },
         {
           "id": "c-1-4",

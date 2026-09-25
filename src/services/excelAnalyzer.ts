@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import { WorkbookAnalysis, SheetAnalysis, MergedRange, SheetHeader, DataType } from '../types';
 import { MatrixTransformer } from './matrixTransformer';
+import { smartSanitizeIdentifier, containsTamil, translateTamilHeader } from './tamilTranslator';
 
 export class ExcelAnalyzer {
   static async computeSHA256(data: ArrayBuffer): Promise<string> {
@@ -383,7 +384,12 @@ export class ExcelAnalyzer {
     const sectionHeadings: { row: number; text: string; range: string }[] = [];
     const candidateHeaders: { row: number; headers: string[]; confidence: number; score: number }[] = [];
 
-    const headerKeywords = ['name', 'id', 'user', 'code', 'date', 'dob', 'class', 'grade', 'status', 'email', 'phone', 'number', 'roll', 'index', 'gender', 'mark', 'score', 'address'];
+    const headerKeywords = [
+      'name', 'id', 'user', 'code', 'date', 'dob', 'class', 'grade', 'status', 'email', 'phone', 'number', 'roll', 'index', 'gender', 'mark', 'score', 'address',
+      'balance', 'ledger', 'articles', 'description', 'actual', 'surplus', 'deficiency', 'remarks', 'page', 'signature', 'responsible', 'person', 'contact', 'total', 'section', 'quantity', 'amount',
+      // Tamil common keywords
+      'பெயர்', 'இலக்கம்', 'எண்', 'மீதி', 'கையிருப்பு', 'பொருட்கள்', 'விளக்கம்', 'உபரி', 'பற்றாக்குறை', 'குறிப்பு', 'பொறுப்பாளர்', 'ஒப்பம்', 'தொடர்பு', 'மொத்தம்', 'பிரிவு', 'தொகை', 'திகதி', 'தேதி'
+    ];
 
     const scanLimit = Math.min(totalRows, 20);
     for (let r = 0; r < scanLimit; r++) {
@@ -405,7 +411,11 @@ export class ExcelAnalyzer {
           if (isNum) numCount++;
           else textCount++;
 
-          if (headerKeywords.some(kw => str.toLowerCase().includes(kw))) {
+          const sanitized = smartSanitizeIdentifier(str);
+          if (
+            headerKeywords.some(kw => str.toLowerCase().includes(kw) || sanitized.includes(kw)) ||
+            containsTamil(str)
+          ) {
             keywordHits++;
           }
         }
@@ -524,10 +534,10 @@ export class ExcelAnalyzer {
       // Run Automated Type Inference
       const { dataType, nullCount, uniqueCount, isCandidateKey } = this.inferColumnDataType(rawSampleList);
 
-      // Check if header name hints at candidate key (id, username, code, roll)
-      const nameNorm = uniqueName.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const keyHints = ['id', 'username', 'user', 'code', 'index', 'rollnumber', 'studentid', 'indexnumber'];
-      const hasKeyHint = keyHints.some(k => nameNorm.includes(k));
+      // Check if header name hints at candidate key (id, username, code, roll, number, receipt, etc.)
+      const nameNorm = smartSanitizeIdentifier(uniqueName);
+      const keyHints = ['id', 'username', 'user', 'code', 'index', 'rollnumber', 'studentid', 'indexnumber', 'number', 'serial', 'receipt', 'item_no', 'section_and_number', 'book_no'];
+      const hasKeyHint = keyHints.some(k => nameNorm.includes(k) || uniqueName.toLowerCase().includes(k));
 
       headers.push({
         colLetter,

@@ -65,6 +65,7 @@ import { ApiClient } from '../services/apiClient';
 import { SchemaGenerator } from '../services/schemaGenerator';
 import { GeminiWorkbookService } from '../services/geminiService';
 import { AiPresetsModal } from './AiPresetsModal';
+import { smartSanitizeIdentifier } from '../services/tamilTranslator';
 
 const formatDisplayRange = (r: any): string => {
   if (!r) return 'A1';
@@ -203,7 +204,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     if (activeSheet) {
       setManualHeaderRow(activeSheet.detectedHeaderRow);
       setManualDataStartRow(activeSheet.detectedDataStartRow);
-      const safeName = activeSheet.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sheet_records';
+      const safeName = smartSanitizeIdentifier(activeSheet.sheetName, 'sheet_records');
       setTargetTableNameInput(safeName);
     }
   }, [activeSheet?.sheetName]);
@@ -212,7 +213,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   const effectiveSheetToTableMap = useMemo(() => {
     const map = { ...sheetToTableMap };
     if (consolidationMode === 'UNIFIED_TABLE') {
-      map['__unified__'] = unifiedTableNameInput.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'consolidated_records';
+      map['__unified__'] = smartSanitizeIdentifier(unifiedTableNameInput, 'consolidated_records');
     }
     return map;
   }, [sheetToTableMap, consolidationMode, unifiedTableNameInput]);
@@ -356,7 +357,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   // Route active sheet to a PostgreSQL table
   const handleRouteSheetToTable = () => {
     if (!activeSheet) return;
-    const targetTable = targetTableNameInput.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'students';
+    const targetTable = smartSanitizeIdentifier(targetTableNameInput, 'students');
 
     const columns = activeSheet.headers.map((h, idx) => {
       const cleanName = SchemaGenerator.sanitizeIdentifier(h.name);
@@ -1215,7 +1216,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
             <h4 className="text-xs font-bold text-slate-700 mb-2 uppercase">Sheet-to-Table Routing Assignments:</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
               {analysis.worksheets.map((ws, wsIdx) => {
-                const currentDest = sheetToTableMap[ws.sheetName] || ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                const currentDest = sheetToTableMap[ws.sheetName] || smartSanitizeIdentifier(ws.sheetName, 'sheet_data');
                 return (
                   <div key={`${ws.sheetName}-${wsIdx}`} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between gap-2">
                     <div className="truncate font-semibold text-slate-800" title={ws.sheetName}>

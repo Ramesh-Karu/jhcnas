@@ -187,13 +187,19 @@ export class MappingEngine {
     }
 
     for (const cm of colMappings) {
-      // Find raw value by column letter or header name
+      // Find raw value by column letter, header name, or supabaseColumn
       let val = rawRecord[cm.excelColumn];
       if (val === undefined || val === null) {
         val = rawRecord[`header_${cm.excelHeader}`];
       }
       if (val === undefined || val === null) {
         val = rawRecord[cm.excelHeader];
+      }
+      if (val === undefined || val === null && cm.excelHeader) {
+        val = rawRecord[cm.excelHeader.trim()];
+      }
+      if (val === undefined || val === null && cm.supabaseColumn) {
+        val = rawRecord[cm.supabaseColumn];
       }
 
       // 1. Transformation (with intelligent datatype awareness)

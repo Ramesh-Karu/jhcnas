@@ -10,6 +10,7 @@ import {
   AiSheetMappingSolution
 } from '../types';
 import { ApiClient } from './apiClient';
+import { smartSanitizeIdentifier, containsTamil, translateTamilHeader } from './tamilTranslator';
 
 export class GeminiWorkbookService {
   /**
@@ -128,15 +129,19 @@ Detected Header Candidates: ${JSON.stringify(sheet.candidateHeaderRows)}
 Detected Headers:
 ${sampleHeaders}
 
+CRITICAL REQUIREMENT FOR MULTILINGUAL & TAMIL HEADERS:
+If any worksheet names or column headers are in Tamil (such as 'பிரிவும் இலக்கமும்', 'பேரேட்டில் காட்டியவாறான மீதி', 'உண்மையான கையிருப்பு மீதி', 'பொறுப்பாளர்', 'விளக்கம்', 'உபரி', 'பற்றாக்குறை', 'குறிப்பு', 'விலை', 'தொகை', 'திகதி', etc.), you MUST accurately TRANSLATE them to clear, meaningful English snake_case database column names (such as 'section_and_number', 'ledger_balance', 'actual_balance_on_hand', 'responsible_person', 'description', 'surplus', 'deficiency', 'remarks', 'price', 'amount', 'date').
+Do NOT produce generic placeholder names (like 'column_1', 'col_a') or meaningless words.
+
 Task:
 Suggest the optimal:
-1. Supabase PostgreSQL table name (snake_case, lowercase, singular/plural e.g. "students", "attendance")
+1. Supabase PostgreSQL table name (snake_case, lowercase, singular/plural e.g. "students", "jhc_master_inventory", "jhc_inventory_book1_admin")
 2. Header Row number and Data Start Row number
 3. Merged section heading target column if applicable (e.g. if A3:H3 has "CLASS 10A", suggest 'class')
 4. Column mappings with:
    - excelColumn (e.g. "A")
-   - excelHeader
-   - supabaseColumn (snake_case, e.g. "student_number")
+   - excelHeader (the exact original Excel header, preserving Tamil or English)
+   - supabaseColumn (meaningful translated English snake_case, e.g. "section_and_number", "ledger_balance", "student_number")
    - dataType ('text' | 'integer' | 'decimal' | 'boolean' | 'date')
    - required (boolean)
    - uniqueKey (boolean, identify primary unique upsert key)
@@ -174,7 +179,7 @@ Format your response as pure JSON matching this structure:
         if (result.success && result.data) {
           const parsed = result.data;
           return {
-            suggestedTable: parsed.suggestedTable || sheet.sheetName.toLowerCase().replace(/\s+/g, '_'),
+            suggestedTable: parsed.suggestedTable ? smartSanitizeIdentifier(parsed.suggestedTable) : smartSanitizeIdentifier(sheet.sheetName),
             headerRow: parsed.headerRow || sheet.detectedHeaderRow,
             dataStartRow: parsed.dataStartRow || sheet.detectedDataStartRow,
             sectionHeadingTargetCol: parsed.sectionHeadingTargetCol,
@@ -182,7 +187,7 @@ Format your response as pure JSON matching this structure:
               id: `ai-${idx}-${Date.now()}`,
               excelColumn: c.excelColumn || sheet.headers[idx]?.colLetter || 'A',
               excelHeader: c.excelHeader || sheet.headers[idx]?.name || '',
-              supabaseColumn: c.supabaseColumn || (c.excelHeader || '').toLowerCase().replace(/\s+/g, '_'),
+              supabaseColumn: c.supabaseColumn ? smartSanitizeIdentifier(c.supabaseColumn) : smartSanitizeIdentifier(c.excelHeader || `col_${idx + 1}`),
               dataType: (c.dataType as DataType) || 'text',
               required: Boolean(c.required),
               uniqueKey: Boolean(c.uniqueKey),
@@ -201,7 +206,7 @@ Format your response as pure JSON matching this structure:
   }
 
   private static heuristicAnalysis(sheet: SheetAnalysis) {
-    const rawName = sheet.sheetName.toLowerCase().replace(/\s+/g, '_');
+    const rawName = smartSanitizeIdentifier(sheet.sheetName);
     const tableMap: Record<string, string> = {
       student_details: 'students',
       students: 'students',
@@ -216,14 +221,24 @@ Format your response as pure JSON matching this structure:
     const sectionMerge = sheet.mergedRanges.find(m => m.type === 'section_heading');
     const sectionHeadingTargetCol = sectionMerge ? 'class' : undefined;
 
+    const usedColNames = new Set<string>();
     const columns: ColumnMapping[] = sheet.headers.map((h, i) => {
-      const lower = h.name.toLowerCase();
-      let dataType: DataType = 'text';
-      let transformation: TransformationType = 'trim';
-      let uniqueKey = false;
-      let required = false;
+      const supaColBase = smartSanitizeIdentifier(h.name);
+      let supaCol = supaColBase;
+      if (usedColNames.has(supaCol)) {
+        let counter = 2;
+        while (usedColNames.has(`${supaCol}_${counter}`)) counter++;
+        supaCol = `${supaCol}_${counter}`;
+      }
+      usedColNames.add(supaCol);
 
-      if (lower.includes('id') || lower.includes('number') || lower.includes('code')) {
+      const lower = supaCol.toLowerCase();
+      let dataType: DataType = h.inferredType || 'text';
+      let transformation: TransformationType = 'trim';
+      let uniqueKey = h.isCandidateKey || false;
+      let required = uniqueKey;
+
+      if (lower.includes('id') || lower.includes('number') || lower.includes('code') || lower.includes('receipt') || lower.includes('section_and_number')) {
         transformation = 'normalize_id';
         if (i === 0) {
           uniqueKey = true;
@@ -232,7 +247,7 @@ Format your response as pure JSON matching this structure:
       } else if (lower.includes('date') || lower.includes('dob')) {
         dataType = 'date';
         transformation = 'parse_date';
-      } else if (lower.includes('phone') || lower.includes('mobile')) {
+      } else if (lower.includes('phone') || lower.includes('mobile') || lower.includes('contact')) {
         transformation = 'normalize_phone';
       } else if (lower.includes('status') && sheet.sheetName.toLowerCase().includes('attendance')) {
         transformation = 'pa_to_status';
@@ -240,22 +255,16 @@ Format your response as pure JSON matching this structure:
       } else if (lower.includes('clearance') || lower.includes('active') || lower.includes('enrolled')) {
         dataType = 'boolean';
         transformation = 'yes_no_to_boolean';
-      } else if (lower.includes('score') || lower.includes('math') || lower.includes('science') || lower.includes('total')) {
-        dataType = 'decimal';
+      } else if (lower.includes('balance') || lower.includes('ledger') || lower.includes('actual') || lower.includes('surplus') || lower.includes('deficiency') || lower.includes('quantity') || lower.includes('amount') || lower.includes('price') || lower.includes('valuation') || lower.includes('score') || lower.includes('total')) {
+        dataType = lower.includes('price') || lower.includes('amount') || lower.includes('valuation') ? 'decimal' : 'integer';
         transformation = 'parse_number';
       }
-
-      const supaCol = lower
-        .replace(/student\s*id/i, 'student_number')
-        .replace(/student\s*name/i, 'name')
-        .replace(/\s+/g, '_')
-        .replace(/[^a-z0-9_]/g, '');
 
       return {
         id: `h-cm-${i}-${Date.now()}`,
         excelColumn: h.colLetter,
         excelHeader: h.name,
-        supabaseColumn: supaCol || `col_${h.colLetter.toLowerCase()}`,
+        supabaseColumn: supaCol,
         dataType,
         required,
         uniqueKey,
@@ -269,7 +278,7 @@ Format your response as pure JSON matching this structure:
       dataStartRow: sheet.detectedDataStartRow,
       sectionHeadingTargetCol,
       columns,
-      reasoning: `Intelligent analyzer identified header row at ${sheet.detectedHeaderRow} with ${columns.length} columns and ${sheet.mergedRanges.length} merged cell ranges. Mappings configured with types, upsert keys, and transformations.`
+      reasoning: `Intelligent analyzer identified header row at ${sheet.detectedHeaderRow} with ${columns.length} columns and ${sheet.mergedRanges.length} merged cell ranges. Automatically translated multilingual / Tamil headers into clean database columns.`
     };
   }
 }

@@ -43,6 +43,7 @@ import {
 import { getDefaultSampleMappings } from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
 import { AiPresetsModal } from './AiPresetsModal';
+import { smartSanitizeIdentifier } from '../services/tamilTranslator';
 
 interface MappingsViewProps {
   mappings: WorksheetMapping[];
@@ -176,7 +177,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 
     // Build fresh mappings ONLY for the active workbook sheets
     const newMappings: WorksheetMapping[] = currentAnalysis.worksheets.map((ws, sIdx) => {
-      const cleanWsName = ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sheet_data';
+      const cleanWsName = smartSanitizeIdentifier(ws.sheetName, 'sheet_data');
       const targetTable = supabaseTables.some(t => t.name === cleanWsName) 
         ? cleanWsName 
         : (supabaseTables[0]?.name || cleanWsName);
@@ -185,7 +186,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       const usedSupabaseCols = new Set<string>();
       const columns: ColumnMapping[] = ws.headers.map((h, idx) => {
         const rawName = h.name.trim();
-        let normName = rawName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+        let normName = smartSanitizeIdentifier(rawName, `col_${idx + 1}`);
 
         // Try to match with a column in the Supabase table
         let matchedCol = normName;
@@ -819,7 +820,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                         id: `cm-${Date.now()}-${idx}`,
                         excelColumn: h.colLetter,
                         excelHeader: h.name,
-                        supabaseColumn: h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+                        supabaseColumn: smartSanitizeIdentifier(h.name, `col_${idx + 1}`),
                         dataType: 'text',
                         required: idx === 0,
                         uniqueKey: idx === 0,

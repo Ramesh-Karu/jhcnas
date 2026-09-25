@@ -15,6 +15,11 @@ import {
   generateTeacherAllocationsWorkbook,
   generateJhcInventoryWorkbook
 } from './src/services/presetSamples';
+import {
+  smartSanitizeIdentifier,
+  containsTamil,
+  translateTamilHeader
+} from './src/services/tamilTranslator';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -5484,8 +5489,7 @@ function heuristicAnalyzeWorkbook(workbook: any, supabaseTables?: any[]) {
   const seenSuggestedTables = new Set<string>();
   const sheetSolutions = worksheets.map((ws: any, sIdx: number) => {
     const rawSheetName = ws.sheetName || `Sheet${sIdx + 1}`;
-    let cleanSheetName = rawSheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
-    if (!cleanSheetName) cleanSheetName = `sheet_${sIdx + 1}`;
+    let cleanSheetName = smartSanitizeIdentifier(rawSheetName, `sheet_${sIdx + 1}`);
 
     // 1. Table Matching
     let suggestedTable = cleanSheetName;
@@ -5555,18 +5559,8 @@ function heuristicAnalyzeWorkbook(workbook: any, supabaseTables?: any[]) {
       const rawHeaderName = (h.name || `Column ${colLetter}`).trim();
       const lowerHeader = rawHeaderName.toLowerCase();
 
-      // Normalize snake_case column name
-      let supaCol = lowerHeader
-        .replace(/student\s*id|admission\s*no|adm\s*no|roll\s*no/i, 'student_number')
-        .replace(/student\s*name|candidate\s*name|full\s*name/i, 'name')
-        .replace(/date\s*of\s*birth/i, 'dob')
-        .replace(/contact\s*no|phone\s*no|mobile\s*number/i, 'phone')
-        .replace(/guardian\s*contact|parent\s*contact/i, 'emergency_contact')
-        .replace(/email\s*address/i, 'email')
-        .replace(/address\s*line/i, 'address')
-        .replace(/blood\s*group/i, 'blood_group')
-        .replace(/[^a-z0-9_]/g, '_')
-        .replace(/^_+|_+$/g, '');
+      // Normalize snake_case column name (with Tamil translation)
+      let supaCol = smartSanitizeIdentifier(rawHeaderName, `col_${colLetter.toLowerCase()}`);
 
       if (!supaCol) supaCol = `col_${colLetter.toLowerCase()}`;
 
@@ -5787,6 +5781,10 @@ MAPPING REQUIREMENTS FOR EACH SHEET:
    - "transformation": "none" | "trim" | "uppercase" | "lowercase" | "parse_date" | "parse_number" | "yes_no_to_boolean" | "pa_to_status" | "normalize_phone" | "normalize_id"
    - "validationRegex": Optional regex pattern string (e.g. "^\\+?[0-9]{7,15}$")
 
+CRITICAL REQUIREMENT FOR MULTILINGUAL & TAMIL HEADERS:
+If any worksheet names or column headers are in Tamil (such as 'பிரிவும் இலக்கமும்', 'பேரேட்டில் காட்டியவாறான மீதி', 'உண்மையான கையிருப்பு மீதி', 'பொறுப்பாளர்', 'விளக்கம்', 'உபரி', 'பற்றாக்குறை', 'குறிப்பு', 'விலை', 'தொகை', 'திகதி', etc.), you MUST accurately TRANSLATE them to clear, meaningful English snake_case database column names (such as 'section_and_number', 'ledger_balance', 'actual_balance_on_hand', 'responsible_person', 'description', 'surplus', 'deficiency', 'remarks', 'price', 'amount', 'date').
+Do NOT produce generic placeholder names (like 'column_1', 'col_a') or meaningless words.
+
 RETURN PURE JSON matching this schema:
 {
   "filename": "${workbook.filename || 'Workbook.xlsx'}",
@@ -5827,7 +5825,7 @@ RETURN PURE JSON matching this schema:
         const usedTables = new Set<string>();
         const sanitizedSolutions = (parsed.sheetSolutions || []).map((sol: any, sIdx: number) => {
           const originalWs = workbook.worksheets.find((w: any) => w.sheetName === sol.worksheetName) || workbook.worksheets[sIdx] || {};
-          let targetTable = (sol.suggestedTable || originalWs.sheetName || `sheet_${sIdx + 1}`).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+          let targetTable = smartSanitizeIdentifier(sol.suggestedTable || originalWs.sheetName || `sheet_${sIdx + 1}`, `sheet_${sIdx + 1}`);
           if (usedTables.has(targetTable)) {
             let suf = 2;
             while (usedTables.has(`${targetTable}_${suf}`)) suf++;
@@ -5850,7 +5848,7 @@ RETURN PURE JSON matching this schema:
               id: `ai-col-${sIdx}-${cIdx}-${Date.now()}`,
               excelColumn: col.excelColumn || originalWs.headers?.[cIdx]?.colLetter || String.fromCharCode(65 + cIdx),
               excelHeader: col.excelHeader || originalWs.headers?.[cIdx]?.name || `Col ${col.excelColumn}`,
-              supabaseColumn: (col.supabaseColumn || col.excelHeader || `col_${cIdx}`).toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+              supabaseColumn: smartSanitizeIdentifier(col.supabaseColumn || col.excelHeader || `col_${cIdx}`, `col_${cIdx}`),
               dataType: col.dataType || 'text',
               required: Boolean(col.required),
               uniqueKey: Boolean(col.uniqueKey),
