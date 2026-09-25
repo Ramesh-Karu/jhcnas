@@ -175,6 +175,12 @@ export class DryRunEngine {
       }
     }
 
+    // Live accumulator so multiple worksheets mapping into the same target table accumulate correctly
+    const accumulatedState: Record<string, any[]> = {};
+    for (const [tbl, recs] of Object.entries(databaseState || {})) {
+      accumulatedState[tbl] = Array.isArray(recs) ? [...recs] : [];
+    }
+
     for (const wm of effectiveMappings) {
       const { ws, fallbackRecords } = this.getWorkbookSheet(wb, wm.worksheetName, currentAnalysis);
 
@@ -197,7 +203,10 @@ export class DryRunEngine {
       if (!records || records.length === 0) continue;
 
       const targetTable = wm.supabaseTable;
-      const existingTableRecords = databaseState[targetTable] || [];
+      if (!accumulatedState[targetTable]) {
+        accumulatedState[targetTable] = [];
+      }
+      const existingTableRecords = accumulatedState[targetTable];
 
       // Find primary unique keys for this worksheet mapping
       const uniqueColMappings = wm.columns.filter(c => c.uniqueKey);
@@ -241,28 +250,38 @@ export class DryRunEngine {
 
           // Check against existing database records for Identity & Cell-level changes
           let matchedExistingRecord: any = null;
+          let matchedExistingIdx = -1;
           const candidateKeys = ['admission_no', 'student_id', 'roll_no', 'username', 'index_number', 'email', 'id', 'code'];
 
           if (uniqueColNames.length > 0 && existingTableRecords.length > 0) {
-            matchedExistingRecord = existingTableRecords.find(ex => {
+            matchedExistingIdx = existingTableRecords.findIndex(ex => {
               return uniqueColNames.every(col => areCellsEqual(ex[col], cleanRecord[col]));
             });
+            if (matchedExistingIdx >= 0) {
+              matchedExistingRecord = existingTableRecords[matchedExistingIdx];
+            }
           } else if (existingTableRecords.length > 0) {
             for (const ck of candidateKeys) {
               if (cleanRecord[ck] !== undefined && cleanRecord[ck] !== null && String(cleanRecord[ck]).trim() !== '') {
-                matchedExistingRecord = existingTableRecords.find(ex => areCellsEqual(ex[ck], cleanRecord[ck]));
-                if (matchedExistingRecord) break;
+                matchedExistingIdx = existingTableRecords.findIndex(ex => areCellsEqual(ex[ck], cleanRecord[ck]));
+                if (matchedExistingIdx >= 0) {
+                  matchedExistingRecord = existingTableRecords[matchedExistingIdx];
+                  break;
+                }
               }
             }
             if (!matchedExistingRecord) {
-              matchedExistingRecord = existingTableRecords.find(ex => {
+              matchedExistingIdx = existingTableRecords.findIndex(ex => {
                 return Object.keys(cleanRecord).every(k => areCellsEqual(cleanRecord[k], ex[k]));
               });
+              if (matchedExistingIdx >= 0) {
+                matchedExistingRecord = existingTableRecords[matchedExistingIdx];
+              }
             }
           }
 
           let action: 'INSERT' | 'UPDATE' | 'SKIP' = 'INSERT';
-          if (matchedExistingRecord) {
+          if (matchedExistingRecord && matchedExistingIdx >= 0) {
             const isIdentical = Object.keys(cleanRecord).every(k => areCellsEqual(cleanRecord[k], matchedExistingRecord[k]));
             if (isIdentical) {
               action = 'SKIP';
@@ -270,11 +289,13 @@ export class DryRunEngine {
               action = 'UPDATE';
               proposedUpdates++;
               sheetUpdates++;
+              existingTableRecords[matchedExistingIdx] = { ...matchedExistingRecord, ...cleanRecord };
             }
           } else {
             action = 'INSERT';
             proposedInserts++;
             sheetInserts++;
+            existingTableRecords.push(cleanRecord);
           }
 
           if (sampleTransformedRecords.length < 50000) {
@@ -326,6 +347,12 @@ export class DryRunEngine {
   ): { log: ImportLog; errors: RowValidationError[] } {
     const dryRunResult = this.executeDryRun(wb, filename, worksheetMappings, databaseState, currentAnalysis);
 
+    // Live accumulator so multiple worksheets mapping into the same target table accumulate correctly
+    const accumulatedState: Record<string, any[]> = {};
+    for (const [tbl, recs] of Object.entries(databaseState || {})) {
+      accumulatedState[tbl] = Array.isArray(recs) ? [...recs] : [];
+    }
+
     // Apply Upsert to databaseState for each worksheet
     for (const wm of worksheetMappings) {
       if (!wm.enabled) continue;
@@ -349,7 +376,10 @@ export class DryRunEngine {
       }
       if (!records || records.length === 0) continue;
 
-      const currentDb = [...(databaseState[targetTable] || [])];
+      if (!accumulatedState[targetTable]) {
+        accumulatedState[targetTable] = [];
+      }
+      const currentDb = accumulatedState[targetTable];
       const uniqueColNames = wm.columns.filter(c => c.uniqueKey).map(c => c.supabaseColumn);
       const candidateKeys = ['admission_no', 'student_id', 'roll_no', 'username', 'index_number', 'email', 'id', 'code'];
       const seenBatchKeys = new Set<string>();
@@ -404,7 +434,7 @@ export class DryRunEngine {
         }
       }
 
-      updateDatabase(targetTable, currentDb);
+      updateDatabase(targetTable, [...currentDb]);
     }
 
     const status: import('../types').ImportStatus = dryRunResult.failedRows === 0 ? 'Success' : dryRunResult.validRows > 0 ? 'Partial Success' : 'Failed';

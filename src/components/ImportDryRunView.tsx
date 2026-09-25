@@ -44,10 +44,12 @@ import {
 } from '../types';
 import { createComplexSampleWorkbook } from '../services/sampleWorkbook';
 import { DryRunEngine } from '../services/dryRunEngine';
+import { MappingEngine } from '../services/mappingEngine';
 import { ApiClient, SupabaseDiagnostic, UpsertBatchProgress } from '../services/apiClient';
 import { ExcelAnalyzer } from '../services/excelAnalyzer';
 
 export interface TablePushStatus {
+  id?: string;
   tableName: string;
   sheetName: string;
   totalRows: number;
@@ -336,17 +338,94 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     );
 
     const activeMaps = mappings.filter(m => m.enabled);
-    const initialTableStatuses: TablePushStatus[] = activeMaps.map(m => {
-      const recs = capturedDbRecords[m.supabaseTable] || databaseState[m.supabaseTable] || [];
-      return {
-        tableName: m.supabaseTable,
-        sheetName: m.worksheetName,
-        totalRows: recs.length,
-        processedRows: 0,
-        successfulRows: 0,
-        status: 'pending' as const,
-      };
-    });
+
+    // Prepare each worksheet's clean records and mapped columns for Supabase push
+    const preparedSheetData: {
+      id: string;
+      mapping: WorksheetMapping;
+      cleanRecords: Record<string, any>[];
+      uniqueKeyCol?: string;
+    }[] = [];
+
+    for (let i = 0; i < activeMaps.length; i++) {
+      const wm = activeMaps[i];
+      const sheetId = wm.id || `map-${i}-${wm.worksheetName}-${wm.supabaseTable}`;
+      const { ws, fallbackRecords } = DryRunEngine.getWorkbookSheet(wb, wm.worksheetName, currentAnalysis);
+
+      let rawExtracted: any[] = [];
+      if (ws) {
+        const { records } = ExcelAnalyzer.extractRecordsWithMergedSections(
+          ws,
+          wm.headerRow,
+          wm.dataStartRow,
+          wm.dataEndRow,
+          wm.sectionHeadingTargetCol
+        );
+        rawExtracted = records;
+      }
+      if ((!rawExtracted || rawExtracted.length === 0) && fallbackRecords) {
+        rawExtracted = fallbackRecords;
+      }
+
+      const seenBatchKeys = new Set<string>();
+      const validCleanRecords: any[] = [];
+      for (const raw of (rawExtracted || [])) {
+        const { cleanRecord, errors: rowErrors } = MappingEngine.transformAndValidate(
+          raw,
+          wm.columns,
+          wm.worksheetName,
+          wm.sectionHeadingTargetCol,
+          seenBatchKeys
+        );
+        if (rowErrors.length === 0) {
+          validCleanRecords.push(cleanRecord);
+        }
+      }
+
+      const allowedCols = new Set(wm.columns.map(c => c.supabaseColumn));
+      if (wm.sectionHeadingTargetCol) {
+        allowedCols.add(wm.sectionHeadingTargetCol);
+      }
+
+      const cleanRecordsForSupabase = validCleanRecords.map(r => {
+        const clean: Record<string, any> = {};
+        for (const col of allowedCols) {
+          if (r[col] !== undefined) {
+            const val = r[col];
+            if (
+              val === null ||
+              val === undefined ||
+              (typeof val === 'string' &&
+                (val.trim() === '' || ['-', '—', '--', 'n/a', 'na', 'nil', 'null', 'none', '?'].includes(val.trim().toLowerCase())))
+            ) {
+              clean[col] = null;
+            } else {
+              clean[col] = val;
+            }
+          }
+        }
+        return clean;
+      }).filter(r => Object.keys(r).length > 0);
+
+      const uniqueKeyCol = wm.columns.find(c => c.uniqueKey)?.supabaseColumn;
+
+      preparedSheetData.push({
+        id: sheetId,
+        mapping: wm,
+        cleanRecords: cleanRecordsForSupabase,
+        uniqueKeyCol
+      });
+    }
+
+    const initialTableStatuses: TablePushStatus[] = preparedSheetData.map(item => ({
+      id: item.id,
+      tableName: item.mapping.supabaseTable,
+      sheetName: item.mapping.worksheetName,
+      totalRows: item.cleanRecords.length,
+      processedRows: 0,
+      successfulRows: 0,
+      status: 'pending' as const,
+    }));
 
     const totalRowsToPush = initialTableStatuses.reduce((acc, t) => acc + t.totalRows, 0);
 
@@ -354,7 +433,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
       isActive: true,
       status: 'preparing',
       percentage: 2,
-      currentTable: activeMaps[0]?.supabaseTable || '',
+      currentTable: preparedSheetData[0]?.mapping.supabaseTable || '',
       currentBatch: 0,
       totalBatches: 1,
       processedRows: 0,
@@ -362,7 +441,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
       successfulRows: 0,
       failedRows: 0,
       tableProgressList: initialTableStatuses,
-      liveLogs: [`[${new Date().toLocaleTimeString()}] Initialized push pipeline for ${filename} (${totalRowsToPush.toLocaleString()} rows across ${activeMaps.length} table mappings)`]
+      liveLogs: [`[${new Date().toLocaleTimeString()}] Initialized push pipeline for ${filename} (${totalRowsToPush.toLocaleString()} rows across ${preparedSheetData.length} worksheet mappings)`]
     });
 
     // Supabase Live Push
@@ -372,74 +451,63 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
     if (supabaseConfig?.url && (supabaseConfig.anonKey || supabaseConfig.serviceKey || supabaseConfig.serviceRoleKey)) {
       try {
-        for (let mIdx = 0; mIdx < activeMaps.length; mIdx++) {
-          const wm = activeMaps[mIdx];
-          const rawRecords = capturedDbRecords[wm.supabaseTable] || databaseState[wm.supabaseTable] || [];
-          
-          if (rawRecords.length === 0) continue;
+        let completedRowsAcc = 0;
 
-          // ONLY send mapped Supabase columns to avoid PostgREST rejecting extra metadata
-          const allowedCols = new Set(wm.columns.map(c => c.supabaseColumn));
-          if (wm.sectionHeadingTargetCol) {
-            allowedCols.add(wm.sectionHeadingTargetCol);
+        for (let mIdx = 0; mIdx < preparedSheetData.length; mIdx++) {
+          const item = preparedSheetData[mIdx];
+          const wm = item.mapping;
+          const cleanRecordsForSupabase = item.cleanRecords;
+          const sheetId = item.id;
+          
+          if (cleanRecordsForSupabase.length === 0) {
+            setImportProgress(prev => {
+              if (!prev) return null;
+              const updated = prev.tableProgressList.map(t => 
+                (t.id === sheetId || (t.sheetName === wm.worksheetName && t.tableName === wm.supabaseTable))
+                  ? { ...t, status: 'done' as const, processedRows: 0, successfulRows: 0 } 
+                  : t
+              );
+              return {
+                ...prev,
+                tableProgressList: updated,
+                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ℹ Sheet '${wm.worksheetName}' has 0 rows to push (skipped)`]
+              };
+            });
+            continue;
           }
 
-          const cleanRecordsForSupabase = rawRecords.map(r => {
-            const clean: Record<string, any> = {};
-            for (const col of allowedCols) {
-              if (r[col] !== undefined) {
-                const val = r[col];
-                // Keep empty cells or placeholder tokens as null in DB
-                if (
-                  val === null ||
-                  val === undefined ||
-                  (typeof val === 'string' &&
-                    (val.trim() === '' || ['-', '—', '--', 'n/a', 'na', 'nil', 'null', 'none', '?'].includes(val.trim().toLowerCase())))
-                ) {
-                  clean[col] = null;
-                } else {
-                  clean[col] = val;
-                }
-              }
-            }
-            return clean;
-          }).filter(r => Object.keys(r).length > 0);
-
-          if (cleanRecordsForSupabase.length === 0) continue;
-
-          const uniqueKeyCol = wm.columns.find(c => c.uniqueKey)?.supabaseColumn;
-
-          // Set current table to running
+          // Set current worksheet/table to running
           setImportProgress(prev => {
             if (!prev) return null;
             const updated = prev.tableProgressList.map(t => 
-              t.tableName === wm.supabaseTable ? { ...t, status: 'running' as const } : t
+              (t.id === sheetId || (t.sheetName === wm.worksheetName && t.tableName === wm.supabaseTable))
+                ? { ...t, status: 'running' as const } 
+                : t
             );
             return {
               ...prev,
               status: 'pushing',
-              currentTable: wm.supabaseTable,
+              currentTable: `${wm.worksheetName} → public.${wm.supabaseTable}`,
               tableProgressList: updated,
-              liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] Pushing to table 'public.${wm.supabaseTable}' (${cleanRecordsForSupabase.length.toLocaleString()} rows)...`]
+              liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] Pushing worksheet '${wm.worksheetName}' (${cleanRecordsForSupabase.length.toLocaleString()} rows) to public.${wm.supabaseTable}...`]
             };
           });
+
+          const currentDoneBefore = completedRowsAcc;
 
           const upRes = await ApiClient.upsertSupabaseRecords(
             supabaseConfig,
             wm.supabaseTable,
             cleanRecordsForSupabase,
-            uniqueKeyCol,
+            item.uniqueKeyCol,
             (batchProgress) => {
               setImportProgress(prev => {
                 if (!prev) return null;
-                const doneRowsBefore = prev.tableProgressList
-                  .filter(t => t.tableName !== wm.supabaseTable && t.status === 'done')
-                  .reduce((acc, t) => acc + t.totalRows, 0);
-                const overallProcessed = doneRowsBefore + batchProgress.processed;
-                const overallPct = prev.totalRows > 0 ? Math.min(98, Math.round((overallProcessed / prev.totalRows) * 100)) : 50;
+                const overallProcessed = currentDoneBefore + batchProgress.processed;
+                const overallPct = prev.totalRows > 0 ? Math.min(99, Math.round((overallProcessed / prev.totalRows) * 100)) : 50;
 
                 const updated = prev.tableProgressList.map(t => 
-                  t.tableName === wm.supabaseTable 
+                  (t.id === sheetId || (t.sheetName === wm.worksheetName && t.tableName === wm.supabaseTable))
                     ? { ...t, processedRows: batchProgress.processed, successfulRows: batchProgress.successfulCount } 
                     : t
                 );
@@ -453,7 +521,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                   successfulRows: totalSuccessCount + batchProgress.successfulCount,
                   tableProgressList: updated,
                   liveLogs: batchProgress.message 
-                    ? [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] [${wm.supabaseTable}] ${batchProgress.message}`]
+                    ? [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] [${wm.worksheetName}] ${batchProgress.message}`]
                     : prev.liveLogs
                 };
               });
@@ -467,14 +535,16 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
             setImportProgress(prev => {
               if (!prev) return null;
               const updated = prev.tableProgressList.map(t => 
-                t.tableName === wm.supabaseTable ? { ...t, status: 'error' as const, error: upRes.error } : t
+                (t.id === sheetId || (t.sheetName === wm.worksheetName && t.tableName === wm.supabaseTable))
+                  ? { ...t, status: 'error' as const, error: upRes.error } 
+                  : t
               );
               return {
                 ...prev,
                 status: 'error',
                 failedRows: prev.failedRows + cleanRecordsForSupabase.length,
                 tableProgressList: updated,
-                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ❌ Failed on table 'public.${wm.supabaseTable}': ${upRes.error}`]
+                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ❌ Failed on sheet '${wm.worksheetName}' -> table 'public.${wm.supabaseTable}': ${upRes.error}`]
               };
             });
 
@@ -496,7 +566,6 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
               const offending = intMatch ? intMatch[1] : '';
               let culpritCol = '';
 
-              // 1. Search clean records for the exact offending string
               if (offending) {
                 for (const r of cleanRecordsForSupabase) {
                   for (const [k, v] of Object.entries(r)) {
@@ -509,7 +578,6 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                 }
               }
 
-              // 2. Search mapped columns where dataType is integer/decimal but data contains non-numeric strings
               if (!culpritCol) {
                 const numCol = wm.columns.find(c => (c.dataType === 'integer' || c.dataType === 'decimal') && c.supabaseColumn !== 'id');
                 if (numCol) {
@@ -517,18 +585,15 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                 }
               }
 
-              // 3. Check section heading target if mapped
               if (!culpritCol && wm.sectionHeadingTargetCol) {
                 culpritCol = wm.sectionHeadingTargetCol;
               }
 
-              // 4. Fallback to first non-id mapped column in the worksheet
               if (!culpritCol && wm.columns.length > 0) {
                 const firstNonId = wm.columns.find(c => c.supabaseColumn !== 'id');
                 culpritCol = firstNonId ? firstNonId.supabaseColumn : wm.columns[0].supabaseColumn;
               }
 
-              // Generate appropriate SQL script (ALTER COLUMN to text or ADD COLUMN IF NOT EXISTS)
               const alterSql = upRes.error?.includes('42703') || (upRes.error?.includes('column') && upRes.error?.includes('does not exist'))
                 ? `ALTER TABLE public.${wm.supabaseTable} ADD COLUMN IF NOT EXISTS "${culpritCol}" text;`
                 : `ALTER TABLE public.${wm.supabaseTable} ALTER COLUMN "${culpritCol}" TYPE text;`;
@@ -541,33 +606,37 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
               });
             }
 
-            break; // Stop at first table failure
+            break; // Stop at first failure
           } else {
-            const tableRowsCount = upRes.upsertedCount || cleanRecordsForSupabase.length;
-            totalSuccessCount += tableRowsCount;
+            const tableRowsCount = cleanRecordsForSupabase.length;
+            completedRowsAcc += tableRowsCount;
+            totalSuccessCount += (upRes.upsertedCount !== undefined ? upRes.upsertedCount : tableRowsCount);
 
             setImportProgress(prev => {
               if (!prev) return null;
               const updated = prev.tableProgressList.map(t => 
-                t.tableName === wm.supabaseTable 
+                (t.id === sheetId || (t.sheetName === wm.worksheetName && t.tableName === wm.supabaseTable))
                   ? { ...t, status: 'done' as const, processedRows: t.totalRows, successfulRows: t.totalRows } 
                   : t
               );
               return {
                 ...prev,
                 tableProgressList: updated,
-                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ✅ Table 'public.${wm.supabaseTable}' complete! (${tableRowsCount.toLocaleString()} rows committed)`]
+                liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] ✅ Sheet '${wm.worksheetName}' -> public.${wm.supabaseTable} complete! (${tableRowsCount.toLocaleString()} rows committed)`]
               };
             });
-
-            // Refresh local database preview
-            try {
-              const latest = await ApiClient.fetchSupabaseTableRows(supabaseConfig, wm.supabaseTable, 100);
-              if (latest.success && latest.rows) {
-                onUpdateDatabase(wm.supabaseTable, latest.rows);
-              }
-            } catch {}
           }
+        }
+
+        // Refresh local database preview for all affected tables
+        const uniqueTables = Array.from(new Set(preparedSheetData.map(p => p.mapping.supabaseTable)));
+        for (const tbl of uniqueTables) {
+          try {
+            const latest = await ApiClient.fetchSupabaseTableRows(supabaseConfig, tbl, 100);
+            if (latest.success && latest.rows) {
+              onUpdateDatabase(tbl, latest.rows);
+            }
+          } catch {}
         }
       } catch (err: any) {
         anySupabaseError = { error: err.message };
@@ -593,12 +662,12 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
         percentage: 100,
         processedRows: totalRowsToPush,
         successfulRows: totalSuccessCount,
-        liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] 🚀 Finished! Successfully committed ${totalSuccessCount.toLocaleString()} total rows to Supabase!`]
+        liveLogs: [...prev.liveLogs.slice(-30), `[${new Date().toLocaleTimeString()}] 🚀 Finished! Successfully committed ${totalSuccessCount.toLocaleString()} total rows across all worksheets to Supabase!`]
       } : null);
 
       setImportNotice({
         success: true,
-        message: `Production Import completed! Synced ${totalSuccessCount.toLocaleString()} records directly to Supabase.`
+        message: `Production Import completed! Synced all ${totalSuccessCount.toLocaleString()} records across all worksheets directly to Supabase.`
       });
     }
 
@@ -1029,11 +1098,11 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
             </div>
           </div>
 
-          {/* Table by Table Status Pill Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+          {/* Table by Table Status Pill Grid (Supports 8+ Worksheets & Divisions with auto-scroll) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 pt-1 max-h-64 overflow-y-auto pr-1">
             {importProgress.tableProgressList.map((t, idx) => (
               <div
-                key={`${t.tableName}-${t.sheetName || idx}`}
+                key={`${t.id || t.tableName}-${t.sheetName || idx}`}
                 className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
                   t.status === 'done'
                     ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'

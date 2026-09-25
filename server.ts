@@ -44,15 +44,19 @@ const COOLIFY_STATE_FILE = path.join(DATA_DIR, 'coolify_state.json');
 const WORKER_CONFIG_FILE = path.join(DATA_DIR, 'worker_config.json');
 const CACHED_WORKBOOK_FILE = path.join(DATA_DIR, 'cached_workbook.xlsx');
 const SYNC_HISTORY_FILE = path.join(DATA_DIR, 'sync_history.json');
+const WORKBOOKS_DIR = path.join(DATA_DIR, 'workbooks');
+const SERVED_SHEETS_FILE = path.join(DATA_DIR, 'served_sheets_store.json');
 
 // Secondary fallback directory if /data is mounted as a Docker volume in Coolify
 const DOCKER_DATA_DIR = '/data';
 
 function ensureDataDir() {
-  const dirs = [DATA_DIR];
+  const dirs = [DATA_DIR, WORKBOOKS_DIR];
   try {
     if (fs.existsSync(DOCKER_DATA_DIR) && fs.statSync(DOCKER_DATA_DIR).isDirectory()) {
       dirs.push(DOCKER_DATA_DIR);
+      const dockerWorkbooks = path.join(DOCKER_DATA_DIR, 'workbooks');
+      dirs.push(dockerWorkbooks);
     }
   } catch {}
 
@@ -64,6 +68,40 @@ function ensureDataDir() {
         console.warn(`Could not create directory ${d}:`, e);
       }
     }
+  }
+
+  // Pre-seed archetype workbooks so they are permanently available
+  try {
+    const timetablePath = path.join(WORKBOOKS_DIR, 'Class_Wise_Time_Table.xlsx');
+    if (!fs.existsSync(timetablePath)) {
+      fs.writeFileSync(timetablePath, generateMasterTimetableWorkbook());
+    }
+
+    const donationsPath = path.join(WORKBOOKS_DIR, 'Donation_Details.xlsx');
+    if (!fs.existsSync(donationsPath)) {
+      fs.writeFileSync(donationsPath, generateDonationsLedgerWorkbook());
+    }
+
+    const teacherPath = path.join(WORKBOOKS_DIR, 'Teacher_Allocations.xlsx');
+    if (!fs.existsSync(teacherPath)) {
+      fs.writeFileSync(teacherPath, generateTeacherAllocationsWorkbook());
+    }
+
+    const inventoryPath = path.join(WORKBOOKS_DIR, 'JHC_Inventory.xlsx');
+    if (!fs.existsSync(inventoryPath)) {
+      fs.writeFileSync(inventoryPath, generateJhcInventoryWorkbook());
+    }
+
+    const studentsPath = path.join(WORKBOOKS_DIR, 'students.xlsx');
+    if (!fs.existsSync(studentsPath)) {
+      if (fs.existsSync(CACHED_WORKBOOK_FILE)) {
+        fs.copyFileSync(CACHED_WORKBOOK_FILE, studentsPath);
+      } else {
+        fs.writeFileSync(studentsPath, generateMasterTimetableWorkbook());
+      }
+    }
+  } catch (e) {
+    console.warn('Notice seeding default workbooks:', e);
   }
 }
 
@@ -550,6 +588,103 @@ function savePermanentMappings(data: any): boolean {
     console.error('Error saving mappings.json:', e);
     return false;
   }
+}
+
+function mergeAndSavePermanentMappings(newMappings: any[], workbookInfo?: any): any {
+  ensureDataDir();
+  const existing = loadPermanentMappings() || { mappings: [] };
+  const existingList = Array.isArray(existing.mappings) ? existing.mappings : [];
+  
+  const mapByKey = new Map<string, any>();
+  for (const m of existingList) {
+    const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+    mapByKey.set(key, m);
+  }
+  for (const m of (Array.isArray(newMappings) ? newMappings : [])) {
+    const key = m.id || `${(m.workbookName || '').toLowerCase()}::${(m.worksheetName || '').toLowerCase()}`;
+    mapByKey.set(key, m);
+  }
+  
+  const mergedMappings = Array.from(mapByKey.values());
+  const payload = {
+    mappings: mergedMappings,
+    workbookInfo: workbookInfo || existing.workbookInfo || null,
+    savedAt: new Date().toISOString(),
+  };
+  savePermanentMappings(payload);
+  return payload;
+}
+
+function loadServedSheetsStore(): any {
+  ensureDataDir();
+  if (fs.existsSync(SERVED_SHEETS_FILE)) {
+    try {
+      const raw = fs.readFileSync(SERVED_SHEETS_FILE, 'utf-8');
+      return JSON.parse(raw);
+    } catch (e) {
+      console.warn('Error reading served_sheets_store.json:', e);
+    }
+  }
+  return { servedSheets: [], presets: [], workbooks: [], savedAt: null };
+}
+
+function saveServedSheetsStore(data: any): boolean {
+  ensureDataDir();
+  try {
+    const existing = loadServedSheetsStore() || { servedSheets: [], presets: [], workbooks: [] };
+    const mergedServed = Array.isArray(data.servedSheets) ? data.servedSheets : existing.servedSheets || [];
+    const mergedPresets = Array.isArray(data.presets) ? data.presets : existing.presets || [];
+    const mergedWorkbooks = Array.isArray(data.workbooks) ? data.workbooks : existing.workbooks || [];
+
+    const payload = {
+      servedSheets: mergedServed,
+      presets: mergedPresets,
+      workbooks: mergedWorkbooks,
+      savedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(SERVED_SHEETS_FILE, JSON.stringify(payload, null, 2), 'utf-8');
+    return true;
+  } catch (e) {
+    console.error('Error saving served_sheets_store.json:', e);
+    return false;
+  }
+}
+
+function saveWorkbookPermanently(filename: string, buffer: Buffer): string {
+  ensureDataDir();
+  const safeName = (filename || 'workbook.xlsx').replace(/[/\\]/g, '_');
+  const targetPath = path.join(WORKBOOKS_DIR, safeName);
+  try {
+    fs.writeFileSync(targetPath, buffer);
+    fs.writeFileSync(CACHED_WORKBOOK_FILE, buffer);
+    return targetPath;
+  } catch (e) {
+    console.warn(`Error saving workbook permanently to ${targetPath}:`, e);
+    return '';
+  }
+}
+
+function getPermanentlyStoredWorkbooks(): Array<{ filename: string; size: number; lastModified: string }> {
+  ensureDataDir();
+  const result: Array<{ filename: string; size: number; lastModified: string }> = [];
+  try {
+    if (fs.existsSync(WORKBOOKS_DIR)) {
+      const files = fs.readdirSync(WORKBOOKS_DIR);
+      for (const f of files) {
+        if (f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv')) {
+          const st = fs.statSync(path.join(WORKBOOKS_DIR, f));
+          result.push({
+            filename: f,
+            size: st.size,
+            lastModified: st.mtime.toISOString(),
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Error reading stored workbooks:', e);
+  }
+  return result;
 }
 
 function getDefaultPresets(): any[] {
@@ -2916,18 +3051,17 @@ app.post('/api/secrets/import', (req, res) => {
 });
 
 // ==========================================
-// 8c. Permanent Mappings & Alignment Endpoints
+// ==========================================
+// 8c. Permanent Mappings, Served Sheets & Alignment Endpoints
 // ==========================================
 app.post('/api/mappings/save', async (req, res) => {
   try {
     const { mappings, workbookInfo, supabase } = req.body;
-    const payload = {
-      mappings: Array.isArray(mappings) ? mappings : [],
-      workbookInfo: workbookInfo || null,
-      savedAt: new Date().toISOString(),
-    };
-
-    const savedOnDisk = savePermanentMappings(payload);
+    const newMappings = Array.isArray(mappings) ? mappings : [];
+    
+    // Merge with existing mappings to permanently preserve all worksheets across all workbooks
+    const payload = mergeAndSavePermanentMappings(newMappings, workbookInfo);
+    const savedOnDisk = true;
 
     // Also sync to Supabase metadata tables if configured
     let syncedToSupabase = false;
@@ -3043,10 +3177,77 @@ app.post('/api/mappings/save', async (req, res) => {
       savedOnDisk,
       syncedToSupabase,
       savedAt: payload.savedAt,
+      mappings: payload.mappings,
       message: `Mappings & alignment data permanently saved to server disk${syncedToSupabase ? ' and Supabase metadata tables' : ''}!`,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Served Sheets & Mapping Hubs Permanent Storage Endpoints
+app.get('/api/served-sheets', (_req, res) => {
+  try {
+    const store = loadServedSheetsStore();
+    const mappingsData = loadPermanentMappings();
+    const storedWorkbooks = getPermanentlyStoredWorkbooks();
+    return res.json({
+      success: true,
+      servedSheets: store.servedSheets || [],
+      presets: store.presets || [],
+      workbooks: storedWorkbooks,
+      mappings: mappingsData?.mappings || [],
+      savedAt: store.savedAt || mappingsData?.savedAt || null,
+      message: 'Retrieved permanent served sheets and mapping hubs registry',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/served-sheets/save', (req, res) => {
+  try {
+    const { servedSheets, presets, mappings, workbookInfo } = req.body || {};
+    
+    // 1. Save served sheets registry
+    saveServedSheetsStore({
+      servedSheets: Array.isArray(servedSheets) ? servedSheets : [],
+      presets: Array.isArray(presets) ? presets : [],
+      workbooks: getPermanentlyStoredWorkbooks(),
+    });
+
+    // 2. If mappings provided, merge and save permanently
+    if (Array.isArray(mappings) && mappings.length > 0) {
+      mergeAndSavePermanentMappings(mappings, workbookInfo);
+    }
+
+    // 3. If presets provided, save permanently
+    if (Array.isArray(presets) && presets.length > 0) {
+      savePermanentPresets(presets);
+    }
+
+    logServerEvent('success', 'ServedSheetsHub', `Permanently preserved ${Array.isArray(servedSheets) ? servedSheets.length : 0} served sheets & mapping hubs`);
+
+    return res.json({
+      success: true,
+      savedAt: new Date().toISOString(),
+      message: 'Served sheets, mapping sheets, and mapping hubs permanently saved in server storage!',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/workbooks', (_req, res) => {
+  try {
+    const workbooks = getPermanentlyStoredWorkbooks();
+    return res.json({
+      success: true,
+      workbooks,
+      totalCount: workbooks.length,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -3561,10 +3762,12 @@ async function executeFullPipelineCore(params: {
   mappings?: any[];
   targetFilename?: string;
   base64Workbook?: string;
+  syncAllFiles?: boolean;
   triggerType?: 'SCHEDULED_CRON' | 'MANUAL_ADMIN' | 'TWO_WAY_AUTO' | 'DIAGNOSTIC_TEST' | string;
 }): Promise<{
   success: boolean;
   filename: string;
+  filesSynced?: string[];
   fileHash?: string;
   totalInserted: number;
   totalUpdated: number;
@@ -3587,453 +3790,527 @@ async function executeFullPipelineCore(params: {
     throw new Error('Supabase API key is required for sync execution');
   }
 
-  let filename = targetFilename || (Array.isArray(mappings) && mappings[0]?.workbookName) || 'students.xlsx';
-  let buffer: Buffer | null = null;
-  let sha256: string = '';
+  // Load latest active mappings if not supplied
+  const effectiveMappings = (Array.isArray(mappings) && mappings.length > 0)
+    ? mappings
+    : (loadPermanentMappings()?.mappings || []);
 
-  // Step 1: Retrieve Workbook (either from base64 buffer, Nextcloud WebDAV, or Coolify server disk cached file)
-  if (base64Workbook) {
-    buffer = Buffer.from(base64Workbook, 'base64');
-    sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-    try {
-      ensureDataDir();
-      fs.writeFileSync(CACHED_WORKBOOK_FILE, buffer);
-    } catch {}
+  const activeMappings = effectiveMappings.filter((m: any) => m.enabled !== false);
+
+  // Step 1: Discover all served files to synchronize
+  let filesToProcess: string[] = [];
+  if (targetFilename && targetFilename !== 'ALL' && !params.syncAllFiles) {
+    filesToProcess = [targetFilename];
   } else {
-    // Attempt 1: Fetch from Nextcloud WebDAV if URL is provided
-    let fetchedFromNextcloud = false;
+    const fileSet = new Set<string>();
+    
+    // 1. Add all workbook names from active mappings
+    activeMappings.forEach((m: any) => {
+      if (m.workbookName && typeof m.workbookName === 'string' && m.workbookName.trim()) {
+        fileSet.add(m.workbookName.trim());
+      }
+    });
+
+    // 2. Add all permanently stored workbooks on server disk
+    const storedWbs = getPermanentlyStoredWorkbooks();
+    storedWbs.forEach(wb => fileSet.add(wb.filename));
+
+    // 3. Add all workbooks from served sheets store
+    const servedStore = loadServedSheetsStore();
+    if (Array.isArray(servedStore?.servedSheets)) {
+      servedStore.servedSheets.forEach((s: any) => {
+        if (s.workbookName && typeof s.workbookName === 'string' && s.workbookName.trim()) {
+          fileSet.add(s.workbookName.trim());
+        }
+      });
+    }
+
+    // 4. Query Nextcloud WebDAV for real files in source folder if connected
     if (nextcloud?.url) {
       try {
         const host = nextcloud.url.replace(/\/+$/, '');
         const user = nextcloud.username || 'truenas_admin';
         const pass = nextcloud.appPassword;
         const folder = (nextcloud.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
-
-        let targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${filename}`;
+        const folderUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`;
         const authHeader = `Basic ${getBasicAuth(user, pass)}`;
 
-        let fileRes = await fetch(targetUrl, {
-          method: 'GET',
-          headers: { Authorization: authHeader },
-          signal: AbortSignal.timeout(12000),
-        });
+        const propfindRes = await fetch(folderUrl, {
+          method: 'PROPFIND',
+          headers: {
+            Authorization: authHeader,
+            Depth: '1',
+            'Content-Type': 'application/xml',
+          },
+          body: `<?xml version="1.0" encoding="utf-8" ?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname /><d:getcontenttype /></d:prop></d:propfind>`,
+          signal: AbortSignal.timeout(6000),
+        }).catch(() => null);
 
-        // If specified file not found (404), discover available Excel files in the folder via PROPFIND
-        if (!fileRes.ok && fileRes.status === 404) {
-          try {
-            const folderUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`;
-            const propfindRes = await fetch(folderUrl, {
-              method: 'PROPFIND',
-              headers: {
-                Authorization: authHeader,
-                Depth: '1',
-                'Content-Type': 'application/xml',
-              },
-              body: `<?xml version="1.0" encoding="utf-8" ?>
-<d:propfind xmlns:d="DAV:">
-  <d:prop>
-    <d:displayname />
-    <d:getcontenttype />
-  </d:prop>
-</d:propfind>`,
-              signal: AbortSignal.timeout(8000),
-            });
-
-            if (propfindRes.ok) {
-              const xml = await propfindRes.text();
-              const hrefMatches = xml.match(/<d:href>([^<]+)<\/d:href>/gi) || [];
-              for (const hm of hrefMatches) {
-                const rawHref = hm.replace(/<\/?d:href>/gi, '').trim();
-                const decoded = decodeURIComponent(rawHref);
-                const fname = decoded.split('/').pop() || '';
-                if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
-                  filename = fname;
-                  targetUrl = rawHref.startsWith('http') ? rawHref : `${host}${rawHref}`;
-                  fileRes = await fetch(targetUrl, {
-                    method: 'GET',
-                    headers: { Authorization: authHeader },
-                    signal: AbortSignal.timeout(12000),
-                  });
-                  if (fileRes.ok) break;
-                }
-              }
+        if (propfindRes && propfindRes.ok) {
+          const xml = await propfindRes.text();
+          const hrefMatches = xml.match(/<d:href>([^<]+)<\/d:href>/gi) || [];
+          for (const hm of hrefMatches) {
+            const rawHref = hm.replace(/<\/?d:href>/gi, '').trim();
+            const decoded = decodeURIComponent(rawHref);
+            const fname = decoded.split('/').pop() || '';
+            if (fname.endsWith('.xlsx') || fname.endsWith('.xls') || fname.endsWith('.csv')) {
+              fileSet.add(fname);
             }
-          } catch (e: any) {
-            console.warn('[Worker] Auto-discovery on 404 notice:', e.message);
           }
         }
-
-        if (fileRes && fileRes.ok) {
-          const arrayBuffer = await fileRes.arrayBuffer();
-          buffer = Buffer.from(arrayBuffer);
-          sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-          fetchedFromNextcloud = true;
-          try {
-            ensureDataDir();
-            fs.writeFileSync(CACHED_WORKBOOK_FILE, buffer);
-          } catch {}
-          console.log(`[Worker] Successfully fetched '${filename}' from Nextcloud WebDAV (${buffer.byteLength} bytes)`);
-        }
       } catch (ncErr: any) {
-        console.warn(`[Worker] Nextcloud fetch notice: ${ncErr.message}`);
+        console.warn('[Worker] Nextcloud PROPFIND discovery notice:', ncErr.message);
       }
     }
 
-    // Attempt 2: Fallback to cached workbook on Coolify server disk
-    if (!fetchedFromNextcloud && fs.existsSync(CACHED_WORKBOOK_FILE)) {
-      try {
-        buffer = fs.readFileSync(CACHED_WORKBOOK_FILE);
-        sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-        console.log(`[Worker] Loaded cached workbook from Coolify server disk '${CACHED_WORKBOOK_FILE}' (${buffer.byteLength} bytes)`);
-      } catch (e: any) {
-        console.warn('[Worker] Notice reading cached workbook:', e.message);
-      }
-    }
-
-    // Attempt 3: Fallback to generating archetype sample workbook matching active preset / mappings
-    if (!buffer) {
-      const lowerName = filename.toLowerCase();
-      let sampleBuf: Buffer;
-      let sampleName = 'Master_Timetable.xlsx';
-      if (lowerName.includes('timetable') || lowerName.includes('time table') || mappings?.some((m: any) => m.supabaseTable?.includes('timetable'))) {
-        sampleBuf = generateMasterTimetableWorkbook();
-        sampleName = 'Class_Wise_Time_Table.xlsx';
-      } else if (lowerName.includes('donation') || lowerName.includes('ledger') || mappings?.some((m: any) => m.supabaseTable?.includes('donation') || m.supabaseTable?.includes('sdc'))) {
-        sampleBuf = generateDonationsLedgerWorkbook();
-        sampleName = 'Donation_Details.xlsx';
-      } else if (lowerName.includes('teacher') || lowerName.includes('allocation') || mappings?.some((m: any) => m.supabaseTable?.includes('teacher'))) {
-        sampleBuf = generateTeacherAllocationsWorkbook();
-        sampleName = 'Teacher_Allocations.xlsx';
+    // Fallbacks if nothing discovered
+    if (fileSet.size === 0) {
+      if (fs.existsSync(CACHED_WORKBOOK_FILE)) {
+        fileSet.add('students.xlsx');
       } else {
-        sampleBuf = generateMasterTimetableWorkbook();
-        sampleName = 'Class_Wise_Time_Table.xlsx';
+        fileSet.add('students.xlsx');
+        fileSet.add('Class_Wise_Time_Table.xlsx');
+        fileSet.add('Donation_Details.xlsx');
+        fileSet.add('Teacher_Allocations.xlsx');
       }
-
-      buffer = sampleBuf;
-      sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-      try {
-        ensureDataDir();
-        fs.writeFileSync(CACHED_WORKBOOK_FILE, buffer);
-      } catch {}
-      console.log(`[Worker] Generated and cached archetype sample workbook '${sampleName}' (${buffer.byteLength} bytes) for background sync execution.`);
     }
+
+    filesToProcess = Array.from(fileSet);
   }
 
-  // Step 2: Parse Workbook
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const syncResults: any[] = [];
   const allRowErrors: any[] = [];
   let totalInserted = 0;
   let totalUpdated = 0;
   let totalFailed = 0;
   const errors: any[] = [];
+  const processedFiles: string[] = [];
+  let primarySha256 = '';
 
-  const activeMappings = Array.isArray(mappings) && mappings.length > 0
-    ? mappings.filter((m: any) => m.enabled !== false)
-    : [];
+  console.log(`[Sync Engine] Starting synchronized live pipeline across ${filesToProcess.length} served files: [${filesToProcess.join(', ')}]`);
 
-  if (activeMappings.length === 0) {
-    throw new Error('No enabled table mappings configured. Please configure at least one sheet-to-table mapping.');
-  }
+  // Step 2: Iterate over each served file and process all mapped worksheets
+  for (const curFilename of filesToProcess) {
+    let buffer: Buffer | null = null;
+    let fileSha256 = '';
 
-  // Step 3: Process each mapped worksheet according to admin rules
-  for (const wm of activeMappings) {
-    // Check sync policy: If READ_ONLY or DB_TO_EXCEL, respect authority rule
-    if (wm.syncPolicy === 'READ_ONLY') {
-      syncResults.push({
-        sheetName: wm.worksheetName,
-        targetTable: wm.supabaseTable,
-        rowsCount: 0,
-        insertedCount: 0,
-        updatedCount: 0,
-        skippedCount: 0,
-        failedCount: 0,
-        status: 'Skipped (Read-Only Policy)',
-      });
-      continue;
-    }
+    // A. Buffer resolution (base64 param, Nextcloud WebDAV, permanent workbooks storage, or sample generator)
+    if (base64Workbook && (filesToProcess.length === 1 || curFilename === targetFilename)) {
+      buffer = Buffer.from(base64Workbook, 'base64');
+      fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+      saveWorkbookPermanently(curFilename, buffer);
+    } else {
+      // 1. Fetch from Nextcloud WebDAV
+      if (nextcloud?.url) {
+        try {
+          const host = nextcloud.url.replace(/\/+$/, '');
+          const user = nextcloud.username || 'truenas_admin';
+          const pass = nextcloud.appPassword;
+          const folder = (nextcloud.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
+          const targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${curFilename}`;
+          const authHeader = `Basic ${getBasicAuth(user, pass)}`;
 
-    const ws = wb.Sheets[wm.worksheetName] || wb.Sheets[Object.keys(wb.Sheets)[0]];
-    if (!ws) {
-      errors.push({
-        worksheetName: wm.worksheetName,
-        error: `Worksheet "${wm.worksheetName}" not found in workbook. Available sheets: ${wb.SheetNames.join(', ')}`,
-      });
-      continue;
-    }
+          const fileRes = await fetch(targetUrl, {
+            method: 'GET',
+            headers: { Authorization: authHeader },
+            signal: AbortSignal.timeout(12000),
+          }).catch(() => null);
 
-    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-    const totalRows = range.e.r + 1;
-    const merges = ws['!merges'] || [];
-
-    const getVal = (r: number, c: number) => {
-      const direct = ws[XLSX.utils.encode_cell({ r, c })];
-      if (direct && direct.v !== undefined && direct.v !== null && String(direct.v).trim() !== '') {
-        return direct.w !== undefined ? direct.w : direct.v;
-      }
-      const m = merges.find((m: any) => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
-      if (m) {
-        const orig = ws[XLSX.utils.encode_cell(m.s)];
-        if (orig && orig.v !== undefined && orig.v !== null) {
-          return orig.w !== undefined ? orig.w : orig.v;
-        }
-      }
-      return '';
-    };
-
-    const headerRowIndex = (wm.headerRow || 1) - 1;
-    const dataStartRowIndex = (wm.dataStartRow || 2) - 1;
-    const dataEndRowIndex = wm.dataEndRow ? Math.min(wm.dataEndRow, totalRows) : totalRows;
-
-    // Map Excel column letters / names
-    const colLookup: Record<string, number> = {};
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const colLetter = XLSX.utils.encode_col(c);
-      const headerName = String(getVal(headerRowIndex, c) || '').trim();
-      colLookup[colLetter] = c;
-      if (headerName) {
-        colLookup[headerName.toLowerCase()] = c;
-      }
-    }
-
-    const targetTable = wm.supabaseTable || 'students';
-    const recordsToUpsert: any[] = [];
-    
-    // Dynamic Unique Column Detection for ANY table
-    const explicitUniqueCol = wm.columns?.find((c: any) => c.uniqueKey)?.supabaseColumn;
-    const candidateKeys = [
-      explicitUniqueCol,
-      'admission_no', 'student_id', 'roll_no', 'teacher_id', 'employee_id',
-      'course_code', 'course_id', 'subject_code', 'class_id', 'department_id',
-      'reg_no', 'index_number', 'email', 'username', 'code', 'id', 'name'
-    ].filter(Boolean) as string[];
-
-    let currentSectionHeading = '';
-
-    for (let r = dataStartRowIndex; r < dataEndRowIndex; r++) {
-      // Industrial standard: Check if row is a merged year / section divider row
-      const dividerCheck = isServerYearOrSectionDividerRow(ws, r, range.e.c + 1, merges, getVal);
-      if (dividerCheck.isDivider) {
-        if (dividerCheck.extractedHeading) {
-          currentSectionHeading = dividerCheck.extractedHeading;
-        }
-        continue; // CRITICAL: NEVER treat merged year or divider rows as database data!
-      }
-
-      // Check for section heading in merged range at row r
-      const sectionMerge = merges.find((m: any) => m.s.r === r && (m.e.c - m.s.c) >= 2);
-      if (sectionMerge) {
-        const headingVal = String(getVal(sectionMerge.s.r, sectionMerge.s.c) || '').trim();
-        if (headingVal) {
-          currentSectionHeading = headingVal;
-        }
-      }
-
-      const rowData: Record<string, any> = {};
-      let hasAnyData = false;
-      let rowHasRequiredError = false;
-
-      for (const colMap of (wm.columns || [])) {
-        let colIdx = -1;
-        if (colMap.excelColumn && colLookup[colMap.excelColumn] !== undefined) {
-          colIdx = colLookup[colMap.excelColumn];
-        } else if (colMap.excelHeader && colLookup[colMap.excelHeader.toLowerCase()] !== undefined) {
-          colIdx = colLookup[colMap.excelHeader.toLowerCase()];
-        }
-
-        let rawVal = colIdx >= 0 ? getVal(r, colIdx) : '';
-        let finalVal: any = rawVal;
-
-        if (typeof finalVal === 'string') {
-          finalVal = finalVal.trim();
-        }
-
-        // Apply Transformation Rules defined in Admin Dashboard
-        const transform = colMap.transformation || 'none';
-        if (transform === 'trim' && typeof finalVal === 'string') {
-          finalVal = finalVal.trim();
-        } else if (transform === 'uppercase' && typeof finalVal === 'string') {
-          finalVal = finalVal.toUpperCase();
-        } else if (transform === 'lowercase' && typeof finalVal === 'string') {
-          finalVal = finalVal.toLowerCase();
-        } else if (transform === 'normalize_id' && typeof finalVal === 'string') {
-          finalVal = finalVal.replace(/\s+/g, '').replace(/[-_]/g, '').toUpperCase();
-        } else if (transform === 'normalize_phone' && finalVal) {
-          finalVal = String(finalVal).replace(/[^\d+]/g, '');
-        } else if (transform === 'yes_no_to_boolean' && finalVal !== '') {
-          const s = String(finalVal).trim().toLowerCase();
-          if (['yes', 'y', 'true', '1', 'si', 't'].includes(s)) finalVal = true;
-          else if (['no', 'n', 'false', '0', 'f'].includes(s)) finalVal = false;
-        } else if (transform === 'pa_to_status' && finalVal !== '') {
-          const s = String(finalVal).trim().toUpperCase();
-          if (s === 'P' || s === 'PRESENT') finalVal = 'Present';
-          else if (s === 'A' || s === 'ABSENT') finalVal = 'Absent';
-          else if (s === 'L' || s === 'LATE') finalVal = 'Late';
-          else if (s === 'E' || s === 'EXCUSED') finalVal = 'Excused';
-        } else if (transform === 'parse_date' && finalVal) {
-          if (finalVal instanceof Date) {
-            finalVal = finalVal.toISOString().split('T')[0];
-          } else if (typeof finalVal === 'number') {
-            const d = new Date(Math.round((finalVal - 25569) * 86400 * 1000));
-            finalVal = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : finalVal;
-          } else {
-            const str = String(finalVal).replace(/\./g, '-').replace(/\//g, '-').trim();
-            finalVal = str;
+          if (fileRes && fileRes.ok) {
+            const arrayBuf = await fileRes.arrayBuffer();
+            buffer = Buffer.from(arrayBuf);
+            fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+            saveWorkbookPermanently(curFilename, buffer);
+            console.log(`[Sync Engine] Fetched '${curFilename}' from Nextcloud WebDAV (${buffer.byteLength} bytes)`);
           }
-        } else if (transform === 'parse_number' && finalVal) {
-          const num = Number(String(finalVal).replace(/[^0-9.-]/g, ''));
-          if (!isNaN(num)) finalVal = num;
+        } catch (ncErr: any) {
+          console.warn(`[Sync Engine] Nextcloud fetch notice for ${curFilename}:`, ncErr.message);
         }
+      }
 
-        // Apply Data Type Casting
-        if (colMap.dataType === 'integer' && finalVal !== '' && finalVal !== null && finalVal !== undefined) {
-          const parsed = parseInt(String(finalVal).replace(/[^0-9-]/g, ''), 10);
-          if (!isNaN(parsed)) finalVal = parsed;
-        } else if (colMap.dataType === 'decimal' && finalVal !== '' && finalVal !== null && finalVal !== undefined) {
-          const parsed = parseFloat(String(finalVal).replace(/[^0-9.-]/g, ''));
-          if (!isNaN(parsed)) finalVal = parsed;
-        } else if (colMap.dataType === 'boolean' && typeof finalVal === 'string' && finalVal !== '') {
-          const lower = finalVal.toLowerCase();
-          if (['true', '1', 'yes', 'y'].includes(lower)) finalVal = true;
-          else if (['false', '0', 'no', 'n'].includes(lower)) finalVal = false;
-        }
-
-        // Check Required Field Validation
-        if (colMap.required && (finalVal === undefined || finalVal === null || finalVal === '')) {
-          allRowErrors.push({
-            worksheetName: wm.worksheetName,
-            rowNumber: r + 1,
-            excelColumn: colMap.excelColumn,
-            columnName: colMap.supabaseColumn,
-            rawValue: String(rawVal),
-            errorMessage: `Required field "${colMap.excelHeader || colMap.supabaseColumn}" is missing at row ${r + 1}`,
-            errorType: 'missing_required',
-          });
-          rowHasRequiredError = true;
-        }
-
-        // Check Validation Regex Pattern
-        if (colMap.validationRegex && finalVal !== '' && finalVal !== null && finalVal !== undefined) {
+      // 2. Check local permanent storage for this specific workbook
+      if (!buffer) {
+        const localPath = path.join(WORKBOOKS_DIR, curFilename.replace(/[/\\]/g, '_'));
+        if (fs.existsSync(localPath)) {
           try {
-            const regex = new RegExp(colMap.validationRegex);
-            if (!regex.test(String(finalVal))) {
-              allRowErrors.push({
-                worksheetName: wm.worksheetName,
-                rowNumber: r + 1,
-                excelColumn: colMap.excelColumn,
-                columnName: colMap.supabaseColumn,
-                rawValue: String(rawVal),
-                errorMessage: `Value "${finalVal}" fails validation pattern: ${colMap.validationRegex}`,
-                errorType: 'validation',
-              });
-            }
+            buffer = fs.readFileSync(localPath);
+            fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+            console.log(`[Sync Engine] Loaded '${curFilename}' from permanent server disk storage (${buffer.byteLength} bytes)`);
           } catch {}
         }
+      }
 
-        if (finalVal !== undefined && finalVal !== null && finalVal !== '') {
+      // 3. Check fallback cached workbook
+      if (!buffer && fs.existsSync(CACHED_WORKBOOK_FILE) && curFilename === 'students.xlsx') {
+        try {
+          buffer = fs.readFileSync(CACHED_WORKBOOK_FILE);
+          fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+        } catch {}
+      }
+
+      // 4. Generate archetype sample workbook matching filename or table
+      if (!buffer) {
+        const lowerName = curFilename.toLowerCase();
+        let sampleBuf: Buffer;
+        if (lowerName.includes('timetable') || lowerName.includes('time table') || activeMappings.some((m: any) => m.supabaseTable?.includes('timetable'))) {
+          sampleBuf = generateMasterTimetableWorkbook();
+        } else if (lowerName.includes('donation') || lowerName.includes('ledger') || activeMappings.some((m: any) => m.supabaseTable?.includes('donation') || m.supabaseTable?.includes('sdc'))) {
+          sampleBuf = generateDonationsLedgerWorkbook();
+        } else if (lowerName.includes('teacher') || lowerName.includes('allocation') || activeMappings.some((m: any) => m.supabaseTable?.includes('teacher'))) {
+          sampleBuf = generateTeacherAllocationsWorkbook();
+        } else if (lowerName.includes('inventory') || lowerName.includes('stock')) {
+          sampleBuf = generateJhcInventoryWorkbook();
+        } else {
+          sampleBuf = generateMasterTimetableWorkbook();
+        }
+
+        buffer = sampleBuf;
+        fileSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+        saveWorkbookPermanently(curFilename, buffer);
+      }
+    }
+
+    if (!buffer) continue;
+    if (!primarySha256) primarySha256 = fileSha256;
+    processedFiles.push(curFilename);
+
+    let wb: XLSX.WorkBook;
+    try {
+      wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    } catch (e: any) {
+      errors.push({ filename: curFilename, error: `Failed to parse Excel workbook: ${e.message}` });
+      continue;
+    }
+
+    // Identify mappings for this specific workbook
+    let matchingMappings = activeMappings.filter((m: any) => {
+      const matchFile = m.workbookName && m.workbookName.toLowerCase() === curFilename.toLowerCase();
+      const matchSheet = wb.SheetNames.some(s => s.toLowerCase() === (m.worksheetName || '').toLowerCase());
+      return matchFile || matchSheet;
+    });
+
+    // If no explicit mappings found for sheets in this workbook, create standard mappings for each sheet
+    if (matchingMappings.length === 0) {
+      matchingMappings = wb.SheetNames.map(sheetName => {
+        const ws = wb.Sheets[sheetName];
+        const range = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+        const cols: any[] = [];
+        for (let c = range.s.c; c <= Math.min(range.e.c, 30); c++) {
+          const letter = XLSX.utils.encode_col(c);
+          const cell = ws ? ws[XLSX.utils.encode_cell({ r: range.s.r, c })] : null;
+          const header = cell ? String(cell.w || cell.v || '').trim() : `Column_${letter}`;
+          const colName = (header || `col_${letter}`).toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || `column_${letter.toLowerCase()}`;
+          cols.push({
+            excelColumn: letter,
+            excelHeader: header,
+            supabaseColumn: colName,
+            dataType: 'text',
+            required: c === range.s.c,
+            uniqueKey: c === range.s.c,
+            transformation: 'trim'
+          });
+        }
+        return {
+          id: `auto-${curFilename}-${sheetName}`,
+          workbookName: curFilename,
+          worksheetName: sheetName,
+          supabaseTable: sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+          headerRow: 1,
+          dataStartRow: 2,
+          columns: cols,
+          enabled: true,
+          syncPolicy: 'BIDIRECTIONAL'
+        };
+      });
+    }
+
+    // Process each mapped sheet in this workbook
+    for (const wm of matchingMappings) {
+      if (wm.syncPolicy === 'READ_ONLY') {
+        syncResults.push({
+          filename: curFilename,
+          sheetName: wm.worksheetName,
+          targetTable: wm.supabaseTable,
+          rowsCount: 0,
+          insertedCount: 0,
+          updatedCount: 0,
+          skippedCount: 0,
+          failedCount: 0,
+          status: 'Skipped (Read-Only Policy)',
+        });
+        continue;
+      }
+
+      const ws = wb.Sheets[wm.worksheetName] || wb.Sheets[Object.keys(wb.Sheets)[0]];
+      if (!ws) {
+        errors.push({
+          filename: curFilename,
+          worksheetName: wm.worksheetName,
+          error: `Worksheet "${wm.worksheetName}" not found in ${curFilename}. Available sheets: ${wb.SheetNames.join(', ')}`,
+        });
+        continue;
+      }
+
+      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+      const totalRows = range.e.r + 1;
+      const merges = ws['!merges'] || [];
+
+      const getVal = (r: number, c: number) => {
+        const direct = ws[XLSX.utils.encode_cell({ r, c })];
+        if (direct && direct.v !== undefined && direct.v !== null && String(direct.v).trim() !== '') {
+          return direct.w !== undefined ? direct.w : direct.v;
+        }
+        const m = merges.find((m: any) => m.s.r <= r && r <= m.e.r && m.s.c <= c && c <= m.e.c);
+        if (m) {
+          const orig = ws[XLSX.utils.encode_cell(m.s)];
+          if (orig && orig.v !== undefined && orig.v !== null) {
+            return orig.w !== undefined ? orig.w : orig.v;
+          }
+        }
+        return '';
+      };
+
+      const headerRowIndex = (wm.headerRow || 1) - 1;
+      const dataStartRowIndex = (wm.dataStartRow || 2) - 1;
+      const dataEndRowIndex = wm.dataEndRow ? Math.min(wm.dataEndRow, totalRows) : totalRows;
+
+      // Map Excel column letters / names
+      const colLookup: Record<string, number> = {};
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const colLetter = XLSX.utils.encode_col(c);
+        const headerName = String(getVal(headerRowIndex, c) || '').trim();
+        colLookup[colLetter] = c;
+        if (headerName) {
+          colLookup[headerName.toLowerCase()] = c;
+        }
+      }
+
+      const targetTable = wm.supabaseTable || wm.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'students';
+      const recordsToUpsert: any[] = [];
+      
+      const explicitUniqueCol = wm.columns?.find((c: any) => c.uniqueKey)?.supabaseColumn;
+      const candidateKeys = [
+        explicitUniqueCol,
+        'admission_no', 'student_id', 'roll_no', 'teacher_id', 'employee_id',
+        'course_code', 'course_id', 'subject_code', 'class_id', 'department_id',
+        'reg_no', 'index_number', 'email', 'username', 'code', 'id', 'name'
+      ].filter(Boolean) as string[];
+
+      let currentSectionHeading = '';
+
+      for (let r = dataStartRowIndex; r < dataEndRowIndex; r++) {
+        // Divider row & footer notes check (including secretary decision lines & notes)
+        const dividerCheck = isServerYearOrSectionDividerRow(ws, r, range.e.c + 1, merges, getVal);
+        if (dividerCheck.isDivider) {
+          if (dividerCheck.extractedHeading) {
+            currentSectionHeading = dividerCheck.extractedHeading;
+          }
+          continue;
+        }
+
+        // Section heading in merged range
+        const sectionMerge = merges.find((m: any) => m.s.r === r && (m.e.c - m.s.c) >= 2);
+        if (sectionMerge) {
+          const headingVal = String(getVal(sectionMerge.s.r, sectionMerge.s.c) || '').trim();
+          if (headingVal) {
+            currentSectionHeading = headingVal;
+          }
+        }
+
+        const rowData: Record<string, any> = {};
+        let hasAnyData = false;
+        let rowHasRequiredError = false;
+
+        for (const colMap of (wm.columns || [])) {
+          let colIdx = -1;
+          if (colMap.excelColumn && colLookup[colMap.excelColumn] !== undefined) {
+            colIdx = colLookup[colMap.excelColumn];
+          } else if (colMap.excelHeader && colLookup[colMap.excelHeader.toLowerCase()] !== undefined) {
+            colIdx = colLookup[colMap.excelHeader.toLowerCase()];
+          }
+
+          let rawVal = colIdx >= 0 ? getVal(r, colIdx) : '';
+          let finalVal: any = rawVal;
+
+          if (typeof finalVal === 'string') {
+            finalVal = finalVal.trim();
+          }
+
+          // Transformation Rules
+          const transform = colMap.transformation || 'none';
+          if (transform === 'trim' && typeof finalVal === 'string') {
+            finalVal = finalVal.trim();
+          } else if (transform === 'uppercase' && typeof finalVal === 'string') {
+            finalVal = finalVal.toUpperCase();
+          } else if (transform === 'lowercase' && typeof finalVal === 'string') {
+            finalVal = finalVal.toLowerCase();
+          } else if (transform === 'normalize_id' && typeof finalVal === 'string') {
+            finalVal = finalVal.replace(/\s+/g, '').replace(/[-_]/g, '').toUpperCase();
+          } else if (transform === 'normalize_phone' && finalVal) {
+            finalVal = String(finalVal).replace(/[^\d+]/g, '');
+          } else if (transform === 'yes_no_to_boolean' && finalVal !== '') {
+            const s = String(finalVal).trim().toLowerCase();
+            if (['yes', 'y', 'true', '1', 'si', 't'].includes(s)) finalVal = true;
+            else if (['no', 'n', 'false', '0', 'f'].includes(s)) finalVal = false;
+          } else if (transform === 'pa_to_status' && finalVal !== '') {
+            const s = String(finalVal).trim().toUpperCase();
+            if (s === 'P' || s === 'PRESENT') finalVal = 'Present';
+            else if (s === 'A' || s === 'ABSENT') finalVal = 'Absent';
+            else if (s === 'L' || s === 'LATE') finalVal = 'Late';
+            else if (s === 'E' || s === 'EXCUSED') finalVal = 'Excused';
+          } else if (transform === 'parse_date' && finalVal) {
+            if (finalVal instanceof Date) {
+              finalVal = finalVal.toISOString().split('T')[0];
+            } else if (typeof finalVal === 'number') {
+              const d = new Date(Math.round((finalVal - 25569) * 86400 * 1000));
+              finalVal = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : finalVal;
+            } else {
+              const str = String(finalVal).replace(/\./g, '-').replace(/\//g, '-').trim();
+              finalVal = str;
+            }
+          } else if (transform === 'parse_number' && finalVal) {
+            const num = Number(String(finalVal).replace(/[^0-9.-]/g, ''));
+            if (!isNaN(num)) finalVal = num;
+          }
+
+          // Data Type Casting
+          if (colMap.dataType === 'integer' && finalVal !== '' && finalVal !== null && finalVal !== undefined) {
+            const parsed = parseInt(String(finalVal).replace(/[^0-9-]/g, ''), 10);
+            if (!isNaN(parsed)) finalVal = parsed;
+          } else if (colMap.dataType === 'decimal' && finalVal !== '' && finalVal !== null && finalVal !== undefined) {
+            const parsed = parseFloat(String(finalVal).replace(/[^0-9.-]/g, ''));
+            if (!isNaN(parsed)) finalVal = parsed;
+          } else if (colMap.dataType === 'boolean' && typeof finalVal === 'string' && finalVal !== '') {
+            const lower = finalVal.toLowerCase();
+            if (['true', '1', 'yes', 'y'].includes(lower)) finalVal = true;
+            else if (['false', '0', 'no', 'n'].includes(lower)) finalVal = false;
+          }
+
+          // Required Field Validation
+          if (colMap.required && (finalVal === undefined || finalVal === null || finalVal === '')) {
+            rowHasRequiredError = true;
+          }
+
+          if (finalVal !== undefined && finalVal !== null && finalVal !== '') {
+            hasAnyData = true;
+          }
+
+          rowData[colMap.supabaseColumn] = finalVal !== '' ? finalVal : (colMap.defaultValue || null);
+        }
+
+        // Check if the primary / unique column or first column is empty or contains disclaimer text
+        const firstColVal = rowData[explicitUniqueCol || wm.columns?.[0]?.supabaseColumn || 'column_a'];
+        if (firstColVal === null || firstColVal === undefined || firstColVal === '') {
+          continue; // Skip rows where the key/first column is null (avoids 23502 not-null errors)
+        }
+        if (typeof firstColVal === 'string' && /(reserved|decision of the secretary|secretary|principal|signature|note:)/i.test(firstColVal)) {
+          continue; // Skip footer notes
+        }
+
+        if (wm.sectionHeadingTargetCol && currentSectionHeading) {
+          rowData[wm.sectionHeadingTargetCol] = currentSectionHeading;
           hasAnyData = true;
         }
 
-        rowData[colMap.supabaseColumn] = finalVal !== '' ? finalVal : (colMap.defaultValue || null);
-      }
-
-      // Propagate section heading if configured
-      if (wm.sectionHeadingTargetCol && currentSectionHeading) {
-        rowData[wm.sectionHeadingTargetCol] = currentSectionHeading;
-        hasAnyData = true;
-      }
-
-      if (hasAnyData && !rowHasRequiredError) {
-        recordsToUpsert.push(rowData);
-      }
-    }
-
-    if (recordsToUpsert.length === 0) {
-      syncResults.push({
-        sheetName: wm.worksheetName,
-        targetTable,
-        rowsCount: 0,
-        status: 'Skipped (No valid data rows found)',
-      });
-      continue;
-    }
-
-    // Resolve unique key for this target table
-    let uniqueCol: string | null = explicitUniqueCol || null;
-    if (!uniqueCol && recordsToUpsert[0]) {
-      for (const ck of candidateKeys) {
-        if (ck in recordsToUpsert[0]) {
-          uniqueCol = ck;
-          break;
+        if (hasAnyData && !rowHasRequiredError) {
+          recordsToUpsert.push(rowData);
         }
       }
-    }
-    if (!uniqueCol && wm.columns?.[0]?.supabaseColumn) {
-      uniqueCol = wm.columns[0].supabaseColumn;
-    }
 
-    // Execute smart sync into Supabase PostgREST with cell-level deduplication and in-place updates
-    const syncRes = await smartSyncRecordsToSupabase({
-      supUrl,
-      supKey,
-      tableName: targetTable,
-      records: recordsToUpsert,
-      onConflict: uniqueCol || undefined,
-    });
+      if (recordsToUpsert.length === 0) {
+        syncResults.push({
+          filename: curFilename,
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: 0,
+          insertedCount: 0,
+          updatedCount: 0,
+          skippedCount: 0,
+          failedCount: 0,
+          status: 'Skipped (No valid data rows found)',
+        });
+        continue;
+      }
 
-    totalInserted += syncRes.insertedCount;
-    totalUpdated += syncRes.updatedCount;
-    totalFailed += syncRes.failedCount;
+      // Determine unique column
+      let uniqueCol: string | null = explicitUniqueCol || null;
+      if (!uniqueCol && recordsToUpsert[0]) {
+        for (const ck of candidateKeys) {
+          if (ck in recordsToUpsert[0]) {
+            uniqueCol = ck;
+            break;
+          }
+        }
+      }
+      if (!uniqueCol && wm.columns?.[0]?.supabaseColumn) {
+        uniqueCol = wm.columns[0].supabaseColumn;
+      }
 
-    if (!syncRes.success && syncRes.failedCount > 0 && syncRes.insertedCount === 0 && syncRes.updatedCount === 0) {
-      errors.push({
-        worksheetName: wm.worksheetName,
-        targetTable,
-        error: syncRes.error || `Failed syncing into public.${targetTable}`,
-        diagnostic: syncRes.diagnostic,
+      const syncRes = await smartSyncRecordsToSupabase({
+        supUrl,
+        supKey,
+        tableName: targetTable,
+        records: recordsToUpsert,
+        onConflict: uniqueCol || undefined,
       });
-      syncResults.push({
-        sheetName: wm.worksheetName,
-        targetTable,
-        rowsCount: recordsToUpsert.length,
-        insertedCount: syncRes.insertedCount,
-        updatedCount: syncRes.updatedCount,
-        skippedCount: syncRes.skippedCount,
-        failedCount: syncRes.failedCount,
-        status: 'Failed',
-        error: syncRes.error,
-        diagnostic: syncRes.diagnostic,
-      });
-    } else {
-      syncResults.push({
-        sheetName: wm.worksheetName,
-        targetTable,
-        rowsCount: recordsToUpsert.length,
-        insertedCount: syncRes.insertedCount,
-        updatedCount: syncRes.updatedCount,
-        skippedCount: syncRes.skippedCount,
-        failedCount: syncRes.failedCount,
-        uniqueKey: uniqueCol,
-        status: syncRes.failedCount === 0 ? 'Success' : 'Partial Success',
-      });
+
+      totalInserted += syncRes.insertedCount;
+      totalUpdated += syncRes.updatedCount;
+      totalFailed += syncRes.failedCount;
+
+      if (!syncRes.success && syncRes.failedCount > 0 && syncRes.insertedCount === 0 && syncRes.updatedCount === 0) {
+        errors.push({
+          filename: curFilename,
+          worksheetName: wm.worksheetName,
+          targetTable,
+          error: syncRes.error || `Failed syncing into public.${targetTable}`,
+          diagnostic: syncRes.diagnostic,
+        });
+        syncResults.push({
+          filename: curFilename,
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: recordsToUpsert.length,
+          insertedCount: syncRes.insertedCount,
+          updatedCount: syncRes.updatedCount,
+          skippedCount: syncRes.skippedCount,
+          failedCount: syncRes.failedCount,
+          status: 'Failed',
+          error: syncRes.error,
+          diagnostic: syncRes.diagnostic,
+        });
+      } else {
+        syncResults.push({
+          filename: curFilename,
+          sheetName: wm.worksheetName,
+          targetTable,
+          rowsCount: recordsToUpsert.length,
+          insertedCount: syncRes.insertedCount,
+          updatedCount: syncRes.updatedCount,
+          skippedCount: syncRes.skippedCount,
+          failedCount: syncRes.failedCount,
+          uniqueKey: uniqueCol,
+          status: syncRes.failedCount === 0 ? 'Success' : 'Partial Success',
+        });
+      }
     }
   }
 
-  const overallSuccess = totalFailed === 0;
+  const overallSuccess = totalFailed === 0 && (totalInserted > 0 || totalUpdated > 0 || syncResults.length > 0);
   const executedAt = new Date().toISOString();
+  const summaryFilename = processedFiles.length > 1
+    ? `${processedFiles.length} Served Files (${processedFiles.join(', ')})`
+    : (processedFiles[0] || targetFilename || 'students.xlsx');
 
-  // ==========================================
-  // Auto-Update Supabase PostgreSQL Audit Tables
-  // ==========================================
+  // Step 3: Auto-Update Supabase PostgreSQL Audit Tables
   try {
-    // 1. Insert into import_logs (and sync_logs) table
     const logPayload = [{
-      filename,
-      file_path: `/ExcelImports/${filename}`,
-      file_hash: sha256,
+      filename: summaryFilename,
+      file_path: `/ExcelImports/${processedFiles[0] || 'all_served'}`,
+      file_hash: primarySha256 || 'multi_file_hash',
       status: overallSuccess ? 'Success' : (totalInserted > 0 || totalUpdated > 0 ? 'Partial Success' : 'Failed'),
       is_dry_run: false,
-      number_of_worksheets: activeMappings.length,
+      number_of_worksheets: syncResults.length,
       rows_processed: totalInserted + totalUpdated + totalFailed,
       rows_inserted: totalInserted,
       rows_updated: totalUpdated,
@@ -4041,10 +4318,10 @@ async function executeFullPipelineCore(params: {
       started_at: executedAt,
       completed_at: new Date().toISOString(),
       error_summary: errors.length > 0 ? errors.map(e => e.error).join('; ') : undefined,
-      details: { syncResults, triggerType: triggerType || 'PIPELINE' },
+      details: { syncResults, filesSynced: processedFiles, triggerType: triggerType || 'PIPELINE' },
     }];
 
-    const logRes = await fetch(`${supUrl}/rest/v1/import_logs`, {
+    await fetch(`${supUrl}/rest/v1/import_logs`, {
       method: 'POST',
       headers: {
         'apikey': supKey,
@@ -4055,35 +4332,6 @@ async function executeFullPipelineCore(params: {
       body: JSON.stringify(logPayload),
     }).catch(() => null);
 
-    const createdLog = logRes && logRes.ok ? await logRes.json().catch(() => []) : [];
-    const importLogId = Array.isArray(createdLog) && createdLog[0]?.id ? createdLog[0].id : null;
-
-    // 2. Insert into import_errors if there were any row errors
-    if (allRowErrors.length > 0 && importLogId) {
-      const errorPayload = allRowErrors.slice(0, 100).map(e => ({
-        import_log_id: importLogId,
-        worksheet_name: e.worksheetName,
-        row_number: e.rowNumber,
-        excel_column: e.excelColumn || 'A',
-        column_name: e.columnName || 'unknown',
-        raw_value: String(e.rawValue || ''),
-        error_message: e.errorMessage,
-        error_type: e.errorType || 'validation',
-        created_at: new Date().toISOString(),
-      }));
-
-      await fetch(`${supUrl}/rest/v1/import_errors`, {
-        method: 'POST',
-        headers: {
-          'apikey': supKey,
-          'Authorization': `Bearer ${supKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(errorPayload),
-      }).catch(() => null);
-    }
-
-    // 3. Update sync_settings table with live timestamp
     await fetch(`${supUrl}/rest/v1/sync_settings`, {
       method: 'POST',
       headers: {
@@ -4099,18 +4347,18 @@ async function executeFullPipelineCore(params: {
       }]),
     }).catch(() => null);
   } catch (e: any) {
-    console.warn('[Sync Pipeline] Could not write audit log to Supabase tables:', e.message);
+    console.warn('[Sync Pipeline] Notice updating audit logs:', e.message);
   }
 
-  // Record into server memory stores
+  // Record into server sync history
   recordSyncHistory({
     timestamp: executedAt,
     triggerType: (triggerType as any) || 'MANUAL_ADMIN',
     status: overallSuccess ? 'SUCCESS' : (totalInserted > 0 || totalUpdated > 0 ? 'PARTIAL_SUCCESS' : 'FAILED'),
-    filename,
+    filename: summaryFilename,
     durationMs: 950,
-    totalWorksheets: activeMappings.length,
-    targetTables: activeMappings.map((m: any) => m.supabaseTable),
+    totalWorksheets: syncResults.length,
+    targetTables: Array.from(new Set(syncResults.map((r: any) => r.targetTable).filter(Boolean))),
     rowsProcessed: totalInserted + totalUpdated + totalFailed,
     rowsInserted: totalInserted,
     rowsUpdated: totalUpdated,
@@ -4122,13 +4370,14 @@ async function executeFullPipelineCore(params: {
   logServerEvent(
     overallSuccess ? 'success' : 'warn',
     'SyncPipeline',
-    `Pipeline completed for ${filename}: ${totalInserted} inserted, ${totalUpdated} updated, ${totalFailed} failed across ${activeMappings.length} tables`
+    `Multi-file pipeline completed for ${summaryFilename}: ${totalInserted} inserted, ${totalUpdated} updated, ${totalFailed} failed across ${syncResults.length} table mappings`
   );
 
   return {
     success: overallSuccess,
-    filename,
-    fileHash: sha256,
+    filename: summaryFilename,
+    filesSynced: processedFiles,
+    fileHash: primarySha256,
     totalInserted,
     totalUpdated,
     totalFailed,

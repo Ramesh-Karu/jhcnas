@@ -601,9 +601,12 @@ export class ApiClient {
     supabase: SupabaseConfig;
     mappings: any[];
     targetFilename?: string;
+    syncAllFiles?: boolean;
+    base64Workbook?: string;
   }): Promise<{
     success: boolean;
     filename?: string;
+    filesSynced?: string[];
     fileHash?: string;
     totalInserted?: number;
     totalUpdated?: number;
@@ -1141,6 +1144,64 @@ export class ApiClient {
   }> {
     try {
       const res = await fetch('/api/mappings/load', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ==========================================
+  // Permanent Served Sheets & Mapping Hubs
+  // ==========================================
+  static async saveServedSheets(payload: {
+    servedSheets?: any[];
+    presets?: any[];
+    mappings?: WorksheetMapping[];
+    workbookInfo?: any;
+  }): Promise<{
+    success: boolean;
+    savedAt?: string;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/served-sheets/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async loadServedSheets(): Promise<{
+    success: boolean;
+    servedSheets?: any[];
+    presets?: any[];
+    workbooks?: Array<{ filename: string; size: number; lastModified: string }>;
+    mappings?: WorksheetMapping[];
+    savedAt?: string | null;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/served-sheets', { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async getStoredWorkbooks(): Promise<{
+    success: boolean;
+    workbooks?: Array<{ filename: string; size: number; lastModified: string }>;
+    totalCount?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/workbooks', { method: 'GET' });
       return await res.json();
     } catch (e: any) {
       return { success: false, error: e.message };

@@ -338,20 +338,25 @@ export default function App() {
         StorageService.saveFiles(filesResult.files);
       }
 
-      // 2. Execute end-to-end sync pipeline (download -> dynamic parse -> transform -> Supabase upsert)
+      // 2. Execute end-to-end sync pipeline across ALL served files (download -> dynamic parse -> transform -> Supabase upsert)
       const pipelineRes = await ApiClient.executeFullPipelineSync({
         nextcloud,
         supabase,
         mappings,
+        syncAllFiles: true,
       });
 
       if (pipelineRes.success) {
+        const fileNamesDisplay = pipelineRes.filesSynced && pipelineRes.filesSynced.length > 0
+          ? pipelineRes.filesSynced.join(', ')
+          : (pipelineRes.filename || 'All served files');
+
         const completeMsg: LogMessage = {
           id: `l-done-${Date.now()}`,
           timestamp: new Date().toISOString(),
           level: 'success',
           component: 'Worker',
-          message: `Pipeline sync completed successfully for ${pipelineRes.filename || 'students.xlsx'}! Inserted: ${pipelineRes.totalInserted || 0}, Updated: ${pipelineRes.totalUpdated || 0}, Errors: ${pipelineRes.totalFailed || 0}.`
+          message: `Multi-file pipeline sync completed successfully for [${fileNamesDisplay}]! Inserted: ${pipelineRes.totalInserted || 0}, Updated: ${pipelineRes.totalUpdated || 0}, Errors: ${pipelineRes.totalFailed || 0} across ${pipelineRes.syncResults?.length || 0} table mappings.`
         };
 
         updatedWorkerLogs = [completeMsg, ...updatedWorkerLogs];
@@ -362,8 +367,8 @@ export default function App() {
         const logId = `log-${Date.now()}`;
         const newImportLog: ImportLog = {
           id: logId,
-          filename: pipelineRes.filename || 'students.xlsx',
-          filePath: nextcloud.sourceFolder + '/' + (pipelineRes.filename || 'students.xlsx'),
+          filename: pipelineRes.filename || 'All served files',
+          filePath: nextcloud.sourceFolder + '/' + (pipelineRes.filesSynced?.[0] || 'all_served'),
           fileHash: pipelineRes.fileHash || 'synced-hash',
           status: (pipelineRes.totalFailed && pipelineRes.totalFailed > 0) ? 'Partial Success' : 'Success',
           isDryRun: false,
@@ -376,7 +381,7 @@ export default function App() {
           completedAt: new Date().toISOString(),
           durationMs: 850,
           errorSummary: (pipelineRes.totalFailed && pipelineRes.totalFailed > 0) ? `${pipelineRes.totalFailed} row errors` : undefined,
-          details: { syncResults: pipelineRes.syncResults }
+          details: { syncResults: pipelineRes.syncResults, filesSynced: pipelineRes.filesSynced }
         };
 
         const updatedHistory = [newImportLog, ...importLogs];

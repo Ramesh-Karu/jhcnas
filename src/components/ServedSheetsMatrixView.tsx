@@ -87,14 +87,17 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  const [isSavingPermanent, setIsSavingPermanent] = useState<boolean>(false);
+
   // Fetch presets, permanent mapping metadata, and live Supabase tables
   const loadAllMetadata = async () => {
     setIsLoadingMetadata(true);
     try {
-      const [presetsRes, permRes, schemaRes] = await Promise.allSettled([
+      const [presetsRes, permRes, schemaRes, servedRes] = await Promise.allSettled([
         ApiClient.getPresets(),
         ApiClient.loadPermanentMappings(),
-        supabaseConfig?.url ? ApiClient.getSupabaseSchema(supabaseConfig) : Promise.resolve({ success: false })
+        supabaseConfig?.url ? ApiClient.getSupabaseSchema(supabaseConfig) : Promise.resolve({ success: false }),
+        ApiClient.loadServedSheets()
       ]);
 
       if (presetsRes.status === 'fulfilled' && presetsRes.value.success && presetsRes.value.presets) {
@@ -103,6 +106,9 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       if (permRes.status === 'fulfilled' && permRes.value.success && permRes.value.savedAt) {
         setPermanentSavedAt(permRes.value.savedAt);
       }
+      if (servedRes.status === 'fulfilled' && servedRes.value.success && servedRes.value.savedAt) {
+        setPermanentSavedAt(servedRes.value.savedAt);
+      }
       if (schemaRes.status === 'fulfilled' && (schemaRes.value as any).success && (schemaRes.value as any).tables) {
         setSupabaseTables((schemaRes.value as any).tables);
       }
@@ -110,6 +116,47 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       console.warn('Metadata loading notice:', e);
     } finally {
       setIsLoadingMetadata(false);
+    }
+  };
+
+  const handleSaveServedSheetsPermanently = async () => {
+    setIsSavingPermanent(true);
+    try {
+      const res = await ApiClient.saveServedSheets({
+        servedSheets: servedSheets.map(s => ({
+          sheetName: s.sheetName,
+          workbookName: s.workbookName,
+          targetTable: s.targetTable,
+          syncPolicy: s.syncPolicy,
+          primaryMergeKey: s.primaryMergeKey,
+          skipMergedYearRows: s.skipMergedYearRows,
+          isEnabled: s.isEnabled,
+          columnsCount: s.columnsCount,
+          mapping: s.mapping,
+        })),
+        presets,
+        mappings,
+        workbookInfo: currentAnalysis ? {
+          filename: currentAnalysis.filename,
+          fileHash: currentAnalysis.fileHash,
+          totalWorksheets: currentAnalysis.worksheets?.length || 0,
+        } : null,
+      });
+
+      if (res.success) {
+        setPermanentSavedAt(res.savedAt || new Date().toISOString());
+        setCopyFeedback('🛡️ Served sheets, mapping sheets & mapping hubs permanently secured in server storage!');
+      } else {
+        throw new Error(res.error || 'Failed to save served sheets');
+      }
+    } catch (err: any) {
+      setSyncFeedback({
+        type: 'error',
+        message: `Permanent save error: ${err.message}`,
+      });
+    } finally {
+      setIsSavingPermanent(false);
+      setTimeout(() => setCopyFeedback(null), 4000);
     }
   };
 
@@ -566,6 +613,16 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           </button>
 
           <button
+            onClick={handleSaveServedSheetsPermanently}
+            disabled={isSavingPermanent}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-emerald-50 border border-emerald-300 text-xs font-bold text-emerald-800 hover:bg-emerald-100 shadow-2xs transition-colors"
+            title="Permanently preserve served sheets, merged table topology, and mapping hubs to server storage"
+          >
+            <ShieldCheck className={`w-3.5 h-3.5 text-emerald-600 ${isSavingPermanent ? 'animate-spin' : ''}`} />
+            <span>{isSavingPermanent ? 'Saving...' : 'Save Permanently to Storage'}</span>
+          </button>
+
+          <button
             onClick={handleExportMatrixJson}
             className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
             title="Export complete served sheets, merged tables, and sync history to JSON"
@@ -589,7 +646,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
               className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold text-white shadow-2xs transition-colors disabled:opacity-50"
             >
               <Play className={`w-3.5 h-3.5 fill-current ${isSyncing ? 'animate-pulse' : ''}`} />
-              <span>{isSyncing ? 'Syncing...' : 'Run Pipeline Sync'}</span>
+              <span>{isSyncing ? 'Syncing All Served Files...' : 'Sync All Served Files Now'}</span>
             </button>
           )}
         </div>
