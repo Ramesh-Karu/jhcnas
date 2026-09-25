@@ -491,26 +491,53 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
             });
 
             // If error is 22P02, also populate typeMismatchAlert
-            if (upRes.error?.includes('22P02') || upRes.error?.includes('invalid input syntax for type integer')) {
-              const intMatch = upRes.error.match(/invalid input syntax for type integer:\s*"([^"]+)"/i);
-              const offending = intMatch ? intMatch[1] : 'text value';
+            if (upRes.error?.includes('22P02') || upRes.error?.includes('invalid input syntax for type integer') || upRes.error?.includes('datatype mismatch')) {
+              const intMatch = upRes.error.match(/invalid input syntax for type (?:integer|numeric|smallint|bigint|date):\s*"([^"]+)"/i);
+              const offending = intMatch ? intMatch[1] : '';
               let culpritCol = '';
-              for (const r of cleanRecordsForSupabase) {
-                for (const [k, v] of Object.entries(r)) {
-                  if (String(v).trim() === offending.trim()) {
-                    culpritCol = k;
-                    break;
+
+              // 1. Search clean records for the exact offending string
+              if (offending) {
+                for (const r of cleanRecordsForSupabase) {
+                  for (const [k, v] of Object.entries(r)) {
+                    if (!k.startsWith('__') && String(v).trim() === offending.trim()) {
+                      culpritCol = k;
+                      break;
+                    }
                   }
+                  if (culpritCol) break;
                 }
-                if (culpritCol) break;
               }
-              if (!culpritCol) culpritCol = wm.sectionHeadingTargetCol || 'class';
+
+              // 2. Search mapped columns where dataType is integer/decimal but data contains non-numeric strings
+              if (!culpritCol) {
+                const numCol = wm.columns.find(c => (c.dataType === 'integer' || c.dataType === 'decimal') && c.supabaseColumn !== 'id');
+                if (numCol) {
+                  culpritCol = numCol.supabaseColumn;
+                }
+              }
+
+              // 3. Check section heading target if mapped
+              if (!culpritCol && wm.sectionHeadingTargetCol) {
+                culpritCol = wm.sectionHeadingTargetCol;
+              }
+
+              // 4. Fallback to first non-id mapped column in the worksheet
+              if (!culpritCol && wm.columns.length > 0) {
+                const firstNonId = wm.columns.find(c => c.supabaseColumn !== 'id');
+                culpritCol = firstNonId ? firstNonId.supabaseColumn : wm.columns[0].supabaseColumn;
+              }
+
+              // Generate appropriate SQL script (ALTER COLUMN to text or ADD COLUMN IF NOT EXISTS)
+              const alterSql = upRes.error?.includes('42703') || (upRes.error?.includes('column') && upRes.error?.includes('does not exist'))
+                ? `ALTER TABLE public.${wm.supabaseTable} ADD COLUMN IF NOT EXISTS "${culpritCol}" text;`
+                : `ALTER TABLE public.${wm.supabaseTable} ALTER COLUMN "${culpritCol}" TYPE text;`;
 
               setTypeMismatchAlert({
                 tableName: wm.supabaseTable,
-                columnName: culpritCol,
-                offendingValue: offending,
-                alterSql: `ALTER TABLE public.${wm.supabaseTable} ALTER COLUMN ${culpritCol} TYPE text;`
+                columnName: culpritCol || 'data_column',
+                offendingValue: offending || 'text value',
+                alterSql
               });
             }
 

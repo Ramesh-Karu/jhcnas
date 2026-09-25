@@ -160,7 +160,7 @@ export class SchemaGenerator {
       plans.push(plan);
 
     } else if (mode === 'SEPARATE_TABLES') {
-      // 1 Table Per Sheet (guaranteeing unique table names)
+      // 1 Table Per Sheet (guaranteeing unique table names & unique column names)
       const usedTableNames = new Set<string>();
       for (const ws of analysis.worksheets) {
         const customTable = sheetToTableMap?.[ws.sheetName];
@@ -177,8 +177,18 @@ export class SchemaGenerator {
         }
         usedTableNames.add(targetTable);
 
+        const usedColNames = new Set<string>();
         const columns: TableSchemaColumn[] = ws.headers.map(h => {
-          const colName = this.sanitizeIdentifier(h.name);
+          let colName = this.sanitizeIdentifier(h.name);
+          if (usedColNames.has(colName)) {
+            let suffix = 2;
+            while (usedColNames.has(`${colName}_${suffix}`)) {
+              suffix++;
+            }
+            colName = `${colName}_${suffix}`;
+          }
+          usedColNames.add(colName);
+
           const inferredType = h.inferredType || 'text';
           return {
             name: colName,
@@ -427,9 +437,19 @@ export class SchemaGenerator {
 
       const targetTableName = targetPlan ? targetPlan.tableName : this.sanitizeIdentifier(ws.sheetName);
 
-      // Create column mappings for this sheet
+      // Create column mappings for this sheet with unique database column names
+      const usedColNames = new Set<string>();
       const columnMappings: ColumnMapping[] = ws.headers.map((h, idx) => {
-        const cleanCol = this.sanitizeIdentifier(h.name);
+        let cleanCol = this.sanitizeIdentifier(h.name);
+        if (usedColNames.has(cleanCol)) {
+          let suffix = 2;
+          while (usedColNames.has(`${cleanCol}_${suffix}`)) {
+            suffix++;
+          }
+          cleanCol = `${cleanCol}_${suffix}`;
+        }
+        usedColNames.add(cleanCol);
+
         const planCol = targetPlan?.columns.find(c => c.name === cleanCol);
         const dataType = planCol ? planCol.dataType : (h.inferredType || 'text');
         const isKey = planCol ? planCol.isPrimary : (h.isCandidateKey || false);

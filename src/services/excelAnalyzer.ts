@@ -255,6 +255,56 @@ export class ExcelAnalyzer {
     };
   }
 
+  /**
+   * Deduplicates headers across a row so that multiple columns with identical
+   * names (e.g. "Job", "Job" or "Phone", "Phone") receive unique, standard names
+   * (e.g. "Job 1", "Job 2" or "Phone 1", "Phone 2") for seamless database schema mapping.
+   */
+  static deduplicateHeaders(
+    rawList: { colIndex: number; colLetter: string; rawName: string }[]
+  ): { colIndex: number; colLetter: string; uniqueName: string; originalName: string }[] {
+    const nameCounts = new Map<string, number>();
+    for (const item of rawList) {
+      const norm = item.rawName.trim().toLowerCase();
+      nameCounts.set(norm, (nameCounts.get(norm) || 0) + 1);
+    }
+
+    const usedUniqueNames = new Set<string>();
+    const nameOccurrenceIndex = new Map<string, number>();
+    const result: { colIndex: number; colLetter: string; uniqueName: string; originalName: string }[] = [];
+
+    for (const item of rawList) {
+      const rawTrimmed = item.rawName.trim() || `Column_${item.colLetter}`;
+      const norm = rawTrimmed.toLowerCase();
+      const totalCount = nameCounts.get(norm) || 1;
+
+      let candidateName = rawTrimmed;
+
+      if (totalCount > 1) {
+        const currentOcc = (nameOccurrenceIndex.get(norm) || 0) + 1;
+        nameOccurrenceIndex.set(norm, currentOcc);
+        candidateName = `${rawTrimmed} ${currentOcc}`;
+      }
+
+      let finalName = candidateName;
+      let suffix = 2;
+      while (usedUniqueNames.has(finalName.toLowerCase())) {
+        finalName = `${rawTrimmed} ${suffix}`;
+        suffix++;
+      }
+
+      usedUniqueNames.add(finalName.toLowerCase());
+      result.push({
+        colIndex: item.colIndex,
+        colLetter: item.colLetter,
+        uniqueName: finalName,
+        originalName: rawTrimmed,
+      });
+    }
+
+    return result;
+  }
+
   static analyzeSheet(
     ws: XLSX.WorkSheet,
     sheetName: string,
@@ -432,18 +482,25 @@ export class ExcelAnalyzer {
     }
 
     const effectiveColCount = lastActiveCol >= 0 ? lastActiveCol + 1 : totalColumns;
+    const rawHeaderList: { colIndex: number; colLetter: string; rawName: string }[] = [];
+
+    // Extract raw header strings from header row
+    for (let c = 0; c < effectiveColCount; c++) {
+      const colLetter = XLSX.utils.encode_col(c);
+      const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
+      let rawName = val !== null && val !== undefined && String(val).trim() !== ''
+        ? String(val).trim().replace(/[\r\n\t]+/g, ' ')
+        : `Column_${colLetter}`;
+      rawHeaderList.push({ colIndex: c, colLetter, rawName });
+    }
+
+    // Deduplicate headers: if there are duplicate column names (e.g. Job, Job), rename them to Job 1, Job 2
+    const deduplicatedHeaders = this.deduplicateHeaders(rawHeaderList);
     const headers: SheetHeader[] = [];
 
     // 5. Build Headers and Auto-Detect Data Types
     for (let c = 0; c < effectiveColCount; c++) {
-      const colLetter = XLSX.utils.encode_col(c);
-      const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
-      let name = val !== null && val !== undefined && String(val).trim() !== ''
-        ? String(val).trim()
-        : `Column_${colLetter}`;
-
-      // Clean header name from newlines/tabs
-      name = name.replace(/[\r\n\t]+/g, ' ').trim();
+      const { colLetter, uniqueName, originalName } = deduplicatedHeaders[c];
 
       // Sample values from data rows for this column
       const sampleValues: string[] = [];
@@ -468,14 +525,15 @@ export class ExcelAnalyzer {
       const { dataType, nullCount, uniqueCount, isCandidateKey } = this.inferColumnDataType(rawSampleList);
 
       // Check if header name hints at candidate key (id, username, code, roll)
-      const nameNorm = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const nameNorm = uniqueName.toLowerCase().replace(/[^a-z0-9]/g, '');
       const keyHints = ['id', 'username', 'user', 'code', 'index', 'rollnumber', 'studentid', 'indexnumber'];
       const hasKeyHint = keyHints.some(k => nameNorm.includes(k));
 
       headers.push({
         colLetter,
         colIndex: c + 1,
-        name,
+        name: uniqueName,
+        originalName,
         sampleValues,
         inferredType: dataType,
         nullCount,
@@ -504,9 +562,12 @@ export class ExcelAnalyzer {
         const colLetter = XLSX.utils.encode_col(c);
         const val = this.getResolvedCellValue(ws, r, c, rawMerges);
         rowData[colLetter] = val !== null && val !== undefined ? val : '';
-        const hName = headers[c]?.name;
-        if (hName) {
-          rowData[hName] = val !== null && val !== undefined ? val : '';
+        const h = headers[c];
+        if (h) {
+          rowData[h.name] = val !== null && val !== undefined ? val : '';
+          if (h.originalName && rowData[h.originalName] === undefined) {
+            rowData[h.originalName] = val !== null && val !== undefined ? val : '';
+          }
         }
         if (val !== null && val !== undefined && String(val).trim() !== '') {
           hasData = true;
@@ -582,19 +643,29 @@ export class ExcelAnalyzer {
       }
     }
 
-    // Build header lookup
+    // Build header lookup with deduplication
     const headerR = headerRow - 1;
-    const headers: SheetHeader[] = [];
-    const colIndexToName: Record<number, string> = {};
+    const rawHeaderList: { colIndex: number; colLetter: string; rawName: string }[] = [];
 
     for (let c = 0; c < totalCols; c++) {
       const colLetter = XLSX.utils.encode_col(c);
       const val = this.getResolvedCellValue(ws, headerR, c, rawMerges);
-      const name = val !== null && val !== undefined && String(val).trim() !== ''
+      const rawName = val !== null && val !== undefined && String(val).trim() !== ''
         ? String(val).trim().replace(/[\r\n\t]+/g, ' ')
         : `Column_${colLetter}`;
-      colIndexToName[c] = name;
-      headers.push({ colLetter, colIndex: c + 1, name, sampleValues: [] });
+      rawHeaderList.push({ colIndex: c, colLetter, rawName });
+    }
+
+    const deduplicated = this.deduplicateHeaders(rawHeaderList);
+    const headers: SheetHeader[] = [];
+    const colIndexToName: Record<number, string> = {};
+    const colIndexToOriginal: Record<number, string> = {};
+
+    for (let c = 0; c < totalCols; c++) {
+      const { colLetter, uniqueName, originalName } = deduplicated[c];
+      colIndexToName[c] = uniqueName;
+      colIndexToOriginal[c] = originalName;
+      headers.push({ colLetter, colIndex: c + 1, name: uniqueName, originalName, sampleValues: [] });
     }
 
     const records: Record<string, any>[] = [];
@@ -640,9 +711,15 @@ export class ExcelAnalyzer {
           }
         }
 
+        const uniqueCol = colIndexToName[c];
+        const origCol = colIndexToOriginal[c];
+
         rowObj[colLetter] = val;
-        rowObj[`header_${colIndexToName[c]}`] = val;
-        rowObj[colIndexToName[c]] = val;
+        rowObj[`header_${uniqueCol}`] = val;
+        rowObj[uniqueCol] = val;
+        if (origCol && origCol !== uniqueCol && rowObj[origCol] === undefined) {
+          rowObj[origCol] = val;
+        }
       }
 
       if (!hasData) continue;

@@ -135,6 +135,7 @@ export interface SheetHeader {
   colLetter: string;
   colIndex: number;
   name: string;
+  originalName?: string;
   sampleValues: string[];
   inferredType?: DataType;
   nullCount?: number;

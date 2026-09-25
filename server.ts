@@ -1212,10 +1212,42 @@ function parseWorkbookBuffer(buffer: Buffer, filename: string) {
 
     const effectiveColCount = lastNonEmptyCol >= 0 ? lastNonEmptyCol + 1 : totalColumns;
 
+    // Collect raw headers and deduplicate to guarantee unique column names (e.g. Job 1, Job 2)
+    const rawHeaders: { colIndex: number; colLetter: string; rawName: string }[] = [];
     for (let c = 0; c < effectiveColCount; c++) {
       const colLetter = XLSX.utils.encode_col(c);
       const rawHeader = String(getResolvedVal(bestHeaderRowIndex, c) || '').trim();
-      const name = rawHeader || `Column_${colLetter}`;
+      rawHeaders.push({ colIndex: c, colLetter, rawName: rawHeader || `Column_${colLetter}` });
+    }
+
+    const nameCounts = new Map<string, number>();
+    for (const item of rawHeaders) {
+      const norm = item.rawName.toLowerCase();
+      nameCounts.set(norm, (nameCounts.get(norm) || 0) + 1);
+    }
+
+    const usedUniqueNames = new Set<string>();
+    const nameOccurrenceIndex = new Map<string, number>();
+
+    for (let c = 0; c < effectiveColCount; c++) {
+      const { colLetter, rawName } = rawHeaders[c];
+      const norm = rawName.toLowerCase();
+      const totalCount = nameCounts.get(norm) || 1;
+
+      let candidateName = rawName;
+      if (totalCount > 1) {
+        const occ = (nameOccurrenceIndex.get(norm) || 0) + 1;
+        nameOccurrenceIndex.set(norm, occ);
+        candidateName = `${rawName} ${occ}`;
+      }
+
+      let finalName = candidateName;
+      let suffix = 2;
+      while (usedUniqueNames.has(finalName.toLowerCase())) {
+        finalName = `${rawName} ${suffix}`;
+        suffix++;
+      }
+      usedUniqueNames.add(finalName.toLowerCase());
 
       const sampleValues: string[] = [];
       for (let r = detectedDataStartRow - 1; r < Math.min(totalRows, detectedDataStartRow + 10); r++) {
@@ -1228,7 +1260,8 @@ function parseWorkbookBuffer(buffer: Buffer, filename: string) {
       headers.push({
         colLetter,
         colIndex: c + 1,
-        name,
+        name: finalName,
+        originalName: rawName,
         sampleValues,
       });
     }
@@ -1250,6 +1283,9 @@ function parseWorkbookBuffer(buffer: Buffer, filename: string) {
         rowData[h.colLetter] = val;
         if (h.name) {
           rowData[h.name] = val;
+          if (h.originalName && rowData[h.originalName] === undefined) {
+            rowData[h.originalName] = val;
+          }
         }
         if (val !== undefined && val !== null && String(val).trim() !== '') {
           hasRowData = true;
@@ -1959,26 +1995,60 @@ function diagnoseSupabaseError(status: number, errText: string, tableName: strin
   }
 
   if (isTypeErr) {
+    let culpritCol: string | null = null;
+    const intMatch = errText.match(/invalid input syntax for type (?:integer|numeric|smallint|bigint|date):\s*"([^"]+)"/i);
+    const offendingValue = intMatch ? intMatch[1] : null;
+
+    if (offendingValue && sampleRecord && typeof sampleRecord === 'object') {
+      for (const [k, v] of Object.entries(sampleRecord)) {
+        if (!k.startsWith('__') && String(v).trim() === offendingValue.trim()) {
+          culpritCol = k;
+          break;
+        }
+      }
+    }
+
+    if (!culpritCol && sampleRecord && typeof sampleRecord === 'object') {
+      for (const [k, v] of Object.entries(sampleRecord)) {
+        if (!k.startsWith('__') && typeof v === 'string' && isNaN(Number(v)) && v.trim() !== '') {
+          culpritCol = k;
+          break;
+        }
+      }
+    }
+
+    const colIdentifier = culpritCol ? `"${culpritCol}"` : '<column_name>';
+
     return {
       errorCode: '22P02 (Data Type Mismatch)',
       httpStatus: status,
       tableName,
-      cause: `One or more cells contain text/values that do not match the column's PostgreSQL type in Supabase.`,
+      cause: culpritCol
+        ? `Column "${culpritCol}" in public.${tableName} received value "${offendingValue || 'non-numeric text'}" which does not match its PostgreSQL column type.`
+        : `One or more cells contain text/values that do not match the column's PostgreSQL type in Supabase.`,
       details: errText,
       remediation: `Convert column type to TEXT in Supabase SQL editor or add a 'parse_number' / 'parse_date' transformation rule in Worksheet Mappings.`,
-      suggestedSql: `-- Convert column to TEXT to accept all spreadsheet strings:\nALTER TABLE public.${tableName} ALTER COLUMN <column_name> TYPE text;`
+      suggestedSql: `-- Convert column to TEXT to accept all spreadsheet strings:\nALTER TABLE public.${tableName} ALTER COLUMN ${colIdentifier} TYPE text;`
     };
   }
 
   if (isColMissing) {
+    const colMatch = errText.match(/column\s+"([^"]+)"\s+of\s+relation/i) ||
+                     errText.match(/Could not find the '([^']+)' column/i) ||
+                     errText.match(/column\s+'([^']+)'\s+does not exist/i);
+    const missingColName = colMatch ? colMatch[1] : null;
+    const colIdentifier = missingColName ? `"${missingColName}"` : '<new_column_name>';
+
     return {
       errorCode: '42703 (Missing Column in Schema)',
       httpStatus: status,
       tableName,
-      cause: `One of the mapped Excel columns does not exist in public.${tableName}.`,
+      cause: missingColName
+        ? `Column "${missingColName}" does not exist in public.${tableName}.`
+        : `One of the mapped Excel columns does not exist in public.${tableName}.`,
       details: errText,
-      remediation: `Add the missing column in Supabase Dashboard -> Table Editor, or update your column mappings in the Mappings tab.`,
-      suggestedSql: `-- Add missing column to Supabase:\nALTER TABLE public.${tableName} ADD COLUMN IF NOT EXISTS <new_column_name> text;`
+      remediation: `Add the missing column in Supabase Dashboard -> Table Editor, or execute the SQL below.`,
+      suggestedSql: `-- Add missing column to public.${tableName}:\nALTER TABLE public.${tableName} ADD COLUMN IF NOT EXISTS ${colIdentifier} text;`
     };
   }
 

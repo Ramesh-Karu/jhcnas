@@ -182,9 +182,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         : (supabaseTables[0]?.name || cleanWsName);
       const matchedTable = supabaseTables.find(t => t.name === targetTable);
 
+      const usedSupabaseCols = new Set<string>();
       const columns: ColumnMapping[] = ws.headers.map((h, idx) => {
         const rawName = h.name.trim();
-        const normName = rawName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+        let normName = rawName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
 
         // Try to match with a column in the Supabase table
         let matchedCol = normName;
@@ -197,9 +198,19 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           else if (normName.includes('indexnumber')) matchedCol = 'index_number';
         }
 
+        // Deduplicate column name in case duplicate headers or normalization collision
+        if (usedSupabaseCols.has(matchedCol.toLowerCase())) {
+          let suffix = 2;
+          while (usedSupabaseCols.has(`${matchedCol}_${suffix}`.toLowerCase())) {
+            suffix++;
+          }
+          matchedCol = `${matchedCol}_${suffix}`;
+        }
+        usedSupabaseCols.add(matchedCol.toLowerCase());
+
         const isId = idx === 0 || matchedCol === 'username' || matchedCol === 'id' || matchedCol.includes('code');
-        const isDate = matchedCol.includes('dob') || matchedCol.includes('date');
-        const isNumber = matchedCol === 'class' || matchedCol.includes('score') || matchedCol.includes('count');
+        const isDate = h.inferredType === 'date' || matchedCol.includes('dob') || matchedCol.includes('date');
+        const isNumber = h.inferredType === 'integer' || h.inferredType === 'decimal' || matchedCol.includes('score') || matchedCol.includes('count') || matchedCol.includes('mark') || matchedCol.includes('total');
 
         let trans: TransformationType = 'trim';
         if (isDate) trans = 'parse_date';
@@ -211,7 +222,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           excelColumn: h.colLetter,
           excelHeader: h.name,
           supabaseColumn: matchedCol,
-          dataType: isDate ? 'date' : isNumber ? 'integer' : 'text',
+          dataType: isDate ? 'date' : isNumber ? (h.inferredType === 'decimal' ? 'decimal' : 'integer') : (h.inferredType || 'text'),
           required: isId,
           uniqueKey: isId && idx === 0,
           transformation: trans
