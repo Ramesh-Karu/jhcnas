@@ -86,7 +86,8 @@ export class SchemaGenerator {
     analysis: WorkbookAnalysis,
     mode: MultiSheetConsolidationMode,
     sheetToTableMap?: Record<string, string>,
-    supabaseTables?: SupabaseTableInfo[]
+    supabaseTables?: SupabaseTableInfo[],
+    customPrimaryKeys?: Record<string, string>
   ): TableSchemaPlan[] {
     const plans: TableSchemaPlan[] = [];
 
@@ -102,6 +103,7 @@ export class SchemaGenerator {
 
       // Let user override common table name via sheetToTableMap['__unified__']
       const targetTable = sheetToTableMap?.['__unified__'] || defaultTableName;
+      const userSelectedPk = customPrimaryKeys?.[targetTable] ?? customPrimaryKeys?.['__unified__'];
 
       const columnMap = new Map<string, TableSchemaColumn>();
       const sourceSheetNames = analysis.worksheets.map(w => w.sheetName);
@@ -113,14 +115,18 @@ export class SchemaGenerator {
           const existing = columnMap.get(colName);
           const inferredType = h.inferredType || 'text';
 
+          const isPrimary = userSelectedPk !== undefined
+            ? (userSelectedPk !== '__NONE__' && (userSelectedPk.toLowerCase() === colName.toLowerCase() || userSelectedPk.toLowerCase() === h.name.toLowerCase()))
+            : (h.isCandidateKey || false);
+
           if (!existing) {
             columnMap.set(colName, {
               name: colName,
               originalHeaders: [h.name],
               dataType: inferredType,
               sqlType: this.dataTypeToPostgresType(inferredType),
-              isPrimary: h.isCandidateKey || colName === 'id',
-              required: h.isCandidateKey || false,
+              isPrimary,
+              required: isPrimary || false,
               sampleValues: [...h.sampleValues]
             });
           } else {
@@ -131,7 +137,7 @@ export class SchemaGenerator {
             if (!existing.originalHeaders.includes(h.name)) {
               existing.originalHeaders.push(h.name);
             }
-            if (h.isCandidateKey) {
+            if (isPrimary) {
               existing.isPrimary = true;
             }
             for (const sv of h.sampleValues) {
@@ -177,6 +183,8 @@ export class SchemaGenerator {
         }
         usedTableNames.add(targetTable);
 
+        const userSelectedPk = customPrimaryKeys?.[targetTable] ?? customPrimaryKeys?.[ws.sheetName];
+
         const usedColNames = new Set<string>();
         const columns: TableSchemaColumn[] = ws.headers.map(h => {
           let colName = this.sanitizeIdentifier(h.name);
@@ -189,14 +197,18 @@ export class SchemaGenerator {
           }
           usedColNames.add(colName);
 
+          const isPrimary = userSelectedPk !== undefined
+            ? (userSelectedPk !== '__NONE__' && (userSelectedPk.toLowerCase() === colName.toLowerCase() || userSelectedPk.toLowerCase() === h.name.toLowerCase()))
+            : (h.isCandidateKey || false);
+
           const inferredType = h.inferredType || 'text';
           return {
             name: colName,
             originalHeaders: [h.name],
             dataType: inferredType,
             sqlType: this.dataTypeToPostgresType(inferredType),
-            isPrimary: h.isCandidateKey || colName === 'id',
-            required: h.isCandidateKey || false,
+            isPrimary,
+            required: isPrimary || false,
             sampleValues: [...h.sampleValues]
           };
         });
@@ -224,6 +236,7 @@ export class SchemaGenerator {
       for (const [targetTable, sheets] of tableToSheets.entries()) {
         const columnMap = new Map<string, TableSchemaColumn>();
         const sourceSheetNames = sheets.map(s => s.sheetName);
+        const userSelectedPk = customPrimaryKeys?.[targetTable];
 
         for (const ws of sheets) {
           for (const h of ws.headers) {
@@ -231,14 +244,18 @@ export class SchemaGenerator {
             const existing = columnMap.get(colName);
             const inferredType = h.inferredType || 'text';
 
+            const isPrimary = userSelectedPk !== undefined
+              ? (userSelectedPk !== '__NONE__' && (userSelectedPk.toLowerCase() === colName.toLowerCase() || userSelectedPk.toLowerCase() === h.name.toLowerCase()))
+              : (h.isCandidateKey || false);
+
             if (!existing) {
               columnMap.set(colName, {
                 name: colName,
                 originalHeaders: [h.name],
                 dataType: inferredType,
                 sqlType: this.dataTypeToPostgresType(inferredType),
-                isPrimary: h.isCandidateKey || colName === 'id',
-                required: h.isCandidateKey || false,
+                isPrimary,
+                required: isPrimary || false,
                 sampleValues: [...h.sampleValues]
               });
             } else {
@@ -312,25 +329,19 @@ export class SchemaGenerator {
       }
     }
 
-    // Generate CREATE TABLE SQL
+    // Generate CREATE TABLE SQL without forcing synthetic ID columns
     const colDefs: string[] = [];
-    // Ensure primary id column exists
-    const hasExplicitId = columns.some(c => c.name === 'id');
-    if (!hasExplicitId) {
-      colDefs.push('  id uuid PRIMARY KEY DEFAULT gen_random_uuid()');
-    }
-
     const uniqueCols: string[] = [];
 
     for (const c of columns) {
-      if (c.name === 'id') {
-        colDefs.push(`  id ${c.sqlType} PRIMARY KEY DEFAULT gen_random_uuid()`);
+      if (c.isPrimary) {
+        colDefs.push(`  "${c.name}" ${c.sqlType} PRIMARY KEY`);
+        uniqueCols.push(c.name);
+      } else if (c.required) {
+        colDefs.push(`  "${c.name}" ${c.sqlType} NOT NULL`);
       } else {
         // Keep columns nullable so that empty cells in Excel rows are stored seamlessly as NULL
-        colDefs.push(`  ${c.name} ${c.sqlType}`);
-        if (c.isPrimary) {
-          uniqueCols.push(c.name);
-        }
+        colDefs.push(`  "${c.name}" ${c.sqlType}`);
       }
     }
 

@@ -225,7 +225,7 @@ export class ApiClient {
     }
   }
 
-  static async loadPresetWorkbook(presetId: 'timetable' | 'donations' | 'teacher_allocations'): Promise<{
+  static async loadPresetWorkbook(presetId: 'timetable' | 'donations' | 'teacher_allocations' | 'jhc_inventory' | 'preset-jhc-inventory' | string): Promise<{
     success: boolean;
     analysis?: WorkbookAnalysis;
     base64Data?: string;

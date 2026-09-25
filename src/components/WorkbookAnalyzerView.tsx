@@ -217,14 +217,25 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     return map;
   }, [sheetToTableMap, consolidationMode, unifiedTableNameInput]);
 
+  // Custom Primary Key Selection State
+  const [customPrimaryKeys, setCustomPrimaryKeys] = useState<Record<string, string>>({});
+
+  const handleSetTablePrimaryKey = (tableName: string, colName: string) => {
+    setCustomPrimaryKeys(prev => ({
+      ...prev,
+      [tableName]: colName
+    }));
+  };
+
   const schemaPlans = useMemo(() => {
     return SchemaGenerator.generateSchemas(
       analysis,
       consolidationMode,
       effectiveSheetToTableMap,
-      supabaseTables
+      supabaseTables,
+      customPrimaryKeys
     );
-  }, [analysis, consolidationMode, effectiveSheetToTableMap, supabaseTables]);
+  }, [analysis, consolidationMode, effectiveSheetToTableMap, supabaseTables, customPrimaryKeys]);
 
   const activePlan: TableSchemaPlan | undefined = schemaPlans[selectedPlanIndex] || schemaPlans[0];
 
@@ -630,7 +641,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     setTimeout(() => setHasCopiedExportText(false), 3000);
   };
 
-  const handleLoadPreset = async (presetId: 'timetable' | 'donations' | 'teacher_allocations') => {
+  const handleLoadPreset = async (presetId: 'timetable' | 'donations' | 'teacher_allocations' | 'jhc_inventory' | 'preset-jhc-inventory' | string) => {
     setIsFetchingGoogleSheet(true);
     setGoogleSheetError(null);
     try {
@@ -1359,11 +1370,43 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                 </div>
               </div>
 
+              {/* Primary Key Selection Bar */}
+              <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl p-3.5 border border-amber-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-2xs">
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-2 rounded-lg bg-amber-500 text-white shadow-xs shrink-0">
+                    <Key className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-amber-950 flex items-center space-x-1.5">
+                      <span>Choose Table Primary Key for <code className="bg-amber-100 px-1 py-0.5 rounded text-amber-900 font-mono">public.{activePlan.tableName}</code>:</span>
+                    </div>
+                    <p className="text-[11px] text-amber-800/90 mt-0.5">
+                      Pick your unique column (e.g. <code>admission_no</code>, <code>student_id</code>, <code>roll_no</code>, <code>code</code>, <code>email</code>) rather than a forced ID column.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 shrink-0">
+                  <select
+                    value={activePlan.columns.find(c => c.isPrimary)?.name || '__NONE__'}
+                    onChange={(e) => handleSetTablePrimaryKey(activePlan.tableName, e.target.value)}
+                    className="px-3 py-1.5 rounded-lg border border-amber-300 bg-white text-xs font-semibold text-slate-900 shadow-2xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="__NONE__">No Primary Key (Direct Insert Only)</option>
+                    {activePlan.columns.map(c => (
+                      <option key={c.name} value={c.name}>
+                        Key: {c.name} ({c.sqlType}) {c.originalHeaders[0] ? `— from "${c.originalHeaders[0]}"` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               {/* Inferred Columns Grid */}
               <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                 <div className="p-3 bg-slate-100 border-b border-slate-200 text-xs font-bold text-slate-700 flex items-center justify-between">
                   <span>Inferred PostgreSQL Columns & Data Types ({activePlan.columns.length})</span>
-                  <span className="text-[11px] text-slate-500 font-normal">Auto-detected from Excel sample data</span>
+                  <span className="text-[11px] text-slate-500 font-normal">Click any "Set as PK" button below to assign your chosen Primary Key</span>
                 </div>
 
                 <div className="overflow-x-auto max-h-80">
@@ -1372,7 +1415,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                       <tr>
                         <th className="px-3.5 py-2">Column Name</th>
                         <th className="px-3.5 py-2">PostgreSQL Data Type</th>
-                        <th className="px-3.5 py-2">Constraints</th>
+                        <th className="px-3.5 py-2">Primary Key / Constraints</th>
                         <th className="px-3.5 py-2">Source Excel Header</th>
                         <th className="px-3.5 py-2">Sample Values</th>
                         <th className="px-3.5 py-2">Supabase Sync Status</th>
@@ -1396,16 +1439,19 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                             </span>
                           </td>
                           <td className="px-3.5 py-2 text-[11px]">
-                            {c.isPrimary ? (
-                              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold flex items-center space-x-1 w-max">
-                                <Key className="w-3 h-3 text-amber-700" />
-                                <span>PRIMARY / MERGE KEY</span>
-                              </span>
-                            ) : c.required ? (
-                              <span className="text-red-600 font-semibold">NOT NULL</span>
-                            ) : (
-                              <span className="text-slate-400">NULLABLE</span>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleSetTablePrimaryKey(activePlan.tableName, c.isPrimary ? '__NONE__' : c.name)}
+                              className={`px-2.5 py-1 rounded text-[11px] font-bold flex items-center space-x-1.5 transition-all ${
+                                c.isPrimary
+                                  ? 'bg-amber-500 text-white shadow-2xs hover:bg-amber-600 ring-2 ring-amber-300'
+                                  : 'bg-slate-100 text-slate-600 hover:text-amber-800 hover:bg-amber-50 border border-slate-200'
+                              }`}
+                              title={c.isPrimary ? 'Click to unset Primary Key' : 'Click to make this column the table PRIMARY KEY'}
+                            >
+                              <Key className={`w-3 h-3 ${c.isPrimary ? 'text-white' : 'text-slate-400'}`} />
+                              <span>{c.isPrimary ? 'PRIMARY KEY' : 'Set as PK'}</span>
+                            </button>
                           </td>
                           <td className="px-3.5 py-2 font-sans text-slate-700">
                             {c.originalHeaders.join(', ')}

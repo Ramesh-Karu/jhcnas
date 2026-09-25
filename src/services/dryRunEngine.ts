@@ -396,7 +396,7 @@ export class DryRunEngine {
             // If identical: do nothing! No duplicate rows!
           } else {
             // Truly new row -> insert
-            if (!cleanRecord.id) {
+            if (uniqueColNames.includes('id') && !cleanRecord.id) {
               cleanRecord.id = `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
             }
             currentDb.push(cleanRecord);

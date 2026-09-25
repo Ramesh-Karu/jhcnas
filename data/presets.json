@@ -1,0 +1,2780 @@
+[
+  {
+    "id": "preset-jhc-inventory",
+    "name": "Jaffna Hindu College Inventory & Departmental Ledger",
+    "description": "Complete multi-department inventory audit and ledger consolidation system for Jaffna Hindu College. Contains Master Inventory aggregation (1,741 items across 64 book columns), Responsible Person directory, and 18 Departmental Books (Admin, ICT, Physics, Bio Lab, Chemistry, Hostel, Sports, Arts, Tech Labs, Mahinthothaya, Photography) with ledger balances, physical on-hand counts, and surplus/deficiency calculations.",
+    "archetype": "MULTI_SHEET_LEDGER",
+    "badge": "🏫 JHC Multi-Book Inventory",
+    "isSystem": true,
+    "skipMergedYearRows": true,
+    "tags": [
+      "JHC",
+      "Inventory",
+      "Stock Audit",
+      "Multi-Book",
+      "Departments",
+      "Ledger"
+    ],
+    "createdAt": "2026-09-25T07:19:48.610Z",
+    "updatedAt": "2026-09-25T07:19:48.611Z",
+    "sheetMappings": [
+      {
+        "id": "wm-jhc-0",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Master inventory",
+        "supabaseTable": "jhc_master_inventory",
+        "headerRow": 1,
+        "dataStartRow": 2,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-0-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": true,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-1",
+            "excelColumn": "B",
+            "excelHeader": "description",
+            "supabaseColumn": "description",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-2",
+            "excelColumn": "C",
+            "excelHeader": "பிரிவும் இலக்கமும்",
+            "supabaseColumn": "பிரிவும்_இலக்கமும்",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-3",
+            "excelColumn": "D",
+            "excelHeader": "Column D",
+            "supabaseColumn": "col_4",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-4",
+            "excelColumn": "E",
+            "excelHeader": "பேரேட்டில் காட்டியவாறான மீதி",
+            "supabaseColumn": "பேரேட்டில்_காட்டியவாறான_மீதி",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-5",
+            "excelColumn": "F",
+            "excelHeader": "உண்மையான கையிருப்பு மீதி",
+            "supabaseColumn": "உண்மையான_கையிருப்பு_மீதி",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-6",
+            "excelColumn": "G",
+            "excelHeader": "Total",
+            "supabaseColumn": "total",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-7",
+            "excelColumn": "H",
+            "excelHeader": "Book 1 Office",
+            "supabaseColumn": "book_1_office",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-8",
+            "excelColumn": "I",
+            "excelHeader": "Book 1 YMHA",
+            "supabaseColumn": "book_1_ymha",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-9",
+            "excelColumn": "J",
+            "excelHeader": "Book 1 Band",
+            "supabaseColumn": "book_1_band",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-10",
+            "excelColumn": "K",
+            "excelHeader": "Book 1 Scout , Redcross",
+            "supabaseColumn": "book_1_scout_redcross",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-11",
+            "excelColumn": "L",
+            "excelHeader": "Book 1 Library",
+            "supabaseColumn": "book_1_library",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-12",
+            "excelColumn": "M",
+            "excelHeader": "Page",
+            "supabaseColumn": "page",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-13",
+            "excelColumn": "N",
+            "excelHeader": "Book 2 arts,",
+            "supabaseColumn": "book_2_arts",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-14",
+            "excelColumn": "O",
+            "excelHeader": "Book 2 agri",
+            "supabaseColumn": "book_2_agri",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-15",
+            "excelColumn": "P",
+            "excelHeader": "book 2 Music",
+            "supabaseColumn": "book_2_music",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-16",
+            "excelColumn": "Q",
+            "excelHeader": "Book 2 Motor",
+            "supabaseColumn": "book_2_motor",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-17",
+            "excelColumn": "R",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_2",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-18",
+            "excelColumn": "S",
+            "excelHeader": "Book3 Sports",
+            "supabaseColumn": "book3_sports",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-19",
+            "excelColumn": "T",
+            "excelHeader": "Book 3 Chess",
+            "supabaseColumn": "book_3_chess",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-20",
+            "excelColumn": "U",
+            "excelHeader": "Book 3 carrom",
+            "supabaseColumn": "book_3_carrom",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-21",
+            "excelColumn": "V",
+            "excelHeader": "book 3 T.T",
+            "supabaseColumn": "book_3_t_t",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-22",
+            "excelColumn": "W",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_3",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-23",
+            "excelColumn": "X",
+            "excelHeader": "Book4",
+            "supabaseColumn": "book4",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-24",
+            "excelColumn": "Y",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_4",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-25",
+            "excelColumn": "Z",
+            "excelHeader": "Book5",
+            "supabaseColumn": "book5",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-26",
+            "excelColumn": "AA",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_5",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-27",
+            "excelColumn": "AB",
+            "excelHeader": "Book6",
+            "supabaseColumn": "book6",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-28",
+            "excelColumn": "AC",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_6",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-29",
+            "excelColumn": "AD",
+            "excelHeader": "Book7",
+            "supabaseColumn": "book7",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-30",
+            "excelColumn": "AE",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_7",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-31",
+            "excelColumn": "AF",
+            "excelHeader": "Book8",
+            "supabaseColumn": "book8",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-32",
+            "excelColumn": "AG",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_8",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-33",
+            "excelColumn": "AH",
+            "excelHeader": "Book9",
+            "supabaseColumn": "book9",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-34",
+            "excelColumn": "AI",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_9",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-35",
+            "excelColumn": "AJ",
+            "excelHeader": "Book10",
+            "supabaseColumn": "book10",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-36",
+            "excelColumn": "AK",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_10",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-37",
+            "excelColumn": "AL",
+            "excelHeader": "Book 12 I",
+            "supabaseColumn": "book_12_i",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-38",
+            "excelColumn": "AM",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_11",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-39",
+            "excelColumn": "AN",
+            "excelHeader": "Book12 II",
+            "supabaseColumn": "book12_ii",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-40",
+            "excelColumn": "AO",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_12",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-41",
+            "excelColumn": "AP",
+            "excelHeader": "Book12 III",
+            "supabaseColumn": "book12_iii",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-42",
+            "excelColumn": "AQ",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_13",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-43",
+            "excelColumn": "AR",
+            "excelHeader": "Book12 IV",
+            "supabaseColumn": "book12_iv",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-44",
+            "excelColumn": "AS",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_14",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-45",
+            "excelColumn": "AT",
+            "excelHeader": "Book13 office",
+            "supabaseColumn": "book13_office",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-46",
+            "excelColumn": "AU",
+            "excelHeader": "Book 13 sabalingam",
+            "supabaseColumn": "book_13_sabalingam",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-47",
+            "excelColumn": "AV",
+            "excelHeader": "Book 13 class",
+            "supabaseColumn": "book_13_class",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-48",
+            "excelColumn": "AW",
+            "excelHeader": "Book 13 oba sponser",
+            "supabaseColumn": "book_13_oba_sponser",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-49",
+            "excelColumn": "AX",
+            "excelHeader": "book 13 s.Parliment",
+            "supabaseColumn": "book_13_s_parliment",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-50",
+            "excelColumn": "AY",
+            "excelHeader": "book 13 school are",
+            "supabaseColumn": "book_13_school_are",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-51",
+            "excelColumn": "AZ",
+            "excelHeader": "book 13 reserch room",
+            "supabaseColumn": "book_13_reserch_room",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-52",
+            "excelColumn": "BA",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_15",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-53",
+            "excelColumn": "BB",
+            "excelHeader": "Book14 bio",
+            "supabaseColumn": "book14_bio",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-54",
+            "excelColumn": "BC",
+            "excelHeader": "book 14 maths",
+            "supabaseColumn": "book_14_maths",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-55",
+            "excelColumn": "BD",
+            "excelHeader": "book 14 physics",
+            "supabaseColumn": "book_14_physics",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-56",
+            "excelColumn": "BE",
+            "excelHeader": "book 14 ICT",
+            "supabaseColumn": "book_14_ict",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-57",
+            "excelColumn": "BF",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_16",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-58",
+            "excelColumn": "BG",
+            "excelHeader": "Book15 Makilakam",
+            "supabaseColumn": "book15_makilakam",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-59",
+            "excelColumn": "BH",
+            "excelHeader": "Book 15 SMART CLASS ROOM",
+            "supabaseColumn": "book_15_smart_class_room",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-60",
+            "excelColumn": "BI",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_17",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-0-61",
+            "excelColumn": "BJ",
+            "excelHeader": "Book 16 Video conferencing",
+            "supabaseColumn": "book_16_video_conferencing",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-62",
+            "excelColumn": "BK",
+            "excelHeader": "Book 16 photography",
+            "supabaseColumn": "book_16_photography",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-0-63",
+            "excelColumn": "BL",
+            "excelHeader": "Page",
+            "supabaseColumn": "page_18",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-1",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Responsible person",
+        "supabaseTable": "jhc_responsible_persons",
+        "headerRow": 2,
+        "dataStartRow": 3,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-1-0",
+            "excelColumn": "A",
+            "excelHeader": "Book No",
+            "supabaseColumn": "book_no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": true,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-1-1",
+            "excelColumn": "B",
+            "excelHeader": "Description",
+            "supabaseColumn": "description",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-1-2",
+            "excelColumn": "C",
+            "excelHeader": "Responsible person",
+            "supabaseColumn": "responsible_person",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-1-3",
+            "excelColumn": "D",
+            "excelHeader": "Contact number",
+            "supabaseColumn": "contact_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-1-4",
+            "excelColumn": "E",
+            "excelHeader": "Signature",
+            "supabaseColumn": "signature",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-2",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 1 Admin",
+        "supabaseTable": "jhc_inventory_book_1_admin",
+        "headerRow": 4,
+        "dataStartRow": 5,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-2-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-2-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-2-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-2-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-2-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-2-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-2-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-2-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-3",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 2 Art & Music",
+        "supabaseTable": "jhc_inventory_book_2_art_music",
+        "headerRow": 4,
+        "dataStartRow": 5,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-3-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-3-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-3-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-3-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-3-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-3-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-3-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-3-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-4",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 13 Admin",
+        "supabaseTable": "jhc_inventory_book_13_admin",
+        "headerRow": 4,
+        "dataStartRow": 5,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-4-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-4-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-4-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-4-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-4-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-4-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-4-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-4-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-5",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 3 Sports",
+        "supabaseTable": "jhc_inventory_book_3_sports",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-5-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-5-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-5-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-5-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-5-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-5-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-5-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-5-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-6",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 5 Physics",
+        "supabaseTable": "jhc_inventory_book_5_physics",
+        "headerRow": 4,
+        "dataStartRow": 5,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-6-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-6-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-6-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number3.",
+            "supabaseColumn": "section_and_number3",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-6-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-6-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-6-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-6-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-6-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-7",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 6 ICT",
+        "supabaseTable": "jhc_inventory_book_6_ict",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-7-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-7-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-7-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number3.",
+            "supabaseColumn": "section_and_number3",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-7-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-7-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-7-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-7-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-7-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-8",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 7 G.Science",
+        "supabaseTable": "jhc_inventory_book_7_g_science",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-8-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-8-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-8-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-8-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-8-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-8-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-8-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-8-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-9",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 8 bio lab",
+        "supabaseTable": "jhc_inventory_book_8_bio_lab",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-9-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-9-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-9-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number3.",
+            "supabaseColumn": "section_and_number3",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-9-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-9-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-9-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-9-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-9-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-10",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 9 chemistry",
+        "supabaseTable": "jhc_inventory_book_9_chemistry",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-10-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-10-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-10-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-10-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-10-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-10-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-10-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-10-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-11",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 10 hostel",
+        "supabaseTable": "jhc_inventory_book_10_hostel",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-11-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-11-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-11-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-11-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-11-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-11-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-11-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-11-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-12",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 12 I Bio tech",
+        "supabaseTable": "jhc_inventory_book_12_i_bio_tech",
+        "headerRow": 2,
+        "dataStartRow": 3,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-12-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-12-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-12-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-12-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-12-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-12-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-12-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-12-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-13",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 12 II E.Tech",
+        "supabaseTable": "jhc_inventory_book_12_ii_e_tech",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-13-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-13-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-13-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-13-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-13-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-13-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-13-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-13-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-14",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 12 III Mchanic",
+        "supabaseTable": "jhc_inventory_book_12_iii_mchanic",
+        "headerRow": 2,
+        "dataStartRow": 3,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-14-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-14-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-14-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-14-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-14-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-14-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-14-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-14-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-15",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 12 IV civil",
+        "supabaseTable": "jhc_inventory_book_12_iv_civil",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-15-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-15-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-15-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-15-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-15-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-15-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-15-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-15-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-16",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 14 mahinthothaya",
+        "supabaseTable": "jhc_inventory_book_14_mahinthothaya",
+        "headerRow": 4,
+        "dataStartRow": 5,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-16-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-16-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-16-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-16-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-16-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-16-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-16-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-16-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-17",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 15 mahilakam",
+        "supabaseTable": "jhc_inventory_book_15_mahilakam",
+        "headerRow": 2,
+        "dataStartRow": 3,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-17-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-17-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-17-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-17-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-17-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-17-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-17-6",
+            "excelColumn": "G",
+            "excelHeader": "Mahilakam & smart class room",
+            "supabaseColumn": "mahilakam_smart_class_room",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-18",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "book 16 photography",
+        "supabaseTable": "jhc_inventory_book_16_photography",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-18-0",
+            "excelColumn": "A",
+            "excelHeader": "Column A",
+            "supabaseColumn": "col_1",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-18-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-18-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-18-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-18-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-18-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-18-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-18-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-jhc-19",
+        "workbookName": "Jaffna Hindu College Inventory.xlsx",
+        "worksheetName": "Book 17 mahin.physics",
+        "supabaseTable": "jhc_inventory_book_17_mahin_physics",
+        "headerRow": 4,
+        "dataStartRow": 5,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-19-0",
+            "excelColumn": "A",
+            "excelHeader": "No",
+            "supabaseColumn": "no",
+            "dataType": "integer",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-19-1",
+            "excelColumn": "B",
+            "excelHeader": "Articles",
+            "supabaseColumn": "articles",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-19-2",
+            "excelColumn": "C",
+            "excelHeader": "Section and Number",
+            "supabaseColumn": "section_and_number",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-19-3",
+            "excelColumn": "D",
+            "excelHeader": "Balance as Shown Per Ledger",
+            "supabaseColumn": "balance_as_shown_per_ledger",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-19-4",
+            "excelColumn": "E",
+            "excelHeader": "Actual Balance on Hand",
+            "supabaseColumn": "actual_balance_on_hand",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-19-5",
+            "excelColumn": "F",
+            "excelHeader": "Surplus",
+            "supabaseColumn": "surplus",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-19-6",
+            "excelColumn": "G",
+            "excelHeader": "Deficiency",
+            "supabaseColumn": "deficiency",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-19-7",
+            "excelColumn": "H",
+            "excelHeader": "Remarks",
+            "supabaseColumn": "remarks",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "preset-timetable-matrix",
+    "name": "School Master Timetable (5-Day Matrix)",
+    "description": "Weekly schedule across Monday through Friday with periods 1-7 and paired Subject & Teacher interleaved rows. Auto-unpivots into clean relational timetable records.",
+    "archetype": "TIMETABLE_MATRIX",
+    "badge": "📅 Timetable Matrix",
+    "isSystem": true,
+    "skipMergedYearRows": true,
+    "tags": [
+      "Timetable",
+      "Schedule",
+      "School",
+      "Unpivot"
+    ],
+    "unpivotConfig": {
+      "enabled": true,
+      "archetype": "TIMETABLE_MATRIX",
+      "targetTable": "class_timetable_slots"
+    },
+    "createdAt": "2026-09-24T15:44:20.076Z",
+    "updatedAt": "2026-09-24T15:44:20.076Z",
+    "sheetMappings": [
+      {
+        "id": "wm-preset-monday",
+        "workbookName": "Class Wise Time Table.xlsx",
+        "worksheetName": "Monday",
+        "supabaseTable": "timetable_monday",
+        "headerRow": 3,
+        "dataStartRow": 4,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-div",
+            "excelColumn": "A",
+            "excelHeader": "Div",
+            "supabaseColumn": "division",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p1",
+            "excelColumn": "B",
+            "excelHeader": "1",
+            "supabaseColumn": "period_1",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p2",
+            "excelColumn": "C",
+            "excelHeader": "2",
+            "supabaseColumn": "period_2",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p3",
+            "excelColumn": "D",
+            "excelHeader": "3",
+            "supabaseColumn": "period_3",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p4",
+            "excelColumn": "E",
+            "excelHeader": "4",
+            "supabaseColumn": "period_4",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p5",
+            "excelColumn": "F",
+            "excelHeader": "5",
+            "supabaseColumn": "period_5",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p6",
+            "excelColumn": "G",
+            "excelHeader": "6",
+            "supabaseColumn": "period_6",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-p7",
+            "excelColumn": "H",
+            "excelHeader": "7",
+            "supabaseColumn": "period_7",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "preset-donations-ledger",
+    "name": "School Financial & Contributions Ledger",
+    "description": "Multi-sheet ledger tracking in-kind donations, SDC cash receipts, and development projects. Automatically ignores merged year divider rows (Year-2023, Year-2024) to prevent database pollution.",
+    "archetype": "MULTI_SHEET_LEDGER",
+    "badge": "💰 Multi-Sheet Ledger",
+    "isSystem": true,
+    "skipMergedYearRows": true,
+    "tags": [
+      "Finance",
+      "Donations",
+      "Year-Filtered",
+      "Ledger"
+    ],
+    "createdAt": "2026-09-24T15:44:20.076Z",
+    "updatedAt": "2026-09-24T15:44:20.076Z",
+    "sheetMappings": [
+      {
+        "id": "wm-preset-things",
+        "workbookName": "JHC Donation Details.xlsx",
+        "worksheetName": "Things Donation",
+        "supabaseTable": "donations_in_kind",
+        "headerRow": 2,
+        "dataStartRow": 3,
+        "skipMergedYearRows": true,
+        "sectionHeadingTargetCol": "academic_year",
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-rcp",
+            "excelColumn": "A",
+            "excelHeader": "Receipt No",
+            "supabaseColumn": "receipt_no",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": true,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-dt",
+            "excelColumn": "B",
+            "excelHeader": "Date",
+            "supabaseColumn": "donation_date",
+            "dataType": "date",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_date"
+          },
+          {
+            "id": "c-dn",
+            "excelColumn": "C",
+            "excelHeader": "Donor Name",
+            "supabaseColumn": "donor_name",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-desc",
+            "excelColumn": "D",
+            "excelHeader": "Item Description",
+            "supabaseColumn": "item_description",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-qty",
+            "excelColumn": "E",
+            "excelHeader": "Quantity",
+            "supabaseColumn": "quantity",
+            "dataType": "integer",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-val",
+            "excelColumn": "F",
+            "excelHeader": "Valuation (Rs)",
+            "supabaseColumn": "valuation_lkr",
+            "dataType": "decimal",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-fol",
+            "excelColumn": "G",
+            "excelHeader": "Folio",
+            "supabaseColumn": "folio_ref",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      },
+      {
+        "id": "wm-preset-cash",
+        "workbookName": "JHC Donation Details.xlsx",
+        "worksheetName": "Cash SDC",
+        "supabaseTable": "sdc_cash_receipts",
+        "headerRow": 2,
+        "dataStartRow": 3,
+        "skipMergedYearRows": true,
+        "sectionHeadingTargetCol": "academic_year",
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-c-rcp",
+            "excelColumn": "A",
+            "excelHeader": "Receipt No",
+            "supabaseColumn": "receipt_no",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": true,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-c-dt",
+            "excelColumn": "B",
+            "excelHeader": "Date",
+            "supabaseColumn": "receipt_date",
+            "dataType": "date",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "parse_date"
+          },
+          {
+            "id": "c-c-con",
+            "excelColumn": "C",
+            "excelHeader": "Contributor / Member",
+            "supabaseColumn": "contributor_name",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-c-pur",
+            "excelColumn": "D",
+            "excelHeader": "Purpose",
+            "supabaseColumn": "purpose",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-c-amt",
+            "excelColumn": "E",
+            "excelHeader": "Amount (Rs)",
+            "supabaseColumn": "amount_lkr",
+            "dataType": "decimal",
+            "required": true,
+            "uniqueKey": false,
+            "transformation": "parse_number"
+          },
+          {
+            "id": "c-c-app",
+            "excelColumn": "F",
+            "excelHeader": "Approved By",
+            "supabaseColumn": "approved_by",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "preset-teacher-allocations",
+    "name": "Teacher-Subject Staff Allocation Matrix",
+    "description": "Grade sheets (Grade 6..11) with subjects down the row axis and division columns (A..F). Consolidates into unified staff assignments table.",
+    "archetype": "PIVOT_ALLOCATION_MATRIX",
+    "badge": "👨‍🏫 Staff Allocation Grid",
+    "isSystem": true,
+    "skipMergedYearRows": true,
+    "tags": [
+      "Staff",
+      "Teachers",
+      "Subjects",
+      "Pivot"
+    ],
+    "unpivotConfig": {
+      "enabled": true,
+      "archetype": "PIVOT_ALLOCATION_MATRIX",
+      "targetTable": "teacher_subject_assignments"
+    },
+    "createdAt": "2026-09-24T15:44:20.076Z",
+    "updatedAt": "2026-09-24T15:44:20.076Z",
+    "sheetMappings": [
+      {
+        "id": "wm-preset-g6",
+        "workbookName": "Subject teacher Class wise.xlsx",
+        "worksheetName": "Grade 6",
+        "supabaseTable": "teacher_allocations_grade_6",
+        "headerRow": 1,
+        "dataStartRow": 2,
+        "skipMergedYearRows": true,
+        "enabled": true,
+        "columns": [
+          {
+            "id": "c-g6-subj",
+            "excelColumn": "A",
+            "excelHeader": "Subject",
+            "supabaseColumn": "subject",
+            "dataType": "text",
+            "required": true,
+            "uniqueKey": true,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-g6-a",
+            "excelColumn": "B",
+            "excelHeader": "A",
+            "supabaseColumn": "division_a_teacher",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-g6-b",
+            "excelColumn": "C",
+            "excelHeader": "B",
+            "supabaseColumn": "division_b_teacher",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-g6-c",
+            "excelColumn": "D",
+            "excelHeader": "C",
+            "supabaseColumn": "division_c_teacher",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-g6-d",
+            "excelColumn": "E",
+            "excelHeader": "D",
+            "supabaseColumn": "division_d_teacher",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-g6-e",
+            "excelColumn": "F",
+            "excelHeader": "E",
+            "supabaseColumn": "division_e_teacher",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          },
+          {
+            "id": "c-g6-f",
+            "excelColumn": "G",
+            "excelHeader": "F",
+            "supabaseColumn": "division_f_teacher",
+            "dataType": "text",
+            "required": false,
+            "uniqueKey": false,
+            "transformation": "trim"
+          }
+        ]
+      }
+    ]
+  }
+]
