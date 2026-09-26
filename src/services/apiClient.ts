@@ -1219,7 +1219,7 @@ export class ApiClient {
     }
   }
 
-  static async loadPermanentMappings(): Promise<{
+  static async loadPermanentMappings(config?: SupabaseConfig): Promise<{
     success: boolean;
     mappings?: WorksheetMapping[];
     workbookInfo?: any;
@@ -1228,7 +1228,37 @@ export class ApiClient {
     error?: string;
   }> {
     try {
-      const res = await fetch('/api/mappings/load', { method: 'GET' });
+      const qs = new URLSearchParams();
+      if (config?.url) qs.set('url', config.url);
+      if (config?.serviceKey || config?.serviceRoleKey || config?.anonKey) {
+        qs.set('key', config.serviceKey || config.serviceRoleKey || config.anonKey);
+      }
+      const url = qs.toString() ? `/api/mappings/load?${qs.toString()}` : '/api/mappings/load';
+      const res = await fetch(url, { method: 'GET' });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async pullMappingsFromSupabase(config: SupabaseConfig): Promise<{
+    success: boolean;
+    mappings?: WorksheetMapping[];
+    totalWorksheets?: number;
+    totalColumns?: number;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/supabase/pull-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey || config.serviceRoleKey,
+        }),
+      });
       return await res.json();
     } catch (e: any) {
       return { success: false, error: e.message };

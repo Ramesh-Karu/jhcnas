@@ -238,14 +238,30 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
 
   const handlePullFromSupabase = async () => {
     setIsPullingSupabase(true);
+    setCopyFeedback(null);
     try {
-      const res = await ApiClient.loadPermanentMappings();
-      const servedRes = await ApiClient.loadServedSheets();
-      
-      const combined: WorksheetMapping[] = [
-        ...(Array.isArray(res.mappings) ? res.mappings : []),
-        ...(Array.isArray(servedRes.mappings) ? servedRes.mappings : [])
-      ];
+      let combined: WorksheetMapping[] = [];
+
+      // 1. Direct Supabase pull if configured
+      if (supabaseConfig?.url && (supabaseConfig.serviceKey || supabaseConfig.anonKey)) {
+        const supRes = await ApiClient.pullMappingsFromSupabase(supabaseConfig);
+        if (supRes.success && Array.isArray(supRes.mappings) && supRes.mappings.length > 0) {
+          combined = supRes.mappings;
+        }
+      }
+
+      // 2. Fallback to server permanent mappings & served sheets
+      if (combined.length === 0) {
+        const res = await ApiClient.loadPermanentMappings(supabaseConfig);
+        const servedRes = await ApiClient.loadServedSheets();
+        combined = [
+          ...(Array.isArray(res.mappings) ? res.mappings : []),
+          ...(Array.isArray(servedRes.mappings) ? servedRes.mappings : [])
+        ];
+        if (Array.isArray(servedRes.servedSheets)) {
+          setStoredServedSheets(servedRes.servedSheets);
+        }
+      }
 
       if (combined.length > 0) {
         const mapByKey = new Map<string, WorksheetMapping>();
@@ -255,22 +271,20 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
         });
         combined.forEach(m => {
           const key = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
-          mapByKey.set(key, m);
+          mapByKey.set(key, { ...m, isUserConfigured: true, isDraft: false });
         });
         const merged = Array.from(mapByKey.values());
         onSaveMappings(merged);
-        if (Array.isArray(servedRes.servedSheets)) {
-          setStoredServedSheets(servedRes.servedSheets);
-        }
-        setCopyFeedback(`📥 Pulled ${combined.length} mappings from Supabase PostgreSQL & Server Disk! Total ${merged.length} active sheets.`);
+        const totalCols = combined.reduce((sum, m) => sum + (m.columns?.length || 0), 0);
+        setCopyFeedback(`📥 Successfully pulled ${combined.length} worksheet mappings (${totalCols} columns) directly from Supabase PostgreSQL!`);
       } else {
-        setCopyFeedback('No additional remote mappings found in Supabase.');
+        setCopyFeedback('No remote mappings found in Supabase database tables.');
       }
     } catch (err: any) {
       setSyncFeedback({ type: 'error', message: `Pull failed: ${err.message}` });
     } finally {
       setIsPullingSupabase(false);
-      setTimeout(() => setCopyFeedback(null), 4000);
+      setTimeout(() => setCopyFeedback(null), 5000);
     }
   };
 

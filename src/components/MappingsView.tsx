@@ -201,9 +201,27 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 
   const handlePullFromSupabase = async () => {
     setIsPullingSupabase(true);
+    setSaveMessage(null);
     try {
-      const res = await ApiClient.loadPermanentMappings();
-      if (res.success && Array.isArray(res.mappings) && res.mappings.length > 0) {
+      let pulledMappings: WorksheetMapping[] = [];
+
+      // 1. If Supabase configured, pull directly from database tables
+      if (supabaseConfig?.url && (supabaseConfig.serviceKey || supabaseConfig.anonKey)) {
+        const supRes = await ApiClient.pullMappingsFromSupabase(supabaseConfig);
+        if (supRes.success && Array.isArray(supRes.mappings) && supRes.mappings.length > 0) {
+          pulledMappings = supRes.mappings;
+        }
+      }
+
+      // 2. Fallback to server permanent mappings if direct Supabase pull didn't return rows
+      if (pulledMappings.length === 0) {
+        const res = await ApiClient.loadPermanentMappings(supabaseConfig);
+        if (res.success && Array.isArray(res.mappings) && res.mappings.length > 0) {
+          pulledMappings = res.mappings;
+        }
+      }
+
+      if (pulledMappings.length > 0) {
         // Merge with current mappings by composite key
         const getMappingKey = (m: any) => {
           const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
@@ -217,23 +235,24 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         currentMappings.forEach(m => {
           mapByKey.set(getMappingKey(m), m);
         });
-        res.mappings.forEach((m: any) => {
+        pulledMappings.forEach((m: any) => {
           const key = getMappingKey(m);
           const prev = mapByKey.get(key);
-          mapByKey.set(key, { ...prev, ...m });
+          mapByKey.set(key, { ...prev, ...m, isUserConfigured: true, isDraft: false });
         });
         const merged = Array.from(mapByKey.values());
         setCurrentMappings(merged);
         onSaveMappings(merged);
-        setSaveMessage(`📥 Successfully pulled and merged ${res.mappings.length} mappings from Supabase PostgreSQL & Server Storage! Total ${merged.length} sheets available.`);
+        const totalCols = pulledMappings.reduce((sum, m) => sum + (m.columns?.length || 0), 0);
+        setSaveMessage(`📥 Successfully pulled ${pulledMappings.length} worksheet mappings (${totalCols} columns) directly from Supabase PostgreSQL! Total ${merged.length} sheets active.`);
       } else {
-        setSaveMessage('No additional remote mappings found in Supabase.');
+        setSaveMessage('No remote mappings found in Supabase database tables.');
       }
     } catch (e: any) {
       setSaveMessage(`Pull error: ${e.message}`);
     } finally {
       setIsPullingSupabase(false);
-      setTimeout(() => setSaveMessage(null), 4500);
+      setTimeout(() => setSaveMessage(null), 5000);
     }
   };
 

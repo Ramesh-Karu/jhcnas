@@ -2537,6 +2537,132 @@ app.post('/api/supabase/push-mappings', async (req, res) => {
   }
 });
 
+// 7d. Direct Pull Mappings from Supabase Database Tables (worksheet_mappings & column_mappings)
+app.post('/api/supabase/pull-mappings', async (req, res) => {
+  try {
+    const { url, anonKey, serviceKey, serviceRoleKey } = req.body || {};
+    const secrets = loadPermanentSecrets();
+    const supUrl = (url || secrets?.supabase?.url || process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+    const supKey = (serviceKey && serviceKey.trim()) || 
+                   (serviceRoleKey && serviceRoleKey.trim()) || 
+                   (anonKey && anonKey.trim()) || 
+                   (secrets?.supabase?.serviceKey) || 
+                   (secrets?.supabase?.serviceRoleKey) || 
+                   (secrets?.supabase?.anonKey) || 
+                   process.env.SUPABASE_SERVICE_ROLE_KEY || 
+                   process.env.SUPABASE_ANON_KEY;
+
+    if (!supUrl || !supKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'Supabase URL and API Key are required to pull mappings.',
+      });
+    }
+
+    // 1. Fetch worksheet_mappings
+    const wsRes = await fetch(`${supUrl}/rest/v1/worksheet_mappings?select=*&order=created_at.asc&limit=1000`, {
+      headers: { apikey: supKey, Authorization: `Bearer ${supKey}` },
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!wsRes.ok) {
+      const errTxt = await wsRes.text().catch(() => '');
+      return res.status(wsRes.status).json({
+        success: false,
+        error: `Could not fetch worksheet_mappings from Supabase (HTTP ${wsRes.status}): ${errTxt}`,
+      });
+    }
+
+    const remoteWs = await wsRes.json().catch(() => []);
+    if (!Array.isArray(remoteWs) || remoteWs.length === 0) {
+      return res.json({
+        success: true,
+        mappings: [],
+        totalWorksheets: 0,
+        totalColumns: 0,
+        message: 'No worksheet mappings found in Supabase database tables.',
+      });
+    }
+
+    // 2. Fetch column_mappings
+    const colRes = await fetch(`${supUrl}/rest/v1/column_mappings?select=*&order=created_at.asc&limit=5000`, {
+      headers: { apikey: supKey, Authorization: `Bearer ${supKey}` },
+      signal: AbortSignal.timeout(6000),
+    }).catch(() => null);
+
+    const remoteCols = (colRes && colRes.ok) ? await colRes.json().catch(() => []) : [];
+
+    let totalCols = 0;
+    const hydratedMappings: any[] = [];
+
+    for (const rws of remoteWs) {
+      const wsName = rws.worksheet_name || rws.sheet_name || '';
+      const wbName = rws.workbook_name || rws.file_name || 'Workbook.xlsx';
+      const targetTable = rws.supabase_table || rws.target_table || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const wsIdStr = rws.id ? String(rws.id) : '';
+
+      const matchingCols = remoteCols
+        .filter((c: any) => {
+          if (wsIdStr && String(c.worksheet_mapping_id) === wsIdStr) return true;
+          if (c.worksheet_name && String(c.worksheet_name).toLowerCase() === wsName.toLowerCase()) return true;
+          if (c.target_table && String(c.target_table).toLowerCase() === targetTable.toLowerCase()) return true;
+          return false;
+        })
+        .map((c: any, cIdx: number) => ({
+          id: c.id || `cm-sup-${cIdx}`,
+          excelColumn: c.excel_column || c.excel_column_letter || 'A',
+          excelHeader: c.excel_header || c.excel_column_header || c.supabase_column || `Column_${cIdx + 1}`,
+          supabaseColumn: c.supabase_column || c.supabase_column_name || `col_${cIdx + 1}`,
+          dataType: c.data_type || 'text',
+          required: Boolean(c.required || c.is_required),
+          uniqueKey: Boolean(c.unique_key || c.is_unique_key),
+          defaultValue: c.default_value || undefined,
+          transformation: c.transformation || c.transformation_rule || 'none',
+          validationRegex: c.validation_regex || undefined,
+        }));
+
+      totalCols += matchingCols.length;
+
+      hydratedMappings.push({
+        id: rws.id || `wm-sup-${Date.now()}-${wsName.replace(/[^a-z0-9_]/gi, '_')}`,
+        workbookName: wbName,
+        worksheetName: wsName,
+        supabaseTable: targetTable,
+        headerRow: rws.header_row || 1,
+        dataStartRow: rws.data_start_row || 2,
+        dataEndRow: rws.data_end_row || undefined,
+        sectionHeadingCol: rws.section_heading_col || undefined,
+        sectionHeadingTargetCol: rws.section_heading_target_col || undefined,
+        consolidationMode: rws.consolidation_mode || 'SEPARATE_TABLES',
+        syncPolicy: rws.sync_policy || 'BIDIRECTIONAL',
+        enabled: rws.enabled !== false && rws.is_active !== false,
+        isUserConfigured: true,
+        isDraft: false,
+        columns: matchingCols,
+      });
+    }
+
+    // Save to permanent disk storage
+    savePermanentMappings({
+      mappings: hydratedMappings,
+      savedAt: new Date().toISOString(),
+      supabase: { url: supUrl, serviceKey: supKey } as any,
+    });
+
+    logServerEvent('success', 'SupabasePull', `Successfully pulled ${hydratedMappings.length} worksheet mappings and ${totalCols} column mappings directly from Supabase database tables.`);
+
+    return res.json({
+      success: true,
+      mappings: hydratedMappings,
+      totalWorksheets: hydratedMappings.length,
+      totalColumns: totalCols,
+      message: `📥 Successfully pulled and synchronized ${hydratedMappings.length} worksheet mappings (${totalCols} columns) directly from your live Supabase database!`,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Helper to diagnose Supabase PostgREST & PostgreSQL errors with remediation and SQL scripts
 function diagnoseSupabaseError(status: number, errText: string, tableName: string, sampleRecord?: any): {
   errorCode: string;
@@ -3818,13 +3944,19 @@ app.get('/api/mappings/load', async (req, res) => {
 
             for (const rws of remoteWs) {
               const wsName = rws.worksheet_name || rws.sheet_name || '';
-              const wbName = rws.workbook_name || rws.file_name || 'students.xlsx';
+              const wbName = rws.workbook_name || rws.file_name || 'Workbook.xlsx';
               const targetTable = rws.supabase_table || rws.target_table || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
               const key = `${wbName.toLowerCase()}::${wsName.toLowerCase()}`;
+              const wsIdStr = rws.id ? String(rws.id) : '';
 
-              // Get matching column mappings from remote
+              // Get matching column mappings from remote by worksheet_mapping_id, worksheet_name or target_table
               const matchingCols = remoteCols
-                .filter((c: any) => (c.worksheet_name || '').toLowerCase() === wsName.toLowerCase() || (c.target_table || '').toLowerCase() === targetTable.toLowerCase())
+                .filter((c: any) => {
+                  if (wsIdStr && String(c.worksheet_mapping_id) === wsIdStr) return true;
+                  if (c.worksheet_name && String(c.worksheet_name).toLowerCase() === wsName.toLowerCase()) return true;
+                  if (c.target_table && String(c.target_table).toLowerCase() === targetTable.toLowerCase()) return true;
+                  return false;
+                })
                 .map((c: any, cIdx: number) => ({
                   id: `cm-sup-${cIdx}`,
                   excelColumn: c.excel_column || c.excel_column_letter || 'A',
@@ -3840,7 +3972,7 @@ app.get('/api/mappings/load', async (req, res) => {
               const existing = mappingMap.get(key);
               if (!existing) {
                 mappingMap.set(key, {
-                  id: `wm-sup-${Date.now()}-${wsName.replace(/[^a-z0-9_]/gi, '_')}`,
+                  id: rws.id || `wm-sup-${Date.now()}-${wsName.replace(/[^a-z0-9_]/gi, '_')}`,
                   workbookName: wbName,
                   worksheetName: wsName,
                   supabaseTable: targetTable,
@@ -3850,10 +3982,15 @@ app.get('/api/mappings/load', async (req, res) => {
                   sectionHeadingTargetCol: rws.section_heading_target_col || undefined,
                   syncPolicy: rws.sync_policy || 'EXCEL_TO_DB',
                   enabled: rws.enabled !== false && rws.is_active !== false,
+                  isUserConfigured: true,
+                  isDraft: false,
                   columns: matchingCols.length > 0 ? matchingCols : (rws.columns || []),
                 });
-              } else if (matchingCols.length > 0 && (!existing.columns || existing.columns.length === 0)) {
+              } else if (matchingCols.length > 0) {
                 existing.columns = matchingCols;
+                existing.supabaseTable = targetTable;
+                existing.isUserConfigured = true;
+                existing.isDraft = false;
                 mappingMap.set(key, existing);
               }
             }

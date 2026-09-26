@@ -119,6 +119,40 @@ export default function App() {
   const [serverSyncTime, setServerSyncTime] = useState<string | null>(null);
   const [isSyncingServer, setIsSyncingServer] = useState(false);
 
+  // Directly pulls user mappings from Supabase PostgreSQL database tables
+  const handlePullSupabaseMappings = async (silent: boolean = false) => {
+    const currentSup = StorageService.getSupabaseConfig();
+    const supToUse = (currentSup.url && (currentSup.serviceKey || currentSup.anonKey)) ? currentSup : supabase;
+    if (!supToUse.url || (!supToUse.serviceKey && !supToUse.anonKey)) {
+      return;
+    }
+    try {
+      const res = await ApiClient.pullMappingsFromSupabase(supToUse);
+      if (res.success && res.mappings && res.mappings.length > 0) {
+        setMappings(prev => {
+          const mapByKey = new Map<string, WorksheetMapping>();
+          prev.forEach(m => {
+            const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+            mapByKey.set(k, m);
+          });
+          res.mappings!.forEach((m: any) => {
+            const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+            const existing = mapByKey.get(k);
+            mapByKey.set(k, { ...existing, ...m, isUserConfigured: true, isDraft: false });
+          });
+          const merged = Array.from(mapByKey.values());
+          StorageService.saveMappings(merged);
+          return merged;
+        });
+        if (!silent) {
+          console.log(`[Supabase Auto-Pull] Pulled ${res.mappings.length} mappings from Supabase PostgreSQL.`);
+        }
+      }
+    } catch (e) {
+      if (!silent) console.warn('Supabase background pull error:', e);
+    }
+  };
+
   // Load unified Coolify server state & sync with browser localStorage
   const syncServerAndLocalStorage = async () => {
     setIsSyncingServer(true);
@@ -158,35 +192,37 @@ export default function App() {
             stateMappings.forEach((m: any) => {
               const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
               const existing = mapByKey.get(k);
-              mapByKey.set(k, { ...existing, ...m });
+              mapByKey.set(k, { ...existing, ...m, isUserConfigured: true, isDraft: false });
             });
             const merged = Array.from(mapByKey.values());
             StorageService.saveMappings(merged);
             return merged;
           });
-        } else {
-          // Also try pulling directly from Supabase & server disk
-          ApiClient.loadPermanentMappings().then(res => {
-            const permMappings = res.mappings;
-            if (res.success && permMappings && permMappings.length > 0) {
-              setMappings(prev => {
-                const mapByKey = new Map<string, WorksheetMapping>();
-                prev.forEach(m => {
-                  const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
-                  mapByKey.set(k, m);
-                });
-                permMappings.forEach((m: any) => {
-                  const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
-                  const existing = mapByKey.get(k);
-                  mapByKey.set(k, { ...existing, ...m });
-                });
-                const merged = Array.from(mapByKey.values());
-                StorageService.saveMappings(merged);
-                return merged;
-              });
-            }
-          }).catch(() => {});
         }
+
+        // Pull directly from Supabase to guarantee fresh mappings
+        const activeSup = serverState.supabase?.url ? serverState.supabase : supabase;
+        ApiClient.loadPermanentMappings(activeSup).then(res => {
+          const permMappings = res.mappings;
+          if (res.success && permMappings && permMappings.length > 0) {
+            setMappings(prev => {
+              const mapByKey = new Map<string, WorksheetMapping>();
+              prev.forEach(m => {
+                const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+                mapByKey.set(k, m);
+              });
+              permMappings.forEach((m: any) => {
+                const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+                const existing = mapByKey.get(k);
+                mapByKey.set(k, { ...existing, ...m, isUserConfigured: true, isDraft: false });
+              });
+              const merged = Array.from(mapByKey.values());
+              StorageService.saveMappings(merged);
+              return merged;
+            });
+          }
+        }).catch(() => {});
+
         if (serverState.workerStatus) {
           setSchedulerStatus(serverState.workerStatus);
         }
@@ -223,11 +259,24 @@ export default function App() {
     handleFetchNextcloudFiles();
     handleFetchSchedulerStatus();
     syncServerAndLocalStorage();
+    handlePullSupabaseMappings(true);
 
     // Poll live production scheduler state every 10 seconds
     const interval = setInterval(() => {
       handleFetchSchedulerStatus();
     }, 10000);
+
+    // Automatic Supabase Pull: Every 10 minutes (offset by 5 minutes to interleave smoothly with 15m syncs)
+    const pullIntervalMs = 10 * 60 * 1000;
+    const midOffsetMs = 5 * 60 * 1000;
+
+    const midTimerTimeout = setTimeout(() => {
+      handlePullSupabaseMappings(true);
+    }, midOffsetMs);
+
+    const pullInterval = setInterval(() => {
+      handlePullSupabaseMappings(true);
+    }, pullIntervalMs);
 
     // Initial scheduler configuration check
     ApiClient.configureScheduler({
@@ -249,7 +298,11 @@ export default function App() {
       setConflicts(stored);
     }
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(midTimerTimeout);
+      clearInterval(pullInterval);
+    };
   }, []);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isSampleModalOpen, setIsSampleModalOpen] = useState(false);
