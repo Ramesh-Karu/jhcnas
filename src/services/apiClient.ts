@@ -584,75 +584,28 @@ export class ApiClient {
       };
     }
 
-    // 1. Prepare worksheet_mappings records for Supabase
-    const wsRecords = userMappings.map(m => ({
-      workbook_name: m.workbookName || 'default_workbook.xlsx',
-      worksheet_name: m.worksheetName,
-      supabase_table: m.supabaseTable,
-      header_row: m.headerRow || 1,
-      data_start_row: m.dataStartRow || 2,
-      data_end_row: m.dataEndRow || null,
-      section_heading_col: m.sectionHeadingCol || null,
-      section_heading_target_col: m.sectionHeadingTargetCol || null,
-      consolidation_mode: m.consolidationMode || 'SEPARATE_TABLES',
-      enabled: m.enabled !== false,
-    }));
+    try {
+      const res = await fetch('/api/supabase/push-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          anonKey: config.anonKey,
+          serviceKey: config.serviceKey || config.serviceRoleKey,
+          mappings: userMappings,
+        }),
+      });
 
-    const wsRes = await this.upsertSupabaseRecords(
-      config,
-      'worksheet_mappings',
-      wsRecords,
-      'workbook_name,worksheet_name'
-    );
-
-    if (!wsRes.success) {
+      const data = await res.json();
+      return data;
+    } catch (e: any) {
       return {
         success: false,
         pushedWorksheetMappingsCount: 0,
         pushedColumnMappingsCount: 0,
-        error: `Failed to push worksheet_mappings to Supabase: ${wsRes.error || wsRes.message}`,
-        diagnostic: wsRes.diagnostic
+        error: `Network error calling backend push-mappings: ${e.message}`,
       };
     }
-
-    // 2. Prepare column_mappings records for Supabase
-    const colRecords: any[] = [];
-    userMappings.forEach(m => {
-      (m.columns || []).forEach(c => {
-        colRecords.push({
-          excel_column: c.excelColumn || 'A',
-          excel_header: c.excelHeader || c.excelColumn || '',
-          supabase_column: c.supabaseColumn,
-          data_type: c.dataType || 'text',
-          required: !!c.required,
-          unique_key: !!c.uniqueKey,
-          default_value: c.defaultValue || null,
-          transformation: c.transformation || 'none',
-        });
-      });
-    });
-
-    let pushedColsCount = 0;
-    if (colRecords.length > 0) {
-      const colRes = await this.upsertSupabaseRecords(
-        config,
-        'column_mappings',
-        colRecords
-      );
-      if (colRes.success) {
-        pushedColsCount = colRes.upsertedCount || colRecords.length;
-      }
-    }
-
-    // Also persist permanently to server storage disk
-    await this.savePermanentMappings({ mappings: userMappings, supabase: config }).catch(() => {});
-
-    return {
-      success: true,
-      pushedWorksheetMappingsCount: wsRes.upsertedCount || wsRecords.length,
-      pushedColumnMappingsCount: pushedColsCount,
-      message: `🚀 Successfully pushed ${wsRecords.length} worksheet mappings and ${colRecords.length} column mappings directly to your live Supabase database! Verified and active.`
-    };
   }
 
   static async parseRawExcelOrCsv(params: {
