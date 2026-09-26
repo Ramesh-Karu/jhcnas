@@ -812,10 +812,10 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
   // Available worksheets in current run
   const availableSheets = useMemo(() => {
     if (dryRunResult?.sheetSummaries && dryRunResult.sheetSummaries.length > 0) {
-      return dryRunResult.sheetSummaries.map(s => s.sheetName);
+      return Array.from(new Set(dryRunResult.sheetSummaries.map(s => s.sheetName).filter(Boolean)));
     }
     if (currentAnalysis?.worksheets && currentAnalysis.worksheets.length > 0) {
-      return currentAnalysis.worksheets.map(w => w.sheetName);
+      return Array.from(new Set(currentAnalysis.worksheets.map(w => w.sheetName).filter(Boolean)));
     }
     return [];
   }, [dryRunResult, currentAnalysis]);
@@ -1588,9 +1588,9 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
                     >
                       All Sheets
                     </button>
-                    {availableSheets.map(s => (
+                    {availableSheets.map((s, sIdx) => (
                       <button
-                        key={s}
+                        key={`${s}-${sIdx}`}
                         onClick={() => {
                           setSelectedSheetFilter(s);
                           setRecordsPage(1);

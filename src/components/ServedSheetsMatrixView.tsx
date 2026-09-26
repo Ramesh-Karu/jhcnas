@@ -890,13 +890,25 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           </button>
 
           <button
+            id="btn-push-to-supabase-served"
             onClick={handlePushToSupabase}
             disabled={isPushingSupabase}
-            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white shadow-xs transition-colors"
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
             title="Push all user-configured worksheet and column mappings directly into your live Supabase database tables"
           >
             <Database className={`w-3.5 h-3.5 ${isPushingSupabase ? 'animate-spin' : ''}`} />
             <span>{isPushingSupabase ? 'Pushing to Supabase...' : '🚀 Push Mappings to Supabase'}</span>
+          </button>
+
+          <button
+            id="btn-pull-from-supabase-served"
+            onClick={handlePullFromSupabase}
+            disabled={isPullingSupabase}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
+            title="Pull all saved worksheet and column mappings directly from Supabase PostgreSQL database tables"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isPullingSupabase ? 'animate-spin' : ''}`} />
+            <span>{isPullingSupabase ? 'Pulling from Supabase...' : '📥 Pull from Supabase'}</span>
           </button>
 
           <button
@@ -1116,10 +1128,10 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
             >
               <option value="ALL">All Workbooks ({servedSheets.length} sheets)</option>
-              {uniqueWorkbooks.map(wb => {
+              {uniqueWorkbooks.map((wb, wbIdx) => {
                 const count = servedSheets.filter(s => s.workbookName.toLowerCase().trim() === wb.toLowerCase().trim()).length;
                 return (
-                  <option key={wb} value={wb}>{wb} ({count} sheets)</option>
+                  <option key={`${wb}-${wbIdx}`} value={wb}>{wb} ({count} sheets)</option>
                 );
               })}
             </select>
@@ -1130,8 +1142,8 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
             >
               <option value="ALL">All Supabase Tables</option>
-              {availableTargetTables.map(tbl => (
-                <option key={tbl} value={tbl}>{tbl}</option>
+              {availableTargetTables.map((tbl, tblIdx) => (
+                <option key={`${tbl}-${tblIdx}`} value={tbl}>{tbl}</option>
               ))}
             </select>
 
@@ -1168,11 +1180,11 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
             >
               All Workbooks ({servedSheets.length})
             </button>
-            {uniqueWorkbooks.map(wb => {
+            {uniqueWorkbooks.map((wb, wbIdx) => {
               const count = servedSheets.filter(s => s.workbookName.toLowerCase().trim() === wb.toLowerCase().trim()).length;
               return (
                 <button
-                  key={wb}
+                  key={`${wb}-${wbIdx}`}
                   onClick={() => setSelectedWorkbookFilter(wb)}
                   className={`px-3 py-1 rounded-full text-xs whitespace-nowrap transition-colors shadow-2xs flex items-center space-x-1.5 ${
                     selectedWorkbookFilter.toLowerCase().trim() === wb.toLowerCase().trim()

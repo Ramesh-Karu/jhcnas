@@ -798,11 +798,11 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
             id="btn-pull-from-supabase"
             onClick={handlePullFromSupabase}
             disabled={isPullingSupabase}
-            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg border border-blue-300 bg-blue-50 hover:bg-blue-100 text-xs font-semibold text-blue-800 shadow-2xs transition-colors"
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-semibold text-white shadow-xs transition-colors cursor-pointer"
             title="Pull all past and current worksheet mappings from Supabase PostgreSQL database tables"
           >
-            <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isPullingSupabase ? 'animate-spin' : ''}`} />
-            <span>{isPullingSupabase ? 'Pulling...' : 'Pull from Supabase'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 text-white ${isPullingSupabase ? 'animate-spin' : ''}`} />
+            <span>{isPullingSupabase ? 'Pulling from Supabase...' : '📥 Pull from Supabase'}</span>
           </button>
 
           {currentAnalysis && (
@@ -1081,12 +1081,12 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               </span>
             </button>
 
-            {uniqueWorkbooks.map(wbName => {
+            {uniqueWorkbooks.map((wbName, wbIdx) => {
               const sheetCount = activeLiveMappings.filter(m => (m.workbookName || '').toLowerCase() === wbName.toLowerCase()).length;
               const isSelected = selectedWorkbookFilter.toLowerCase() === wbName.toLowerCase();
               return (
                 <button
-                  key={wbName}
+                  key={`${wbName}-${wbIdx}`}
                   type="button"
                   onClick={() => setSelectedWorkbookFilter(wbName)}
                   className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${

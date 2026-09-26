@@ -1886,8 +1886,8 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 max-h-72 overflow-y-auto pr-1">
-                  {activeSheet.headers.map((h) => (
-                    <div key={h.colLetter} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex flex-col justify-between">
+                  {activeSheet.headers.map((h, hIdx) => (
+                    <div key={`${h.colLetter}-${h.name}-${hIdx}`} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex flex-col justify-between">
                       <div>
                         <div className="flex items-center justify-between font-mono text-[11px]">
                           <span className="text-purple-700 font-bold">{h.colLetter}</span>
@@ -1948,8 +1948,8 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                     <thead className="bg-slate-100 text-slate-700 uppercase tracking-wider border-b border-slate-200 sticky top-0">
                       <tr>
                         <th className="px-3 py-2 w-16 text-slate-400">Row</th>
-                        {activeSheet.headers.map((h) => (
-                          <th key={h.colLetter} className="px-3 py-2 whitespace-nowrap">
+                        {activeSheet.headers.map((h, hIdx) => (
+                          <th key={`${h.colLetter}-${h.name}-${hIdx}`} className="px-3 py-2 whitespace-nowrap">
                             <span className="text-slate-500 mr-1">{h.colLetter}:</span>
                             <span className="text-slate-900 font-bold">{h.name}</span>
                           </th>
@@ -1960,10 +1960,10 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
                       {activeSheet.sampleRows.map((sr) => (
                         <tr key={sr.rowNumber} className="hover:bg-slate-50 transition-colors">
                           <td className="px-3 py-2 text-slate-400">{sr.rowNumber}</td>
-                          {activeSheet.headers.map((h) => {
+                          {activeSheet.headers.map((h, hIdx) => {
                             const rawCell = sr.data[h.colLetter] !== undefined ? sr.data[h.colLetter] : sr.data[h.name];
                             return (
-                              <td key={h.colLetter} className="px-3 py-2 whitespace-nowrap text-slate-800">
+                              <td key={`${h.colLetter}-${hIdx}`} className="px-3 py-2 whitespace-nowrap text-slate-800">
                                 {rawCell !== undefined && rawCell !== null && rawCell !== '' ? (
                                   typeof rawCell === 'object' ? JSON.stringify(rawCell) : String(rawCell)
                                 ) : (

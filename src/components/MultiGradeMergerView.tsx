@@ -1199,9 +1199,9 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                   {/* Sheets / Divisions tags */}
                   <div className="flex flex-wrap items-center gap-1.5 pl-6">
                     <span className="text-[11px] text-slate-400 mr-1">Divisions:</span>
-                    {file.sheets.map((sheet) => (
+                    {file.sheets.map((sheet, sIdx) => (
                       <div
-                        key={sheet.sheetName}
+                        key={`${file.id}-${sheet.sheetName}-${sIdx}`}
                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
                           sheet.included
                             ? 'bg-indigo-50 border-indigo-200 text-indigo-800'
@@ -1281,7 +1281,7 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
             <div className="flex flex-wrap gap-1.5">
               {referenceColumns.map((col, idx) => (
                 <span
-                  key={col}
+                  key={`${col}-${idx}`}
                   className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 border border-slate-200 text-slate-800 rounded-md text-xs font-medium"
                 >
                   <span className="text-slate-400 text-[10px] font-mono">#{idx + 1}</span>
@@ -1360,8 +1360,8 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                   className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700"
                 >
                   <option value="ALL">All Grades</option>
-                  {availableGrades.map(g => (
-                    <option key={g} value={g}>{g}</option>
+                  {availableGrades.map((g, idx) => (
+                    <option key={`${g}-${idx}`} value={g}>{g}</option>
                   ))}
                 </select>
 
@@ -1372,8 +1372,8 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                   className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700"
                 >
                   <option value="ALL">All Divisions</option>
-                  {availableDivisions.map(d => (
-                    <option key={d} value={d}>Div {d}</option>
+                  {availableDivisions.map((d, idx) => (
+                    <option key={`${d}-${idx}`} value={d}>Div {d}</option>
                   ))}
                 </select>
 
@@ -1397,9 +1397,9 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                 <thead>
                   <tr className="bg-slate-100/80 border-b border-slate-200 text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                     <th className="py-2.5 px-3 w-12 text-center text-slate-400">#</th>
-                    {referenceColumns.map((col) => (
+                    {referenceColumns.map((col, cIdx) => (
                       <th
-                        key={col}
+                        key={`${col}-${cIdx}`}
                         onClick={() => handleSort(col)}
                         className="py-2.5 px-3 cursor-pointer hover:bg-slate-200/60 transition-colors select-none"
                       >
@@ -1429,7 +1429,7 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
 
                       return (
                         <tr 
-                          key={record.id}
+                          key={record.id || `rec-${rIdx}`}
                           className={`hover:bg-indigo-50/30 transition-colors ${
                             isPast ? 'bg-amber-50/20' : ''
                           }`}
@@ -1438,7 +1438,7 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                             {rowNum}
                           </td>
 
-                          {referenceColumns.map((col) => {
+                          {referenceColumns.map((col, cIdx) => {
                             const val = record[col] !== undefined ? record[col] : '';
                             const stdKey = matchStandardColumn(col);
 
@@ -1447,7 +1447,7 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                               const s = String(val);
                               const isInactive = isPastStudentStatus(s);
                               return (
-                                <td key={col} className="py-2.5 px-3 font-medium">
+                                <td key={`${col}-${cIdx}`} className="py-2.5 px-3 font-medium">
                                   <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
                                     isInactive
                                       ? 'bg-amber-100 text-amber-800 border border-amber-200'
@@ -1462,7 +1462,7 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                             // Format Student Name with bolding
                             if (stdKey === 'student_name' || col.toLowerCase().includes('name')) {
                               return (
-                                <td key={col} className="py-2.5 px-3 font-bold text-slate-900">
+                                <td key={`${col}-${cIdx}`} className="py-2.5 px-3 font-bold text-slate-900">
                                   {val}
                                 </td>
                               );
@@ -1471,14 +1471,14 @@ export const MultiGradeMergerView: React.FC<MultiGradeMergerViewProps> = ({
                             // Format Admission Number with mono font
                             if (stdKey === 'admission_number' || col.toLowerCase().includes('admission') || col.toLowerCase().includes('adm')) {
                               return (
-                                <td key={col} className="py-2.5 px-3 font-mono text-slate-600 text-[11px]">
+                                <td key={`${col}-${cIdx}`} className="py-2.5 px-3 font-mono text-slate-600 text-[11px]">
                                   {val}
                                 </td>
                               );
                             }
 
                             return (
-                              <td key={col} className="py-2.5 px-3 text-slate-700">
+                              <td key={`${col}-${cIdx}`} className="py-2.5 px-3 text-slate-700">
                                 {String(val ?? '')}
                               </td>
                             );
