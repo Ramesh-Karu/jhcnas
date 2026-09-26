@@ -58,6 +58,7 @@ export interface SupabaseConfig {
 export interface SyncSettings {
   syncInterval: SyncInterval;
   autoSyncEnabled: boolean;
+  excludedAutoSyncFiles?: string[];
   backupToStorage: boolean;
   storageBucket: string;
   workerUrl: string;
@@ -77,6 +78,7 @@ export interface LiveSchedulerStatus {
   lastRunAt: string | null;
   nextRunAt: string | null;
   secondsUntilNextRun: number | null;
+  excludedAutoSyncFiles?: string[];
   lastRunResult?: {
     success: boolean;
     totalInserted: number;
@@ -112,6 +114,7 @@ export interface NextcloudFile {
   lastModified: string;
   fileHash: string; // SHA-256
   status: 'New' | 'Unchanged' | 'Modified' | 'Synced' | 'Error';
+  autoSyncEnabled?: boolean;
   lastProcessedAt?: string;
   worksheetsCount?: number;
 }

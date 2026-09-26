@@ -53,7 +53,8 @@ const STORAGE_KEYS = {
   SYNC_BASELINES: 'nes_sync_baselines',
   TWOWAY_SETTINGS: 'nes_twoway_settings',
   SAMPLE_LOADED: 'nes_sample_loaded_v1',
-  PRESETS: 'nes_ai_presets'
+  PRESETS: 'nes_ai_presets',
+  EXCLUDED_AUTO_SYNC_FILES: 'nes_excluded_auto_sync_files'
 };
 
 export class StorageService {
@@ -168,14 +169,73 @@ export class StorageService {
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(s));
   }
 
+  static getExcludedAutoSyncFiles(): string[] {
+    const raw = localStorage.getItem(STORAGE_KEYS.EXCLUDED_AUTO_SYNC_FILES);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.map(f => String(f).trim()).filter(Boolean);
+      } catch {}
+    }
+    const settings = this.getSyncSettings();
+    if (Array.isArray(settings.excludedAutoSyncFiles)) {
+      return settings.excludedAutoSyncFiles;
+    }
+    return [];
+  }
+
+  static saveExcludedAutoSyncFiles(files: string[]): void {
+    const cleaned = Array.from(new Set(files.map(f => String(f).trim()).filter(Boolean)));
+    localStorage.setItem(STORAGE_KEYS.EXCLUDED_AUTO_SYNC_FILES, JSON.stringify(cleaned));
+    
+    // Keep settings in sync
+    const rawSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+    if (rawSettings) {
+      try {
+        const s = JSON.parse(rawSettings);
+        s.excludedAutoSyncFiles = cleaned;
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(s));
+      } catch {}
+    }
+  }
+
+  static isFileAutoSyncEnabled(filename: string): boolean {
+    if (!filename) return true;
+    const excluded = this.getExcludedAutoSyncFiles();
+    return !excluded.some(f => f.toLowerCase().trim() === filename.toLowerCase().trim());
+  }
+
+  static setFileAutoSyncEnabled(filename: string, enabled: boolean): string[] {
+    if (!filename) return this.getExcludedAutoSyncFiles();
+    let current = this.getExcludedAutoSyncFiles();
+    const target = filename.trim();
+    if (enabled) {
+      current = current.filter(f => f.toLowerCase().trim() !== target.toLowerCase());
+    } else {
+      if (!current.some(f => f.toLowerCase().trim() === target.toLowerCase())) {
+        current.push(target);
+      }
+    }
+    this.saveExcludedAutoSyncFiles(current);
+    return current;
+  }
+
   static getFiles(): NextcloudFile[] {
     const raw = localStorage.getItem(STORAGE_KEYS.FILES);
     if (raw) {
       try {
         const parsed: NextcloudFile[] = JSON.parse(raw);
         if (Array.isArray(parsed)) {
+          const excluded = this.getExcludedAutoSyncFiles();
+          const excludedSet = new Set(excluded.map(f => f.toLowerCase().trim()));
+          
           // Strip out legacy mock placeholders that don't exist in Nextcloud
-          const cleaned = parsed.filter(f => f.filename !== 'students_complex.xlsx' && f.filename !== 'students.xlsx');
+          const cleaned = parsed
+            .filter(f => f.filename !== 'students_complex.xlsx' && f.filename !== 'students.xlsx')
+            .map(f => ({
+              ...f,
+              autoSyncEnabled: !excludedSet.has(f.filename.toLowerCase().trim())
+            }));
           if (cleaned.length !== parsed.length) {
             this.saveFiles(cleaned);
           }

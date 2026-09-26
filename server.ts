@@ -398,6 +398,7 @@ function loadUnifiedCoolifyState() {
   const finalSyncSettings = {
     syncInterval: envConfig.syncSettings.syncInterval || diskSecrets.syncSettings?.syncInterval || diskWorkerConfig.syncInterval || '15m',
     autoSyncEnabled: envConfig.syncSettings.autoSyncEnabled ?? diskSecrets.syncSettings?.autoSyncEnabled ?? diskWorkerConfig.autoSyncEnabled ?? true,
+    excludedAutoSyncFiles: diskSecrets.syncSettings?.excludedAutoSyncFiles || diskWorkerConfig.excludedAutoSyncFiles || [],
     workerUrl: envConfig.syncSettings.workerUrl || diskSecrets.syncSettings?.workerUrl || diskWorkerConfig.workerUrl || '',
     workerSecretKey: envConfig.syncSettings.workerSecretKey || diskSecrets.syncSettings?.workerSecretKey || diskWorkerConfig.workerSecretKey || '',
     workerStatus: 'healthy',
@@ -441,6 +442,7 @@ function saveUnifiedCoolifyState(state: any): boolean {
       syncSettings: {
         syncInterval: state.syncSettings?.syncInterval || currentSecrets.syncSettings?.syncInterval || '15m',
         autoSyncEnabled: state.syncSettings?.autoSyncEnabled ?? currentSecrets.syncSettings?.autoSyncEnabled ?? true,
+        excludedAutoSyncFiles: state.syncSettings?.excludedAutoSyncFiles ?? currentSecrets.syncSettings?.excludedAutoSyncFiles ?? [],
         workerUrl: state.syncSettings?.workerUrl || currentSecrets.syncSettings?.workerUrl || '',
         workerSecretKey: state.syncSettings?.workerSecretKey || currentSecrets.syncSettings?.workerSecretKey || '',
       },
@@ -4515,6 +4517,8 @@ async function executeFullPipelineCore(params: {
   targetFilename?: string;
   base64Workbook?: string;
   syncAllFiles?: boolean;
+  excludedFiles?: string[];
+  isManual?: boolean;
   triggerType?: 'SCHEDULED_CRON' | 'MANUAL_ADMIN' | 'TWO_WAY_AUTO' | 'DIAGNOSTIC_TEST' | string;
 }): Promise<{
   success: boolean;
@@ -4624,8 +4628,18 @@ async function executeFullPipelineCore(params: {
       filesToProcess = Array.from(fileSet);
     }
 
+    // If this is an automatic/scheduled background sync run or excludedFiles are specified, filter out manual-only files
+    const isAutoRun = params.triggerType === 'SCHEDULED_CRON' || (!params.targetFilename && params.triggerType !== 'MANUAL_ADMIN' && params.isManual !== true);
+    const excludedList = params.excludedFiles || loadUnifiedCoolifyState()?.syncSettings?.excludedAutoSyncFiles || [];
+    if (isAutoRun && Array.isArray(excludedList) && excludedList.length > 0) {
+      const excludedSet = new Set(excludedList.map((f: string) => f.toLowerCase().trim()));
+      const beforeCount = filesToProcess.length;
+      filesToProcess = filesToProcess.filter(f => !excludedSet.has(f.toLowerCase().trim()));
+      console.log(`[Sync Engine] Excluded ${beforeCount - filesToProcess.length} manual-only file(s) from scheduled auto-sync. Processing: [${filesToProcess.join(', ')}]`);
+    }
+
     if (filesToProcess.length === 0) {
-      console.warn('[Sync Engine] No active mappings or workbooks found to synchronize.');
+      console.warn('[Sync Engine] No active mappings or workbooks found to synchronize (or all were set to Manual-Only).');
     }
   }
 
@@ -4730,23 +4744,106 @@ async function executeFullPipelineCore(params: {
       return matchFile;
     });
 
-    // STRICT USER MAPPINGS ONLY:
-    // Only process sheets that have an EXPLICIT user mapping for THIS workbook.
-    // Unmapped sheets are skipped completely so they NEVER mix records or inflate row counts!
+    // Intelligent Multi-Tier Sheet Mapping Resolution:
+    // Tier 1: Explicit mapping configured specifically for this workbook
+    // Tier 2: Generic / unscoped mappings (e.g. workbookName is empty, 'ALL', '*', or 'Workbook.xlsx')
+    // Tier 3: Sibling student/roster workbook mapping with identical sheet name
+    // Tier 4: Dynamic on-the-fly header analysis and auto-mapping
     const matchingMappings: any[] = [];
     for (const sheetName of wb.SheetNames) {
-      const explicit = existingWbMappings.find((m: any) => 
+      // 1. Direct match for this specific workbook
+      let matched = existingWbMappings.find((m: any) => 
         (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim() &&
         m.enabled !== false &&
         Array.isArray(m.columns) && m.columns.length > 0
       );
-      if (explicit) {
-        matchingMappings.push(explicit);
+
+      // 2. Generic / wildcard mappings
+      if (!matched) {
+        matched = activeMappings.find((m: any) => 
+          (!m.workbookName || m.workbookName === 'ALL' || m.workbookName === '*' || m.workbookName.toLowerCase() === 'workbook.xlsx') &&
+          (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim() &&
+          m.enabled !== false &&
+          Array.isArray(m.columns) && m.columns.length > 0
+        );
+      }
+
+      // 3. Sibling workbook mapping with matching worksheet name
+      if (!matched) {
+        matched = activeMappings.find((m: any) => 
+          (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim() &&
+          m.enabled !== false &&
+          Array.isArray(m.columns) && m.columns.length > 0
+        );
+      }
+
+      // 4. Dynamic auto-mapping from sheet headers if still unmapped
+      if (!matched) {
+        try {
+          const parsed = parseWorkbookBuffer(buffer, curFilename);
+          const sheetAnalysis = parsed.worksheets.find((w: any) => w.sheetName.toLowerCase().trim() === sheetName.toLowerCase().trim());
+          if (sheetAnalysis && sheetAnalysis.headers.length > 0) {
+            const isStudentWb = /stu|student|20\d\d/i.test(curFilename) || /^[0-9]+[a-z]?$/i.test(sheetName) || /sheet1/i.test(sheetName);
+            const targetTable = isStudentWb ? 'students' : (sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'records');
+            
+            const columns: any[] = sheetAnalysis.headers.map((h: any) => {
+              const colNorm = h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+              const isUnique = /(admission|student_id|index_no|roll_no|^id$)/i.test(colNorm);
+              let supCol = colNorm;
+              if (/(admission|adm_no|admission_no)/i.test(colNorm)) supCol = 'admission_no';
+              else if (/(student_name|full_name|name_of_student)/i.test(colNorm)) supCol = 'student_name';
+              else if (/status|academic_status/i.test(colNorm)) supCol = 'academic_status';
+              else if (/medium/i.test(colNorm)) supCol = 'medium';
+              else if (/grade/i.test(colNorm)) supCol = 'grade';
+              else if (/division|class/i.test(colNorm)) supCol = 'division';
+
+              return {
+                excelColumn: h.colLetter,
+                columnName: h.name,
+                supabaseColumn: supCol,
+                dataType: 'text',
+                required: isUnique,
+                uniqueKey: isUnique,
+                transformation: 'trim',
+              };
+            });
+
+            matched = {
+              id: `wm-auto-${curFilename}-${sheetName}`,
+              workbookName: curFilename,
+              worksheetName: sheetName,
+              supabaseTable: targetTable,
+              headerRow: sheetAnalysis.detectedHeaderRow || 1,
+              dataStartRow: sheetAnalysis.detectedDataStartRow || 2,
+              enabled: true,
+              columns,
+            };
+
+            activeMappings.push(matched);
+            try {
+              mergeAndSavePermanentMappings([matched], {
+                filename: curFilename,
+                fileHash: fileSha256,
+                totalWorksheets: wb.SheetNames.length
+              });
+            } catch {}
+            console.log(`[Sync Engine] Auto-synthesized dynamic mapping for '${curFilename}' sheet '${sheetName}' -> table 'public.${targetTable}' (${columns.length} columns)`);
+          }
+        } catch (dynErr: any) {
+          console.warn(`[Sync Engine] Notice during auto-mapping for ${curFilename}/${sheetName}:`, dynErr.message);
+        }
+      }
+
+      if (matched) {
+        matchingMappings.push({
+          ...matched,
+          workbookName: curFilename,
+        });
       }
     }
 
     if (matchingMappings.length === 0) {
-      console.log(`[Sync Engine] Workbook '${curFilename}' has no configured sheet mappings. Skipping unmapped sheets.`);
+      console.log(`[Sync Engine] Workbook '${curFilename}' has no configured or detectable sheet mappings. Skipping unmapped workbook.`);
       continue;
     }
 
@@ -5391,6 +5488,7 @@ class ProductionScheduler {
   private cachedSupabase: any = null;
   private cachedMappings: any[] = [];
   private tickInterval: NodeJS.Timeout | null = null;
+  private excludedAutoSyncFiles: string[] = [];
 
   constructor() {
     // Persistent heartbeat tick every 2.5 seconds
@@ -5400,6 +5498,10 @@ class ProductionScheduler {
 
     const initialIntervalMs = this.intervalMinutes * 60 * 1000;
     this.nextRunAt = new Date(Date.now() + initialIntervalMs).toISOString();
+  }
+
+  public setExcludedFiles(files: string[]) {
+    this.excludedAutoSyncFiles = Array.isArray(files) ? files : [];
   }
 
   private tick() {
@@ -5444,6 +5546,7 @@ class ProductionScheduler {
       lastRunAt: this.lastRunAt,
       nextRunAt: this.enabled ? this.nextRunAt : null,
       secondsUntilNextRun,
+      excludedAutoSyncFiles: this.excludedAutoSyncFiles,
       lastRunResult: this.lastRunResult,
     };
   }
@@ -5455,6 +5558,7 @@ class ProductionScheduler {
     supabase?: any;
     mappings?: any[];
     workerUrl?: string;
+    excludedAutoSyncFiles?: string[];
   }) {
     const prevMinutes = this.intervalMinutes;
     const prevEnabled = this.enabled;
@@ -5463,6 +5567,7 @@ class ProductionScheduler {
     if (config.nextcloud) this.cachedNextcloud = config.nextcloud;
     if (config.supabase) this.cachedSupabase = config.supabase;
     if (Array.isArray(config.mappings)) this.cachedMappings = config.mappings;
+    if (Array.isArray(config.excludedAutoSyncFiles)) this.excludedAutoSyncFiles = config.excludedAutoSyncFiles;
 
     if (config.workerUrl !== undefined) {
       this.workerUrl = (config.workerUrl || '').trim();
@@ -5527,6 +5632,9 @@ class ProductionScheduler {
         nextcloud: this.cachedNextcloud,
         supabase: this.cachedSupabase,
         mappings: this.cachedMappings,
+        excludedFiles: isManual ? [] : this.excludedAutoSyncFiles,
+        isManual,
+        triggerType: isManual ? 'MANUAL_ADMIN' : 'SCHEDULED_CRON',
       });
 
       this.lastRunAt = new Date().toISOString();
@@ -5571,11 +5679,13 @@ try {
     nextcloud: initialCoolifyState.nextcloud,
     supabase: initialCoolifyState.supabase,
     mappings: initialCoolifyState.mappings,
+    excludedAutoSyncFiles: initialCoolifyState.syncSettings.excludedAutoSyncFiles || [],
   });
   console.log('[Coolify Boot] Initialized Integrated Production Worker:');
   console.log(`- Nextcloud: ${initialCoolifyState.nextcloud.url} (${initialCoolifyState.nextcloud.username})`);
   console.log(`- Supabase: ${initialCoolifyState.supabase.url ? 'Configured' : 'Pending'}`);
   console.log(`- Worker Engine: Integrated Production Engine (Interval: ${initialCoolifyState.syncSettings.syncInterval}, Active: ${initialCoolifyState.syncSettings.autoSyncEnabled})`);
+  console.log(`- Manual-Only Excluded Files: ${(initialCoolifyState.syncSettings.excludedAutoSyncFiles || []).length} file(s)`);
   console.log(`- Mappings in Store: ${initialCoolifyState.mappings.length} sheets`);
   console.log(`- Presets in Store: ${initialCoolifyState.presets.length} presets`);
 } catch (bootErr: any) {
@@ -5590,7 +5700,45 @@ app.get('/api/scheduler/status', (_req, res) => {
 app.post('/api/scheduler/configure', (req, res) => {
   try {
     const updated = schedulerInstance.configure(req.body);
+    if (Array.isArray(req.body.excludedAutoSyncFiles)) {
+      const state = loadUnifiedCoolifyState();
+      state.syncSettings.excludedAutoSyncFiles = req.body.excludedAutoSyncFiles;
+      saveUnifiedCoolifyState({ syncSettings: state.syncSettings });
+    }
     return res.json({ success: true, status: updated });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/scheduler/toggle-file-auto-sync', (req, res) => {
+  try {
+    const { filename, autoSyncEnabled } = req.body;
+    if (!filename) return res.status(400).json({ success: false, error: 'Filename is required' });
+
+    const state = loadUnifiedCoolifyState();
+    let excluded: string[] = state.syncSettings.excludedAutoSyncFiles || [];
+    const target = String(filename).trim();
+
+    if (autoSyncEnabled) {
+      excluded = excluded.filter((f: string) => f.toLowerCase().trim() !== target.toLowerCase());
+    } else {
+      if (!excluded.some((f: string) => f.toLowerCase().trim() === target.toLowerCase())) {
+        excluded.push(target);
+      }
+    }
+
+    state.syncSettings.excludedAutoSyncFiles = excluded;
+    saveUnifiedCoolifyState({ syncSettings: state.syncSettings });
+    schedulerInstance.setExcludedFiles(excluded);
+
+    return res.json({
+      success: true,
+      filename: target,
+      autoSyncEnabled: !!autoSyncEnabled,
+      excludedFiles: excluded,
+      status: schedulerInstance.getStatus()
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }

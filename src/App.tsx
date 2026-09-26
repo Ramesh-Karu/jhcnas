@@ -312,6 +312,80 @@ export default function App() {
 
   // Sync Cycle State
   const [isSyncing, setIsSyncing] = useState(false);
+  const [excludedAutoSyncFiles, setExcludedAutoSyncFiles] = useState<string[]>(() => StorageService.getExcludedAutoSyncFiles());
+  const [syncingSingleFileId, setSyncingSingleFileId] = useState<string | null>(null);
+
+  // Toggle Auto-Sync for specific Excel files (skip automatic background polling for selected files)
+  const handleToggleFileAutoSync = async (filename: string, enabled: boolean) => {
+    const updated = StorageService.setFileAutoSyncEnabled(filename, enabled);
+    setExcludedAutoSyncFiles(updated);
+
+    // Update files state immediately
+    setFiles(prev => prev.map(f => {
+      if (f.filename.toLowerCase().trim() === filename.toLowerCase().trim()) {
+        return { ...f, autoSyncEnabled: enabled };
+      }
+      return f;
+    }));
+
+    // Update sync settings state with updated excluded files
+    setSyncSettings(prev => ({
+      ...prev,
+      excludedAutoSyncFiles: updated
+    }));
+
+    // Inform backend production scheduler
+    try {
+      await ApiClient.toggleFileAutoSync(filename, enabled);
+      handleFetchSchedulerStatus();
+    } catch (err) {
+      console.warn('Could not sync file auto-sync setting to server:', err);
+    }
+  };
+
+  // Immediate on-demand manual sync for a specific file
+  const handleSyncSingleFile = async (file: NextcloudFile) => {
+    setSyncingSingleFileId(file.id || file.filename);
+    try {
+      const res = await ApiClient.executeFullPipelineSync({
+        nextcloud,
+        supabase,
+        mappings,
+        targetFilename: file.filename,
+        triggerType: 'MANUAL_ADMIN',
+      });
+      if (res.success) {
+        const logId = `log-${Date.now()}`;
+        const newImportLog: ImportLog = {
+          id: logId,
+          filename: file.filename,
+          filePath: file.path,
+          fileHash: res.fileHash || file.fileHash || 'synced-hash',
+          status: (res.totalFailed && res.totalFailed > 0) ? 'Partial Success' : 'Success',
+          isDryRun: false,
+          numberOfWorksheets: res.syncResults?.length || 1,
+          rowsProcessed: (res.totalInserted || 0) + (res.totalUpdated || 0) + (res.totalFailed || 0),
+          rowsInserted: res.totalInserted || 0,
+          rowsUpdated: res.totalUpdated || 0,
+          rowsFailed: res.totalFailed || 0,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 750,
+          details: { syncResults: res.syncResults, filesSynced: [file.filename] }
+        };
+        const updatedHistory = [newImportLog, ...importLogs];
+        setImportLogs(updatedHistory);
+        StorageService.saveImportLogs(updatedHistory);
+
+        // Update file status to Synced
+        setFiles(prev => prev.map(f => f.filename === file.filename ? { ...f, status: 'Synced', lastProcessedAt: new Date().toISOString() } : f));
+      }
+    } catch (err: any) {
+      console.error('Manual single file sync error:', err);
+    } finally {
+      setSyncingSingleFileId(null);
+    }
+  };
 
   // Update handlers with dual persistence (Browser LocalStorage + Coolify Server Disk)
   const handleSaveNextcloud = (cfg: NextcloudConfig) => {
@@ -755,6 +829,10 @@ export default function App() {
           {currentTab === 'files' && (
             <ExcelFilesView
               files={files}
+              excludedAutoSyncFiles={excludedAutoSyncFiles}
+              onToggleFileAutoSync={handleToggleFileAutoSync}
+              onSyncFileNow={handleSyncSingleFile}
+              syncingFileId={syncingSingleFileId}
               onSelectFileForAnalysis={handleSelectFileForAnalysis}
               onNavigate={setCurrentTab}
               onRefreshFiles={handleFetchNextcloudFiles}
@@ -864,6 +942,8 @@ export default function App() {
             <SettingsView
               settings={syncSettings}
               onSaveSettings={handleSaveSettings}
+              files={files}
+              onToggleFileAutoSync={handleToggleFileAutoSync}
               nextcloudConfig={nextcloud}
               supabaseConfig={supabase}
               mappings={mappings}

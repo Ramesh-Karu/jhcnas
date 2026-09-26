@@ -136,8 +136,25 @@ export class DryRunEngine {
     const sheetSummaries: DryRunResult['sheetSummaries'] = [];
     const sampleTransformedRecords: DryRunResult['sampleTransformedRecords'] = [];
 
+    // Collect available sheet names from workbook or analysis
+    const wbSheetNames = (
+      wb?.SheetNames || 
+      currentAnalysis?.worksheets?.map(w => w.sheetName) || 
+      []
+    ).map(s => s.toLowerCase().trim());
+
+    // Filter mappings that belong to this specific workbook or match the sheets present in this workbook
+    let effectiveMappings = worksheetMappings.filter(m => {
+      if (m.enabled === false) return false;
+      const mFile = (m.workbookName || '').toLowerCase().trim();
+      const curFile = (filename || '').toLowerCase().trim();
+      const isDirectFileMatch = mFile && curFile && (mFile === curFile || mFile.endsWith(curFile) || curFile.endsWith(mFile));
+      const isGeneralWb = !mFile || mFile === 'all' || mFile === '*' || mFile === 'workbook.xlsx';
+      const isSheetMatch = wbSheetNames.includes((m.worksheetName || '').toLowerCase().trim());
+      return isDirectFileMatch || isGeneralWb || isSheetMatch;
+    });
+
     // Fallback: if no mappings or none enabled, build auto-mappings from currentAnalysis or workbook
-    let effectiveMappings = worksheetMappings.filter(m => m.enabled);
     if (effectiveMappings.length === 0) {
       if (currentAnalysis && currentAnalysis.worksheets.length > 0) {
         effectiveMappings = currentAnalysis.worksheets.map((ws, sIdx) => ({

@@ -658,6 +658,8 @@ export class ApiClient {
     targetFilename?: string;
     syncAllFiles?: boolean;
     base64Workbook?: string;
+    excludedFiles?: string[];
+    triggerType?: string;
   }): Promise<{
     success: boolean;
     filename?: string;
@@ -908,6 +910,7 @@ export class ApiClient {
     supabase?: SupabaseConfig;
     mappings?: any[];
     workerUrl?: string;
+    excludedAutoSyncFiles?: string[];
   }): Promise<{
     success: boolean;
     status?: LiveSchedulerStatus;
@@ -918,6 +921,25 @@ export class ApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async toggleFileAutoSync(filename: string, autoSyncEnabled: boolean): Promise<{
+    success: boolean;
+    filename?: string;
+    autoSyncEnabled?: boolean;
+    excludedFiles?: string[];
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/scheduler/toggle-file-auto-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, autoSyncEnabled }),
       });
       return await res.json();
     } catch (e: any) {

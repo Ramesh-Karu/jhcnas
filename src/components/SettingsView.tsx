@@ -24,12 +24,14 @@ import {
   EyeOff,
   Edit3
 } from 'lucide-react';
-import { SyncSettings, NextcloudConfig, SupabaseConfig, WorksheetMapping, LiveSchedulerStatus } from '../types';
+import { SyncSettings, NextcloudConfig, SupabaseConfig, WorksheetMapping, LiveSchedulerStatus, NextcloudFile } from '../types';
 import { ApiClient } from '../services/apiClient';
 
 interface SettingsViewProps {
   settings: SyncSettings;
   onSaveSettings: (s: SyncSettings) => void;
+  files?: NextcloudFile[];
+  onToggleFileAutoSync?: (filename: string, enabled: boolean) => void;
   nextcloudConfig?: NextcloudConfig;
   supabaseConfig?: SupabaseConfig;
   mappings?: WorksheetMapping[];
@@ -44,6 +46,8 @@ interface SettingsViewProps {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   onSaveSettings,
+  files = [],
+  onToggleFileAutoSync,
   nextcloudConfig,
   supabaseConfig,
   mappings = [],
@@ -782,6 +786,68 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </span>
               </label>
             </div>
+
+            {/* Individual File Auto-Sync Exclusions Selector */}
+            {files.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-200/70 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Per-File Auto-Sync Inclusions ({files.length} detected)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Uncheck to skip a file during scheduled auto-sync (manual-only)
+                  </span>
+                </div>
+
+                <div className="bg-slate-50 rounded-lg p-3 border border-slate-200 divide-y divide-slate-200/60 max-h-56 overflow-y-auto">
+                  {files.map((f, idx) => {
+                    const isExcluded = (formData.excludedAutoSyncFiles || []).some(
+                      ef => ef.toLowerCase().trim() === f.filename.toLowerCase().trim()
+                    );
+                    const isAuto = !isExcluded;
+
+                    return (
+                      <div key={`${f.id || f.filename}-${idx}`} className="py-2 flex items-center justify-between text-xs">
+                        <label className="flex items-center space-x-2.5 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={isAuto}
+                            onChange={(e) => {
+                              const willBeAuto = e.target.checked;
+                              const currentExcluded = formData.excludedAutoSyncFiles || [];
+                              let updatedExcluded: string[];
+                              if (willBeAuto) {
+                                updatedExcluded = currentExcluded.filter(
+                                  ef => ef.toLowerCase().trim() !== f.filename.toLowerCase().trim()
+                                );
+                              } else {
+                                updatedExcluded = Array.from(new Set([...currentExcluded, f.filename.trim()]));
+                              }
+                              setFormData({
+                                ...formData,
+                                excludedAutoSyncFiles: updatedExcluded
+                              });
+                              if (onToggleFileAutoSync) {
+                                onToggleFileAutoSync(f.filename, willBeAuto);
+                              }
+                            }}
+                            className="w-3.5 h-3.5 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
+                          />
+                          <span className="font-semibold text-slate-800">{f.filename}</span>
+                        </label>
+
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          isAuto ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {isAuto ? '🟢 Auto-Sync' : '⏸️ Manual Only'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Supabase Storage Archiving */}
