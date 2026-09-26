@@ -695,7 +695,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
       ApiClient.savePermanentMappings({
         mappings: preset.sheetMappings,
         workbookInfo: {
-          filename: analysis.filename,
+          filename: preset.filenamePattern || analysis.filename,
           fileHash: analysis.fileHash,
           totalWorksheets: preset.sheetMappings.length,
         },
@@ -703,7 +703,30 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
       }).catch(console.warn);
 
       setSaveSuccessNotice(
-        `✨ Applied Preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured, merged year rows excluded).`
+        `✨ Applied Preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured into combined table public.${preset.sheetMappings[0]?.supabaseTable}).`
+      );
+      setTimeout(() => setSaveSuccessNotice(null), 5000);
+    }
+  };
+
+  const handleApplyAllStudentPresets = (studentPresets: AiWorkbookPreset[]) => {
+    const allSheetMappings: WorksheetMapping[] = [];
+    studentPresets.forEach(p => {
+      if (p.sheetMappings) {
+        allSheetMappings.push(...p.sheetMappings);
+      }
+    });
+    if (allSheetMappings.length > 0) {
+      if (onSaveMappings) {
+        onSaveMappings(allSheetMappings);
+      }
+      ApiClient.savePermanentMappings({
+        mappings: allSheetMappings,
+        supabase: supabaseConfig,
+      }).catch(console.warn);
+
+      setSaveSuccessNotice(
+        `🎉 Successfully applied all 8 JHC Student Batch Presets! (${allSheetMappings.length} worksheets configured into combined tables).`
       );
       setTimeout(() => setSaveSuccessNotice(null), 5000);
     }
@@ -2586,6 +2609,7 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
         currentAnalysis={analysis}
         activeMappings={activeMappings}
         onApplyPreset={handleApplyPreset}
+        onApplyAllPresets={handleApplyAllStudentPresets}
         onLoadPresetWorkbook={(presetId) => handleLoadPreset(presetId as any)}
         supabaseConfig={supabaseConfig}
         supabaseTables={supabaseTables}

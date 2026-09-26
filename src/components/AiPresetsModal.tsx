@@ -40,6 +40,7 @@ interface AiPresetsModalProps {
   currentAnalysis: WorkbookAnalysis | null;
   activeMappings: WorksheetMapping[];
   onApplyPreset: (preset: AiWorkbookPreset) => void;
+  onApplyAllPresets?: (presets: AiWorkbookPreset[]) => void;
   onLoadPresetWorkbook: (presetId: 'timetable' | 'donations' | 'teacher_allocations' | string) => void;
   supabaseConfig?: SupabaseConfig;
   supabaseTables?: SupabaseTableInfo[];
@@ -52,6 +53,7 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
   currentAnalysis,
   activeMappings,
   onApplyPreset,
+  onApplyAllPresets,
   onLoadPresetWorkbook,
   supabaseConfig,
   supabaseTables = [],
@@ -62,6 +64,7 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'STUDENT_BATCHES' | 'TEMPLATES'>('ALL');
 
   // Create Custom Preset Form State
   const [customName, setCustomName] = useState<string>('');
@@ -252,14 +255,24 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
 
   if (!isOpen) return null;
 
+  const studentBatchPresets = presets.filter(p =>
+    p.id.startsWith('preset-jhc-students') || p.tags?.includes('students_') || p.name.includes('Student Roster')
+  );
+
   const filteredPresets = presets.filter(p => {
+    if (categoryFilter === 'STUDENT_BATCHES') {
+      if (!p.id.startsWith('preset-jhc-students') && !p.tags?.includes('students_') && !p.name.includes('Student Roster')) return false;
+    } else if (categoryFilter === 'TEMPLATES') {
+      if (p.id.startsWith('preset-jhc-students') || p.tags?.includes('students_') || p.name.includes('Student Roster')) return false;
+    }
     if (!filterQuery) return true;
     const q = filterQuery.toLowerCase();
     return (
       p.name.toLowerCase().includes(q) ||
       (p.description && p.description.toLowerCase().includes(q)) ||
       p.archetype.toLowerCase().includes(q) ||
-      (p.tags && p.tags.some(t => t.toLowerCase().includes(q)))
+      (p.tags && p.tags.some(t => t.toLowerCase().includes(q))) ||
+      (p.filenamePattern && p.filenamePattern.toLowerCase().includes(q))
     );
   });
 
@@ -380,6 +393,43 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
                       (All presets exclude merged year rows and preserve relational schema integrity)
                     </span>
                   </h4>
+                  {/* Category Pills */}
+                  <div className="flex items-center space-x-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setCategoryFilter('ALL')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                        categoryFilter === 'ALL'
+                          ? 'bg-slate-900 text-white shadow-2xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      All ({presets.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryFilter('STUDENT_BATCHES')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center space-x-1 transition-all ${
+                        categoryFilter === 'STUDENT_BATCHES'
+                          ? 'bg-purple-600 text-white shadow-2xs'
+                          : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
+                      }`}
+                    >
+                      <GraduationCap className="w-3.5 h-3.5" />
+                      <span>JHC Student Batches ({studentBatchPresets.length} Combined Tables)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryFilter('TEMPLATES')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                        categoryFilter === 'TEMPLATES'
+                          ? 'bg-slate-900 text-white shadow-2xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      System Templates ({presets.length - studentBatchPresets.length})
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center space-x-2">
@@ -387,7 +437,7 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
                     type="text"
                     value={filterQuery}
                     onChange={(e) => setFilterQuery(e.target.value)}
-                    placeholder="Search presets by name, archetype, tag..."
+                    placeholder="Search presets by name, archetype, tag, file..."
                     className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs w-64 focus:outline-hidden focus:ring-2 focus:ring-purple-500"
                   />
                   <button
@@ -401,6 +451,46 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* JHC Student Batch Presets Hero Card */}
+              {studentBatchPresets.length > 0 && (categoryFilter === 'ALL' || categoryFilter === 'STUDENT_BATCHES') && (
+                <div className="p-4 rounded-xl bg-gradient-to-r from-purple-50 via-indigo-50 to-sky-50 border border-purple-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-600 text-white shadow-2xs flex items-center space-x-1">
+                        <GraduationCap className="w-3 h-3" />
+                        <span>8 Combined Book Tables</span>
+                      </span>
+                      <h4 className="font-bold text-slate-900 text-sm">
+                        Jaffna Hindu College Student Roster Presets (Batches 2026 – 2034)
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
+                      Each workbook combines all its division sheets (12A-12G, Arts, Tech, Commerce, etc.) into a single unified table (<code className="text-purple-700 font-mono text-[11px] bg-purple-100/60 px-1 py-0.5 rounded">students_2026</code> through <code className="text-purple-700 font-mono text-[11px] bg-purple-100/60 px-1 py-0.5 rounded">students_2034</code>) with merged year header rows automatically excluded.
+                    </p>
+                  </div>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onApplyAllPresets) {
+                          onApplyAllPresets(studentBatchPresets);
+                        } else {
+                          studentBatchPresets.forEach(p => onApplyPreset(p));
+                        }
+                        setStatusMessage({
+                          type: 'success',
+                          text: `Applied all 8 student batch presets! All 72+ worksheets across the 8 books are mapped to combined tables.`
+                        });
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center space-x-1.5"
+                    >
+                      <Sparkles className="w-4 h-4 text-purple-200" />
+                      <span>Apply All 8 Combined Tables</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Grid of Presets */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -439,6 +529,12 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
 
                       <div>
                         <h5 className="font-bold text-slate-900 text-sm">{preset.name}</h5>
+                        {preset.filenamePattern && (
+                          <div className="text-[11px] font-mono text-indigo-700 font-medium mt-0.5 flex items-center space-x-1">
+                            <span>Workbook:</span>
+                            <span className="bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-100">{preset.filenamePattern}</span>
+                          </div>
+                        )}
                         <p className="text-xs text-slate-600 mt-1 line-clamp-3 leading-relaxed">
                           {preset.description}
                         </p>
@@ -446,9 +542,17 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
 
                       {/* Specs */}
                       <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
+                        {preset.sheetMappings && preset.sheetMappings.length > 0 && preset.sheetMappings[0].supabaseTable && (
+                          <div className="flex items-center justify-between">
+                            <span>Destination Table:</span>
+                            <strong className="text-teal-800 font-mono font-semibold">
+                              public.{preset.sheetMappings[0].supabaseTable}
+                            </strong>
+                          </div>
+                        )}
                         <div className="flex items-center justify-between">
                           <span>Worksheet Mappings:</span>
-                          <strong className="text-slate-800">{preset.sheetMappings?.length || 0} sheets</strong>
+                          <strong className="text-slate-800">{preset.sheetMappings?.length || 0} sheets (Combined)</strong>
                         </div>
                         <div className="flex items-center justify-between">
                           <span>Merged Year Rows:</span>

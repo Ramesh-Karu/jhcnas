@@ -31,7 +31,8 @@ import {
   Activity,
   Key,
   Info,
-  Folder
+  Folder,
+  GraduationCap
 } from 'lucide-react';
 import { 
   WorksheetMapping, 
@@ -46,6 +47,7 @@ import {
   TableSyncPolicy
 } from '../types';
 import { ApiClient } from '../services/apiClient';
+import { AiPresetsModal } from './AiPresetsModal';
 
 interface ServedSheetsMatrixViewProps {
   mappings: WorksheetMapping[];
@@ -93,6 +95,61 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
 
   const [isSavingPermanent, setIsSavingPermanent] = useState<boolean>(false);
   const [isRefreshingNextcloud, setIsRefreshingNextcloud] = useState<boolean>(false);
+  const [showAiPresetsModal, setShowAiPresetsModal] = useState<boolean>(false);
+
+  const handleApplyPreset = (preset: AiWorkbookPreset) => {
+    if (preset.sheetMappings && preset.sheetMappings.length > 0) {
+      const getMappingKey = (m: WorksheetMapping) => {
+        const wb = String(m.workbookName || '').toLowerCase().trim();
+        const ws = String(m.worksheetName || '').toLowerCase().trim();
+        if (wb && ws) return `${wb}::${ws}`;
+        if (m.id) return String(m.id);
+        return `unspecified::${ws}`;
+      };
+      const mapByKey = new Map<string, WorksheetMapping>();
+      mappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      preset.sheetMappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      const merged = Array.from(mapByKey.values());
+      onSaveMappings(merged);
+      if (preset.filenamePattern) {
+        setSelectedWorkbookFilter(preset.filenamePattern);
+      }
+      setSyncFeedback({
+        type: 'success',
+        message: `✨ Applied preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured into combined table public.${preset.sheetMappings[0]?.supabaseTable}).`
+      });
+      setTimeout(() => setSyncFeedback(null), 5000);
+    }
+  };
+
+  const handleApplyAllStudentPresets = (studentPresets: AiWorkbookPreset[]) => {
+    const allSheetMappings: WorksheetMapping[] = [];
+    studentPresets.forEach(p => {
+      if (p.sheetMappings) {
+        allSheetMappings.push(...p.sheetMappings);
+      }
+    });
+    if (allSheetMappings.length > 0) {
+      const getMappingKey = (m: WorksheetMapping) => {
+        const wb = String(m.workbookName || '').toLowerCase().trim();
+        const ws = String(m.worksheetName || '').toLowerCase().trim();
+        if (wb && ws) return `${wb}::${ws}`;
+        if (m.id) return String(m.id);
+        return `unspecified::${ws}`;
+      };
+      const mapByKey = new Map<string, WorksheetMapping>();
+      mappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      allSheetMappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      const merged = Array.from(mapByKey.values());
+      onSaveMappings(merged);
+      setSelectedWorkbookFilter('ALL');
+      setSyncFeedback({
+        type: 'success',
+        message: `🎉 Successfully applied all 8 JHC Student Batch Presets! (${allSheetMappings.length} worksheets configured into combined tables).`
+      });
+      setTimeout(() => setSyncFeedback(null), 5000);
+    }
+  };
 
   // Fetch presets, permanent mapping metadata, and live Supabase tables
   const loadAllMetadata = async () => {
@@ -324,7 +381,12 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       const targetTable = m.supabaseTable || wsName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
       const pkey = m.columns?.find(c => c.uniqueKey)?.supabaseColumn || null;
       const matchedPreset = presets.find(p => 
-        p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === wsName.toLowerCase() || sm.supabaseTable === targetTable)
+        (p.filenamePattern && wbName.toLowerCase().includes(p.filenamePattern.toLowerCase())) ||
+        p.sheetMappings?.some(sm => sm.workbookName?.toLowerCase() === wbName.toLowerCase() && sm.worksheetName.toLowerCase() === wsName.toLowerCase())
+      ) || presets.find(p =>
+        p.sheetMappings?.some(sm => sm.supabaseTable === targetTable)
+      ) || presets.find(p => 
+        p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === wsName.toLowerCase())
       ) || null;
 
       const lastSync = findLastSync(wbName, wsName, targetTable);
@@ -355,9 +417,13 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
 
         const targetTable = existing?.targetTable || ws.sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const matchedPreset = presets.find(p => 
-          p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === ws.sheetName.toLowerCase() || sm.supabaseTable === targetTable) ||
-          (p.archetype === currentAnalysis.detectedArchetype)
-        ) || existing?.presetMatch || null;
+          (p.filenamePattern && wbName.toLowerCase().includes(p.filenamePattern.toLowerCase())) ||
+          p.sheetMappings?.some(sm => sm.workbookName?.toLowerCase() === wbName.toLowerCase() && sm.worksheetName.toLowerCase() === ws.sheetName.toLowerCase())
+        ) || presets.find(p =>
+          p.sheetMappings?.some(sm => sm.supabaseTable === targetTable)
+        ) || presets.find(p => 
+          p.sheetMappings?.some(sm => sm.worksheetName.toLowerCase() === ws.sheetName.toLowerCase())
+        ) || (currentAnalysis.detectedArchetype ? presets.find(p => p.archetype === currentAnalysis.detectedArchetype) : null) || existing?.presetMatch || null;
 
         const pkey = existing?.primaryMergeKey || null;
         const lastSync = findLastSync(wbName, ws.sheetName, targetTable, ws.totalRows) || existing?.lastSyncInfo || null;
@@ -786,6 +852,15 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           >
             <Download className="w-3.5 h-3.5 text-slate-500" />
             <span>Export Matrix JSON</span>
+          </button>
+
+          <button
+            onClick={() => setShowAiPresetsModal(true)}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-purple-50 border border-purple-200 text-xs font-semibold text-purple-800 hover:bg-purple-100 shadow-2xs transition-colors"
+            title="Browse pre-built workbook archetype presets and combined student batch tables"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+            <span>AI Presets ({presets.length})</span>
           </button>
 
           <button
@@ -1502,6 +1577,22 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* AI Presets & Inbuilt Analyser Modal */}
+      <AiPresetsModal
+        isOpen={showAiPresetsModal}
+        onClose={() => setShowAiPresetsModal(false)}
+        currentAnalysis={currentAnalysis || null}
+        activeMappings={mappings}
+        onApplyPreset={handleApplyPreset}
+        onApplyAllPresets={handleApplyAllStudentPresets}
+        onLoadPresetWorkbook={() => {
+          setShowAiPresetsModal(false);
+          onNavigate('analyzer');
+        }}
+        supabaseConfig={supabaseConfig}
+        supabaseTables={supabaseTables}
+      />
     </div>
   );
 };

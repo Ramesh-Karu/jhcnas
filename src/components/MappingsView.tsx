@@ -542,11 +542,53 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 
   const handleApplyPreset = (preset: AiWorkbookPreset) => {
     if (preset.sheetMappings && preset.sheetMappings.length > 0) {
-      setCurrentMappings(preset.sheetMappings);
+      const getMappingKey = (m: WorksheetMapping) => {
+        const wb = String(m.workbookName || '').toLowerCase().trim();
+        const ws = String(m.worksheetName || '').toLowerCase().trim();
+        if (wb && ws) return `${wb}::${ws}`;
+        if (m.id) return String(m.id);
+        return `unspecified::${ws}`;
+      };
+      const mapByKey = new Map<string, WorksheetMapping>();
+      currentMappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      preset.sheetMappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      const merged = Array.from(mapByKey.values());
+      setCurrentMappings(merged);
       setActiveSheetId(preset.sheetMappings[0].id);
-      onSaveMappings(preset.sheetMappings);
-      setSaveMessage(`✨ Successfully applied AI Preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured, merge keys preserved).`);
+      onSaveMappings(merged);
+      if (preset.filenamePattern) {
+        setSelectedWorkbookFilter(preset.filenamePattern);
+      }
+      setSaveMessage(`✨ Successfully applied AI Preset '${preset.name}'! (${preset.sheetMappings.length} worksheets configured, combined table: public.${preset.sheetMappings[0]?.supabaseTable}).`);
       setTimeout(() => setSaveMessage(null), 4500);
+    }
+  };
+
+  const handleApplyAllStudentPresets = (studentPresets: AiWorkbookPreset[]) => {
+    const allSheetMappings: WorksheetMapping[] = [];
+    studentPresets.forEach(p => {
+      if (p.sheetMappings) {
+        allSheetMappings.push(...p.sheetMappings);
+      }
+    });
+    if (allSheetMappings.length > 0) {
+      const getMappingKey = (m: WorksheetMapping) => {
+        const wb = String(m.workbookName || '').toLowerCase().trim();
+        const ws = String(m.worksheetName || '').toLowerCase().trim();
+        if (wb && ws) return `${wb}::${ws}`;
+        if (m.id) return String(m.id);
+        return `unspecified::${ws}`;
+      };
+      const mapByKey = new Map<string, WorksheetMapping>();
+      currentMappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      allSheetMappings.forEach(m => mapByKey.set(getMappingKey(m), m));
+      const merged = Array.from(mapByKey.values());
+      setCurrentMappings(merged);
+      setActiveSheetId(allSheetMappings[0].id);
+      onSaveMappings(merged);
+      setSelectedWorkbookFilter('ALL');
+      setSaveMessage(`🎉 Successfully applied all 8 JHC Student Batch Presets! (${allSheetMappings.length} worksheets configured into combined tables).`);
+      setTimeout(() => setSaveMessage(null), 5000);
     }
   };
 
@@ -1301,6 +1343,7 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         currentAnalysis={currentAnalysis || null}
         activeMappings={currentMappings}
         onApplyPreset={handleApplyPreset}
+        onApplyAllPresets={handleApplyAllStudentPresets}
         onLoadPresetWorkbook={() => {
           onNavigate('analyzer');
         }}

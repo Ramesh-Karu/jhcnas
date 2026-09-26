@@ -812,6 +812,18 @@ function getDefaultPresets(): any[] {
     }
   );
 
+  const studentPresetsPath = path.join(DATA_DIR, 'student_batch_presets.json');
+  if (fs.existsSync(studentPresetsPath)) {
+    try {
+      const studentPresets = JSON.parse(fs.readFileSync(studentPresetsPath, 'utf-8'));
+      if (Array.isArray(studentPresets)) {
+        list.push(...studentPresets);
+      }
+    } catch (e) {
+      console.warn('Notice reading student_batch_presets.json:', e);
+    }
+  }
+
   return list;
 }
 
@@ -1627,7 +1639,28 @@ app.post('/api/sheets/load-preset', async (req, res) => {
     let friendlyName = '';
     let buffer: Buffer | null = null;
 
-    if (presetId === 'timetable' || presetId === 'ClassWiseTimeTable' || presetId === 'preset-timetable-matrix') {
+    const studentPresetFiles: Record<string, string> = {
+      'preset-jhc-students-2026': '2026_stu.xlsx',
+      'preset-jhc-students-2027': '2027_stu.xlsx',
+      'preset-jhc-students-2029': '2029_stu.xlsx',
+      'preset-jhc-students-2030': '2030_stu.xlsx',
+      'preset-jhc-students-2031': '2031_stu.xlsx',
+      'preset-jhc-students-2032': '2032_stu.xlsx',
+      'preset-jhc-students-2033': '2033_stu.xlsx',
+      'preset-jhc-students-2034': '2034_stu.xlsx',
+    };
+
+    let matchedPresetObj: any = null;
+
+    if (studentPresetFiles[presetId]) {
+      friendlyName = studentPresetFiles[presetId];
+      const targetPath = path.join(WORKBOOKS_DIR, friendlyName);
+      if (fs.existsSync(targetPath)) {
+        buffer = fs.readFileSync(targetPath);
+      }
+      const allPresets = loadPermanentPresets();
+      matchedPresetObj = allPresets.find(p => p.id === presetId);
+    } else if (presetId === 'timetable' || presetId === 'ClassWiseTimeTable' || presetId === 'preset-timetable-matrix') {
       friendlyName = 'Class Wise Time Table.xlsx';
       buffer = generateMasterTimetableWorkbook();
     } else if (presetId === 'donations' || presetId === 'JHCDonationDetails' || presetId === 'preset-donations-ledger') {
@@ -1644,15 +1677,27 @@ app.post('/api/sheets/load-preset', async (req, res) => {
       const allPresets = loadPermanentPresets();
       const customPreset = allPresets.find(p => p.id === presetId);
       if (customPreset) {
-        friendlyName = customPreset.name.endsWith('.xlsx') ? customPreset.name : `${customPreset.name}.xlsx`;
-        buffer = customPreset.archetype === 'TIMETABLE_MATRIX'
-          ? generateMasterTimetableWorkbook()
-          : customPreset.archetype === 'PIVOT_ALLOCATION_MATRIX'
-          ? generateTeacherAllocationsWorkbook()
-          : generateDonationsLedgerWorkbook();
+        matchedPresetObj = customPreset;
+        const candidateWbName = customPreset.filenamePattern || customPreset.name;
+        const localWbPath = path.join(WORKBOOKS_DIR, candidateWbName);
+        if (fs.existsSync(localWbPath)) {
+          friendlyName = candidateWbName;
+          buffer = fs.readFileSync(localWbPath);
+        } else {
+          friendlyName = customPreset.name.endsWith('.xlsx') ? customPreset.name : `${customPreset.name}.xlsx`;
+          buffer = customPreset.archetype === 'TIMETABLE_MATRIX'
+            ? generateMasterTimetableWorkbook()
+            : customPreset.archetype === 'PIVOT_ALLOCATION_MATRIX'
+            ? generateTeacherAllocationsWorkbook()
+            : generateDonationsLedgerWorkbook();
+        }
       } else {
         return res.status(400).json({ success: false, error: `Unknown preset ID: ${presetId}` });
       }
+    }
+
+    if (!buffer) {
+      return res.status(404).json({ success: false, error: `Workbook file for preset '${presetId}' could not be found or loaded.` });
     }
 
     // Cache locally in public/samples
@@ -1680,6 +1725,18 @@ app.post('/api/sheets/load-preset', async (req, res) => {
     }
     const archetypeResult = MatrixTransformer.detectArchetype(wb.SheetNames, rawPreviewData);
 
+    if (matchedPresetObj?.sheetMappings && Array.isArray(matchedPresetObj.sheetMappings)) {
+      try {
+        mergeAndSavePermanentMappings(matchedPresetObj.sheetMappings, {
+          filename: result.filename,
+          fileHash: sha256,
+          totalWorksheets: result.worksheets.length
+        });
+      } catch (saveErr) {
+        console.warn('Notice saving preset mappings on load:', saveErr);
+      }
+    }
+
     return res.json({
       success: true,
       filename: result.filename,
@@ -1696,7 +1753,10 @@ app.post('/api/sheets/load-preset', async (req, res) => {
       archetypeBadge: archetypeResult.badge,
       archetypeSummary: archetypeResult.summary,
       archetypeFeatures: archetypeResult.features,
-      archetypeRecommendations: archetypeResult.recommendations
+      archetypeRecommendations: archetypeResult.recommendations,
+      preset: matchedPresetObj || null,
+      sheetMappings: matchedPresetObj?.sheetMappings || null,
+      consolidationMode: matchedPresetObj?.consolidationMode || 'UNIFIED_TABLE'
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
