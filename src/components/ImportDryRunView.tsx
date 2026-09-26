@@ -270,10 +270,12 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
         }
       }
 
+      const activeUserMappings = mappings.filter(m => m.isUserConfigured || m.enabled !== false);
+
       const result = DryRunEngine.executeDryRun(
         wb,
         filename,
-        mappings,
+        activeUserMappings.length > 0 ? activeUserMappings : mappings,
         mergedDbState,
         currentAnalysis
       );

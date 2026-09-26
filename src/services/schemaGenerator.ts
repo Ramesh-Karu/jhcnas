@@ -17,6 +17,63 @@ export class SchemaGenerator {
     return smartSanitizeIdentifier(raw, 'col');
   }
 
+  /**
+   * Intelligently maps workbook archetypes and filenames to canonical destination tables
+   * so tables are NOT changed erratically or fragmented across arbitrary sheet names.
+   */
+  static detectCanonicalTargetTable(
+    filename: string,
+    sheetNames: string[] = [],
+    archetype?: string,
+    supabaseTables?: SupabaseTableInfo[]
+  ): string {
+    const norm = (filename || '').toLowerCase().trim();
+
+    // Check if live Supabase tables already exist that match
+    if (supabaseTables && supabaseTables.length > 0) {
+      if ((norm.includes('stu') || norm.includes('student') || /\b20\d\d\b/.test(norm)) && supabaseTables.some(t => t.name === 'students')) {
+        return 'students';
+      }
+      if ((norm.includes('timetable') || norm.includes('classwise')) && supabaseTables.some(t => t.name === 'timetable_master' || t.name === 'class_timetables')) {
+        return supabaseTables.find(t => t.name === 'timetable_master' || t.name === 'class_timetables')!.name;
+      }
+      if (norm.includes('donation') && supabaseTables.some(t => t.name === 'jhc_donations' || t.name === 'donation_details')) {
+        return supabaseTables.find(t => t.name === 'jhc_donations' || t.name === 'donation_details')!.name;
+      }
+      if (norm.includes('teacher') && supabaseTables.some(t => t.name === 'subject_teacher_allocations' || t.name === 'teacher_allocations')) {
+        return supabaseTables.find(t => t.name === 'subject_teacher_allocations' || t.name === 'teacher_allocations')!.name;
+      }
+      if (norm.includes('inventory') && supabaseTables.some(t => t.name === 'college_inventory' || t.name === 'jhc_inventory')) {
+        return supabaseTables.find(t => t.name === 'college_inventory' || t.name === 'jhc_inventory')!.name;
+      }
+    }
+
+    if (archetype === 'TIMETABLE_MATRIX' || norm.includes('timetable') || norm.includes('time_table') || norm.includes('classwise')) {
+      return 'timetable_master';
+    }
+    if (archetype === 'MULTI_SHEET_LEDGER' || norm.includes('donation') || norm.includes('contribution') || norm.includes('ledger')) {
+      return 'jhc_donations';
+    }
+    if (archetype === 'PIVOT_ALLOCATION_MATRIX' || norm.includes('teacher') || norm.includes('subjectteacher') || norm.includes('allocation')) {
+      return 'subject_teacher_allocations';
+    }
+    if (norm.includes('inventory') || norm.includes('assets') || norm.includes('equipment') || norm.includes('stock')) {
+      return 'college_inventory';
+    }
+
+    // Default canonical destination for student workbooks (e.g. 2026_stu, 2032_stu_new, students_complex)
+    if (norm.includes('stu') || norm.includes('student') || norm.includes('admission') || /\b20\d\d\b/.test(norm)) {
+      return 'students';
+    }
+
+    const combinedSheets = sheetNames.join(' ').toLowerCase();
+    if (combinedSheets.includes('grade') || combinedSheets.includes('6a') || combinedSheets.includes('6b') || combinedSheets.includes('7a')) {
+      return 'students';
+    }
+
+    return 'students';
+  }
+
   static dataTypeToPostgresType(type: DataType): string {
     switch (type) {
       case 'integer':
@@ -62,8 +119,8 @@ export class SchemaGenerator {
 
   /**
    * Generates schemas for the entire workbook based on the chosen consolidation mode:
-   * 1. 'SEPARATE_TABLES' (1:1 per sheet)
-   * 2. 'UNIFIED_TABLE' (all sheets into 1 common schema)
+   * 1. 'UNIFIED_TABLE' (all sheets into 1 common schema, e.g. 'students')
+   * 2. 'SEPARATE_TABLES' (1:1 per sheet)
    * 3. 'CUSTOM_GROUPING' (user chooses which sheets merge into which tables)
    */
   static generateSchemas(
@@ -79,14 +136,16 @@ export class SchemaGenerator {
       return plans;
     }
 
-    if (mode === 'UNIFIED_TABLE') {
-      // 1 Common Table for ALL worksheets
-      const defaultTableName = this.sanitizeIdentifier(
-        analysis.filename.replace(/\.[^/.]+$/, '').toLowerCase()
-      ) || 'excel_data';
+    const canonicalDefaultTable = this.detectCanonicalTargetTable(
+      analysis.filename,
+      analysis.worksheets.map(w => w.sheetName),
+      analysis.detectedArchetype,
+      supabaseTables
+    );
 
-      // Let user override common table name via sheetToTableMap['__unified__']
-      const targetTable = sheetToTableMap?.['__unified__'] || defaultTableName;
+    if (mode === 'UNIFIED_TABLE') {
+      // 1 Common Destination Table for ALL worksheets
+      const targetTable = sheetToTableMap?.['__unified__'] || canonicalDefaultTable;
       const userSelectedPk = customPrimaryKeys?.[targetTable] ?? customPrimaryKeys?.['__unified__'];
 
       const columnMap = new Map<string, TableSchemaColumn>();
@@ -95,13 +154,41 @@ export class SchemaGenerator {
       // Collect union of columns across all sheets
       for (const ws of analysis.worksheets) {
         for (const h of ws.headers) {
-          const colName = this.sanitizeIdentifier(h.name);
-          const existing = columnMap.get(colName);
+          let colName = this.sanitizeIdentifier(h.name);
           const inferredType = h.inferredType || 'text';
 
+          // If target is students, align common header variations
+          if (targetTable === 'students') {
+            const rawLower = h.name.toLowerCase().trim();
+            if (rawLower.includes('admission') || rawLower.includes('adm_no') || rawLower.includes('அனுமதி')) {
+              colName = 'admission_no';
+            } else if (rawLower.includes('full name') || rawLower === 'name' || rawLower.includes('பெயர்')) {
+              colName = containsTamil(h.name) ? 'tamil_name' : 'full_name';
+            } else if (rawLower.includes('initial') || rawLower.includes('name with')) {
+              colName = 'name_with_initials';
+            } else if (rawLower.includes('dob') || rawLower.includes('birth') || rawLower.includes('பிறந்த')) {
+              colName = 'date_of_birth';
+            } else if (rawLower.includes('gender') || rawLower.includes('sex') || rawLower.includes('பாலினம்')) {
+              colName = 'gender';
+            } else if (rawLower.includes('religion') || rawLower.includes('மதம்')) {
+              colName = 'religion';
+            } else if (rawLower.includes('house') || rawLower.includes('இல்லம்')) {
+              colName = 'house';
+            } else if (rawLower.includes('index') || rawLower.includes('சுட்டெண்')) {
+              colName = 'index_number';
+            } else if (rawLower.includes('phone') || rawLower.includes('contact') || rawLower.includes('mobile') || rawLower.includes('தொலைபேசி')) {
+              colName = 'phone_number';
+            } else if (rawLower.includes('guardian') || rawLower.includes('parent') || rawLower.includes('பெற்றோர்')) {
+              colName = 'guardian_name';
+            } else if (rawLower.includes('address') || rawLower.includes('முகவரி')) {
+              colName = 'address';
+            }
+          }
+
+          const existing = columnMap.get(colName);
           const isPrimary = userSelectedPk !== undefined
             ? (userSelectedPk !== '__NONE__' && (userSelectedPk.toLowerCase() === colName.toLowerCase() || userSelectedPk.toLowerCase() === h.name.toLowerCase()))
-            : (h.isCandidateKey || false);
+            : (colName === 'admission_no' || h.isCandidateKey || false);
 
           if (!existing) {
             columnMap.set(colName, {
@@ -114,7 +201,6 @@ export class SchemaGenerator {
               sampleValues: [...h.sampleValues]
             });
           } else {
-            // Merge type & samples
             const combinedType = this.combineDataTypes(existing.dataType, inferredType);
             existing.dataType = combinedType;
             existing.sqlType = this.dataTypeToPostgresType(combinedType);
@@ -150,13 +236,13 @@ export class SchemaGenerator {
       plans.push(plan);
 
     } else if (mode === 'SEPARATE_TABLES') {
-      // 1 Table Per Sheet (guaranteeing unique table names & unique column names)
+      // 1 Table Per Sheet
       const usedTableNames = new Set<string>();
       for (const ws of analysis.worksheets) {
         const customTable = sheetToTableMap?.[ws.sheetName];
         let targetTable = customTable
           ? this.sanitizeIdentifier(customTable)
-          : this.sanitizeIdentifier(ws.sheetName);
+          : canonicalDefaultTable;
 
         if (usedTableNames.has(targetTable)) {
           let suffix = 2;
@@ -183,7 +269,7 @@ export class SchemaGenerator {
 
           const isPrimary = userSelectedPk !== undefined
             ? (userSelectedPk !== '__NONE__' && (userSelectedPk.toLowerCase() === colName.toLowerCase() || userSelectedPk.toLowerCase() === h.name.toLowerCase()))
-            : (h.isCandidateKey || false);
+            : (colName === 'admission_no' || h.isCandidateKey || false);
 
           const inferredType = h.inferredType || 'text';
           return {
@@ -202,14 +288,13 @@ export class SchemaGenerator {
       }
 
     } else {
-      // CUSTOM_GROUPING (Hybrid)
-      // Group sheets by target table
+      // CUSTOM_GROUPING
       const tableToSheets = new Map<string, SheetAnalysis[]>();
 
       for (const ws of analysis.worksheets) {
         const assignedTable = sheetToTableMap?.[ws.sheetName]
           ? this.sanitizeIdentifier(sheetToTableMap[ws.sheetName])
-          : this.sanitizeIdentifier(ws.sheetName);
+          : canonicalDefaultTable;
 
         if (!tableToSheets.has(assignedTable)) {
           tableToSheets.set(assignedTable, []);
@@ -230,7 +315,7 @@ export class SchemaGenerator {
 
             const isPrimary = userSelectedPk !== undefined
               ? (userSelectedPk !== '__NONE__' && (userSelectedPk.toLowerCase() === colName.toLowerCase() || userSelectedPk.toLowerCase() === h.name.toLowerCase()))
-              : (h.isCandidateKey || false);
+              : (colName === 'admission_no' || h.isCandidateKey || false);
 
             if (!existing) {
               columnMap.set(colName, {
@@ -248,6 +333,9 @@ export class SchemaGenerator {
               existing.sqlType = this.dataTypeToPostgresType(combinedType);
               if (!existing.originalHeaders.includes(h.name)) {
                 existing.originalHeaders.push(h.name);
+              }
+              if (isPrimary) {
+                existing.isPrimary = true;
               }
               for (const sv of h.sampleValues) {
                 if (existing.sampleValues.length < 8 && !existing.sampleValues.includes(sv)) {
@@ -313,7 +401,6 @@ export class SchemaGenerator {
       }
     }
 
-    // Generate CREATE TABLE SQL without forcing synthetic ID columns
     const colDefs: string[] = [];
     const uniqueCols: string[] = [];
 
@@ -324,7 +411,6 @@ export class SchemaGenerator {
       } else if (c.required) {
         colDefs.push(`  "${c.name}" ${c.sqlType} NOT NULL`);
       } else {
-        // Keep columns nullable so that empty cells in Excel rows are stored seamlessly as NULL
         colDefs.push(`  "${c.name}" ${c.sqlType}`);
       }
     }
@@ -334,7 +420,6 @@ export class SchemaGenerator {
 
     const createTableSql = `-- 1. Create table public.${tableName}\nCREATE TABLE IF NOT EXISTS public.${tableName} (\n${colDefs.join(',\n')}\n);`;
 
-    // Generate ALTER TABLE SQL for missing columns
     const alterStatements: string[] = [];
     if (liveTable && missingInSupabase.length > 0) {
       for (const colName of missingInSupabase) {
@@ -348,14 +433,12 @@ export class SchemaGenerator {
       ? `-- Missing columns to add to existing public.${tableName}\n${alterStatements.join('\n')}`
       : `-- Table public.${tableName} already contains all columns!`;
 
-    // Generate Indexes SQL
     const indexStatements: string[] = [];
     for (const u of uniqueCols) {
       indexStatements.push(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${tableName}_${u} ON public.${tableName} (${u});`);
     }
     const indexesSql = indexStatements.join('\n');
 
-    // Complete executable script including RLS policies
     const completeSql = [
       `-- ==========================================`,
       `-- SUPABASE POSTGRESQL SCHEMA FOR: public.${tableName}`,
@@ -406,12 +489,18 @@ export class SchemaGenerator {
     analysis: WorkbookAnalysis,
     plans: TableSchemaPlan[],
     mode: MultiSheetConsolidationMode,
-    sheetToTableMap?: Record<string, string>
+    sheetToTableMap?: Record<string, string>,
+    supabaseTables?: SupabaseTableInfo[]
   ): WorksheetMapping[] {
     const mappings: WorksheetMapping[] = [];
+    const canonicalTarget = this.detectCanonicalTargetTable(
+      analysis.filename,
+      analysis.worksheets.map(w => w.sheetName),
+      analysis.detectedArchetype,
+      supabaseTables
+    );
 
     for (const ws of analysis.worksheets) {
-      // Determine which plan this worksheet belongs to
       let targetPlan: TableSchemaPlan | undefined;
 
       if (mode === 'UNIFIED_TABLE') {
@@ -430,12 +519,40 @@ export class SchemaGenerator {
         }
       }
 
-      const targetTableName = targetPlan ? targetPlan.tableName : this.sanitizeIdentifier(ws.sheetName);
+      const targetTableName = targetPlan ? targetPlan.tableName : (sheetToTableMap?.[ws.sheetName] || canonicalTarget);
 
       // Create column mappings for this sheet with unique database column names
       const usedColNames = new Set<string>();
       const columnMappings: ColumnMapping[] = ws.headers.map((h, idx) => {
         let cleanCol = this.sanitizeIdentifier(h.name);
+
+        if (targetTableName === 'students') {
+          const rawLower = h.name.toLowerCase().trim();
+          if (rawLower.includes('admission') || rawLower.includes('adm_no') || rawLower.includes('அனுமதி')) {
+            cleanCol = 'admission_no';
+          } else if (rawLower.includes('full name') || rawLower === 'name' || rawLower.includes('பெயர்')) {
+            cleanCol = containsTamil(h.name) ? 'tamil_name' : 'full_name';
+          } else if (rawLower.includes('initial') || rawLower.includes('name with')) {
+            cleanCol = 'name_with_initials';
+          } else if (rawLower.includes('dob') || rawLower.includes('birth') || rawLower.includes('பிறந்த')) {
+            cleanCol = 'date_of_birth';
+          } else if (rawLower.includes('gender') || rawLower.includes('sex') || rawLower.includes('பாலினம்')) {
+            cleanCol = 'gender';
+          } else if (rawLower.includes('religion') || rawLower.includes('மதம்')) {
+            cleanCol = 'religion';
+          } else if (rawLower.includes('house') || rawLower.includes('இல்லம்')) {
+            cleanCol = 'house';
+          } else if (rawLower.includes('index') || rawLower.includes('சுட்டெண்')) {
+            cleanCol = 'index_number';
+          } else if (rawLower.includes('phone') || rawLower.includes('contact') || rawLower.includes('mobile') || rawLower.includes('தொலைபேசி')) {
+            cleanCol = 'phone_number';
+          } else if (rawLower.includes('guardian') || rawLower.includes('parent') || rawLower.includes('பெற்றோர்')) {
+            cleanCol = 'guardian_name';
+          } else if (rawLower.includes('address') || rawLower.includes('முகவரி')) {
+            cleanCol = 'address';
+          }
+        }
+
         if (usedColNames.has(cleanCol)) {
           let suffix = 2;
           while (usedColNames.has(`${cleanCol}_${suffix}`)) {
@@ -447,7 +564,7 @@ export class SchemaGenerator {
 
         const planCol = targetPlan?.columns.find(c => c.name === cleanCol);
         const dataType = planCol ? planCol.dataType : (h.inferredType || 'text');
-        const isKey = planCol ? planCol.isPrimary : (h.isCandidateKey || false);
+        const isKey = planCol ? planCol.isPrimary : (cleanCol === 'admission_no' || h.isCandidateKey || false);
 
         return {
           id: `cm-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
@@ -460,11 +577,6 @@ export class SchemaGenerator {
           transformation: this.dataTypeToTransformation(dataType)
         };
       });
-
-      // If mode is UNIFIED and there's a _sheet_source column in plan, add it as default mapping if possible
-      if (mode === 'UNIFIED_TABLE' && targetPlan?.columns.some(c => c.name === '_sheet_source')) {
-        // Handled automatically via sheet origin
-      }
 
       mappings.push({
         id: `wm-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,

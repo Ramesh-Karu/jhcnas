@@ -91,37 +91,20 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     return new Set(files.map(f => f.filename.toLowerCase().trim()));
   }, [files]);
 
-  // Clean mappings strictly constrained to live files
+  // Clean mappings excluding legacy sample files
   const activeLiveMappings = useMemo(() => {
     return currentMappings.filter(m => {
       const wb = (m.workbookName || '').toLowerCase().trim();
-      if (liveFilenamesSet && wb && !liveFilenamesSet.has(wb)) {
-        return false;
-      }
-      return true;
+      return wb !== 'students_complex.xlsx' && wb !== 'students.xlsx';
     });
-  }, [currentMappings, liveFilenamesSet]);
+  }, [currentMappings]);
 
-  // Unique workbooks detected across live files and active mappings only
+  // Unique workbooks detected across live files and active mappings
   const uniqueWorkbooks = useMemo(() => {
     const list: string[] = [];
     const seen = new Set<string>();
 
-    // 1. Primary priority: Live Nextcloud files
-    if (files && files.length > 0) {
-      files.forEach(f => {
-        if (f.filename === 'students_complex.xlsx' || f.filename === 'students.xlsx') return;
-        const fname = f.filename.trim();
-        const fnameLower = fname.toLowerCase();
-        if (!seen.has(fnameLower)) {
-          seen.add(fnameLower);
-          list.push(fname);
-        }
-      });
-      return list;
-    }
-
-    // 2. Fallback if Nextcloud files list is not loaded yet
+    // 1. Add all mapped workbooks from activeLiveMappings
     activeLiveMappings.forEach(m => {
       if (m.workbookName && typeof m.workbookName === 'string') {
         const wb = m.workbookName.trim();
@@ -132,6 +115,20 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         }
       }
     });
+
+    // 2. Add any live Nextcloud files not already seen
+    if (files && files.length > 0) {
+      files.forEach(f => {
+        if (f.filename === 'students_complex.xlsx' || f.filename === 'students.xlsx') return;
+        const fname = f.filename.trim();
+        const fnameLower = fname.toLowerCase();
+        if (!seen.has(fnameLower)) {
+          seen.add(fnameLower);
+          list.push(fname);
+        }
+      });
+    }
+
     if (currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx' && currentAnalysis.filename !== 'students.xlsx') {
       const fname = currentAnalysis.filename.trim();
       const fnameLower = fname.toLowerCase();
@@ -178,6 +175,30 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     : (activeLiveMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0] || activeLiveMappings[0]);
 
   // Pull all past mappings from Supabase PostgreSQL & Server Disk
+  const [isPushingSupabase, setIsPushingSupabase] = useState<boolean>(false);
+
+  const handlePushToSupabase = async () => {
+    if (!supabaseConfig?.url) {
+      setSaveMessage('⚠️ Supabase credentials missing. Please enter your Supabase URL & Key in Supabase tab.');
+      return;
+    }
+    setIsPushingSupabase(true);
+    setSaveMessage(null);
+    try {
+      const res = await ApiClient.pushMappingsToSupabase(supabaseConfig, currentMappings);
+      if (res.success) {
+        setSaveMessage(res.message || '🚀 Mappings successfully pushed and saved to Supabase!');
+      } else {
+        setSaveMessage(`❌ Push error: ${res.error || 'Could not push mappings to Supabase'}`);
+      }
+    } catch (e: any) {
+      setSaveMessage(`❌ Push error: ${e.message}`);
+    } finally {
+      setIsPushingSupabase(false);
+      setTimeout(() => setSaveMessage(null), 6000);
+    }
+  };
+
   const handlePullFromSupabase = async () => {
     setIsPullingSupabase(true);
     try {
@@ -742,6 +763,17 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               <span>Rescan Live Nextcloud</span>
             </button>
           )}
+
+          <button
+            id="btn-push-to-supabase"
+            onClick={handlePushToSupabase}
+            disabled={isPushingSupabase}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg border border-purple-300 bg-purple-600 hover:bg-purple-700 text-xs font-semibold text-white shadow-sm transition-all"
+            title="Push all user-configured worksheet and column mappings directly to your live Supabase database tables"
+          >
+            <Save className={`w-3.5 h-3.5 ${isPushingSupabase ? 'animate-spin' : ''}`} />
+            <span>{isPushingSupabase ? 'Pushing to Supabase...' : '🚀 Push Mappings to Supabase'}</span>
+          </button>
 
           <button
             id="btn-pull-from-supabase"

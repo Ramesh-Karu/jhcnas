@@ -211,6 +211,31 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
     }
   };
 
+  const [isPushingSupabase, setIsPushingSupabase] = useState<boolean>(false);
+
+  const handlePushToSupabase = async () => {
+    if (!supabaseConfig?.url) {
+      setSyncFeedback({ type: 'error', message: '⚠️ Supabase credentials missing. Enter your Supabase URL & Key in Supabase tab.' });
+      return;
+    }
+    setIsPushingSupabase(true);
+    setCopyFeedback(null);
+    try {
+      const res = await ApiClient.pushMappingsToSupabase(supabaseConfig, mappings);
+      if (res.success) {
+        setSyncFeedback({ type: 'success', message: res.message || '🚀 Mappings successfully pushed to Supabase!' });
+        setCopyFeedback(res.message || '🚀 Mappings pushed to Supabase!');
+      } else {
+        setSyncFeedback({ type: 'error', message: `Push failed: ${res.error || 'Could not push mappings'}` });
+      }
+    } catch (err: any) {
+      setSyncFeedback({ type: 'error', message: `Push error: ${err.message}` });
+    } finally {
+      setIsPushingSupabase(false);
+      setTimeout(() => { setSyncFeedback(null); setCopyFeedback(null); }, 6000);
+    }
+  };
+
   const handlePullFromSupabase = async () => {
     setIsPullingSupabase(true);
     try {
@@ -480,15 +505,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       }
     });
 
-    const liveFileSet = files && files.length > 0 ? new Set(files.map(f => (f.filename || (f as any).name || '').toLowerCase().trim())) : null;
-    const allSheets = Array.from(sheetMap.values());
-    if (!liveFileSet) {
-      return allSheets;
-    }
-    return allSheets.filter(s => {
-      const wb = s.workbookName.toLowerCase().trim();
-      return liveFileSet.has(wb);
-    });
+    return Array.from(sheetMap.values());
   }, [currentAnalysis, mappings, presets, importLogs, storedServedSheets, files]);
 
   // Unique workbooks detected across live Nextcloud files
@@ -855,7 +872,17 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
             title="Permanently preserve served sheets, merged table topology, and mapping hubs to server storage"
           >
             <ShieldCheck className={`w-3.5 h-3.5 text-emerald-600 ${isSavingPermanent ? 'animate-spin' : ''}`} />
-            <span>{isSavingPermanent ? 'Saving...' : 'Save Permanently to Storage'}</span>
+            <span>{isSavingPermanent ? 'Saving...' : 'Save Permanently'}</span>
+          </button>
+
+          <button
+            onClick={handlePushToSupabase}
+            disabled={isPushingSupabase}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white shadow-xs transition-colors"
+            title="Push all user-configured worksheet and column mappings directly into your live Supabase database tables"
+          >
+            <Database className={`w-3.5 h-3.5 ${isPushingSupabase ? 'animate-spin' : ''}`} />
+            <span>{isPushingSupabase ? 'Pushing to Supabase...' : '🚀 Push Mappings to Supabase'}</span>
           </button>
 
           <button

@@ -54,22 +54,23 @@ export default function App() {
 
         const liveFileNames = new Set(res.files.map(f => f.filename.toLowerCase().trim()));
 
-        // Reconcile mappings with server reconciled mappings or live files
-        if (res.mappings && Array.isArray(res.mappings)) {
-          const cleanMappings = res.mappings.filter((m: any) => {
-            const wb = (m.workbookName || '').toLowerCase().trim();
-            return !wb || liveFileNames.has(wb);
-          });
-          setMappings(cleanMappings);
-          StorageService.saveMappings(cleanMappings);
-        } else {
+        // Merge server mappings non-destructively without wiping local mappings
+        const serverMappingsList = res.mappings;
+        if (serverMappingsList && Array.isArray(serverMappingsList) && serverMappingsList.length > 0) {
           setMappings(prev => {
-            const clean = prev.filter(m => {
-              const wb = (m.workbookName || '').toLowerCase().trim();
-              return !wb || liveFileNames.has(wb);
+            const mapByKey = new Map<string, WorksheetMapping>();
+            prev.forEach(m => {
+              const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+              mapByKey.set(k, m);
             });
-            StorageService.saveMappings(clean);
-            return clean;
+            serverMappingsList.forEach((m: any) => {
+              const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+              const existing = mapByKey.get(k);
+              mapByKey.set(k, { ...existing, ...m });
+            });
+            const merged = Array.from(mapByKey.values());
+            StorageService.saveMappings(merged);
+            return merged;
           });
         }
 
@@ -146,15 +147,43 @@ export default function App() {
             return updated;
           });
         }
-        if (serverState.mappings && serverState.mappings.length > 0) {
-          setMappings(serverState.mappings);
-          StorageService.saveMappings(serverState.mappings);
+        const stateMappings = serverState.mappings;
+        if (stateMappings && stateMappings.length > 0) {
+          setMappings(prev => {
+            const mapByKey = new Map<string, WorksheetMapping>();
+            prev.forEach(m => {
+              const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+              mapByKey.set(k, m);
+            });
+            stateMappings.forEach((m: any) => {
+              const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+              const existing = mapByKey.get(k);
+              mapByKey.set(k, { ...existing, ...m });
+            });
+            const merged = Array.from(mapByKey.values());
+            StorageService.saveMappings(merged);
+            return merged;
+          });
         } else {
           // Also try pulling directly from Supabase & server disk
           ApiClient.loadPermanentMappings().then(res => {
-            if (res.success && res.mappings && res.mappings.length > 0) {
-              setMappings(res.mappings);
-              StorageService.saveMappings(res.mappings);
+            const permMappings = res.mappings;
+            if (res.success && permMappings && permMappings.length > 0) {
+              setMappings(prev => {
+                const mapByKey = new Map<string, WorksheetMapping>();
+                prev.forEach(m => {
+                  const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+                  mapByKey.set(k, m);
+                });
+                permMappings.forEach((m: any) => {
+                  const k = `${(m.workbookName || '').toLowerCase().trim()}::${(m.worksheetName || '').toLowerCase().trim()}`;
+                  const existing = mapByKey.get(k);
+                  mapByKey.set(k, { ...existing, ...m });
+                });
+                const merged = Array.from(mapByKey.values());
+                StorageService.saveMappings(merged);
+                return merged;
+              });
             }
           }).catch(() => {});
         }
@@ -268,10 +297,11 @@ export default function App() {
   const handleSaveMappings = (newMappings: WorksheetMapping[]) => {
     const currentWb = currentAnalysis?.filename;
     const stampedNewMappings = newMappings.map(m => {
-      if (!m.workbookName && currentWb) {
-        return { ...m, workbookName: currentWb };
+      const updated = { ...m, isUserConfigured: true, isDraft: false };
+      if (!updated.workbookName && currentWb) {
+        updated.workbookName = currentWb;
       }
-      return m;
+      return updated;
     });
 
     // Non-destructive merge with existing mappings by composite key (workbookName::worksheetName)
@@ -291,7 +321,7 @@ export default function App() {
     stampedNewMappings.forEach(m => {
       const key = getMappingKey(m);
       const prev = mapByKey.get(key);
-      mapByKey.set(key, { ...prev, ...m });
+      mapByKey.set(key, { ...prev, ...m, isUserConfigured: true, isDraft: false });
     });
     const merged = Array.from(mapByKey.values());
 
@@ -574,22 +604,6 @@ export default function App() {
       const res = await ApiClient.fetchAndParseWorkbook(nextcloud, file.path, file.filename);
       if (res.success && res.analysis) {
         handleUpdateAnalysis(res.analysis);
-
-        // Auto-generate initial mappings if this file has no mappings yet
-        const fileWb = file.filename.toLowerCase().trim();
-        const existingForThisFile = mappings.filter(m => (m.workbookName || '').toLowerCase().trim() === fileWb);
-        if (existingForThisFile.length === 0 && res.analysis.worksheets && res.analysis.worksheets.length > 0) {
-          const autoMappings = SchemaGenerator.generateMappingsFromPlans(
-            res.analysis,
-            SchemaGenerator.generateSchemas(res.analysis, 'SEPARATE_TABLES', {}, []),
-            'SEPARATE_TABLES',
-            {}
-          );
-          if (autoMappings.length > 0) {
-            const updated = [...mappings, ...autoMappings];
-            handleSaveMappings(updated);
-          }
-        }
         return;
       }
     } catch (e) {

@@ -257,9 +257,13 @@ export interface WorksheetMapping {
   headerRow: number;
   dataStartRow: number;
   dataEndRow?: number;
+  sectionHeadingCol?: string;
   sectionHeadingTargetCol?: string; // e.g. 'class' for A3:H3 CLASS 10A
+  consolidationMode?: MultiSheetConsolidationMode | string;
   skipMergedYearRows?: boolean; // When true (default), merged column rows defining years (e.g. "Year 2023", "2020") are skipped and NEVER inserted as data
   enabled: boolean;
+  isUserConfigured?: boolean;
+  isDraft?: boolean;
   syncPolicy?: TableSyncPolicy; // Per-table authority rule
   columns: ColumnMapping[];
 }

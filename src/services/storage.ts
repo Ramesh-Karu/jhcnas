@@ -261,15 +261,10 @@ export class StorageService {
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          const realFiles = this.getFiles();
-          if (realFiles.length > 0) {
-            const liveNames = new Set(realFiles.map(f => f.filename.toLowerCase().trim()));
-            return parsed.filter(m => {
-              const wb = (m.workbookName || '').toLowerCase().trim();
-              return wb !== 'students_complex.xlsx' && (!wb || liveNames.has(wb));
-            });
-          }
-          return parsed;
+          return parsed.filter(m => {
+            const wb = (m.workbookName || '').toLowerCase().trim();
+            return wb !== 'students_complex.xlsx' && wb !== 'students.xlsx';
+          });
         }
       } catch {}
     }
