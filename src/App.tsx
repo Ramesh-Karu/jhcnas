@@ -22,6 +22,7 @@ import {
 import { StorageService } from './services/storage';
 import { ApiClient } from './services/apiClient';
 import { TwoWaySyncEngine } from './services/twoWaySyncEngine';
+import { SchemaGenerator } from './services/schemaGenerator';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -72,10 +73,10 @@ export default function App() {
           });
         }
 
-        // If current analysis is of a deleted file, switch to first live file
-        if (currentAnalysis?.filename && !liveFileNames.has(currentAnalysis.filename.toLowerCase().trim())) {
+        // If current analysis is null, or of a fake/deleted file, switch to first live file
+        if (!currentAnalysis?.filename || currentAnalysis.filename === 'students_complex.xlsx' || currentAnalysis.filename === 'students.xlsx' || !liveFileNames.has(currentAnalysis.filename.toLowerCase().trim())) {
           if (res.files.length > 0) {
-            handleSelectFileForAnalysis(res.files[0]);
+            handleSelectFileForAnalysis(res.files[0], currentTab);
           } else {
             setCurrentAnalysis(null);
             StorageService.saveCurrentAnalysis(null as any);
@@ -146,22 +147,14 @@ export default function App() {
           });
         }
         if (serverState.mappings && serverState.mappings.length > 0) {
-          const cleanServerMappings = serverState.mappings.filter((m: any) => {
-            const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
-            return !wb.includes('2032') && !wb.includes('grade 6');
-          });
-          setMappings(cleanServerMappings);
-          StorageService.saveMappings(cleanServerMappings);
+          setMappings(serverState.mappings);
+          StorageService.saveMappings(serverState.mappings);
         } else {
           // Also try pulling directly from Supabase & server disk
           ApiClient.loadPermanentMappings().then(res => {
             if (res.success && res.mappings && res.mappings.length > 0) {
-              const clean = res.mappings.filter((m: any) => {
-                const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
-                return !wb.includes('2032') && !wb.includes('grade 6');
-              });
-              setMappings(clean);
-              StorageService.saveMappings(clean);
+              setMappings(res.mappings);
+              StorageService.saveMappings(res.mappings);
             }
           }).catch(() => {});
         }
@@ -559,12 +552,44 @@ export default function App() {
     handleSaveMappings(updated);
   };
 
-  const handleSelectFileForAnalysis = async (file: NextcloudFile) => {
-    setCurrentTab('analyzer');
+  const handleSelectFileForAnalysis = async (file: NextcloudFile, targetTab?: NavigationTab) => {
+    if (targetTab) {
+      setCurrentTab(targetTab);
+    } else {
+      setCurrentTab('analyzer');
+    }
+    // Ensure analyzer knows which file was clicked immediately
+    if (!currentAnalysis || currentAnalysis.filename !== file.filename) {
+      setCurrentAnalysis({
+        filename: file.filename,
+        fileHash: file.fileHash,
+        fileSize: file.fileSize,
+        fileSizeFormatted: file.fileSizeFormatted,
+        totalWorksheets: 0,
+        worksheets: [],
+        analyzedAt: new Date().toISOString(),
+      });
+    }
     try {
       const res = await ApiClient.fetchAndParseWorkbook(nextcloud, file.path, file.filename);
       if (res.success && res.analysis) {
         handleUpdateAnalysis(res.analysis);
+
+        // Auto-generate initial mappings if this file has no mappings yet
+        const fileWb = file.filename.toLowerCase().trim();
+        const existingForThisFile = mappings.filter(m => (m.workbookName || '').toLowerCase().trim() === fileWb);
+        if (existingForThisFile.length === 0 && res.analysis.worksheets && res.analysis.worksheets.length > 0) {
+          const autoMappings = SchemaGenerator.generateMappingsFromPlans(
+            res.analysis,
+            SchemaGenerator.generateSchemas(res.analysis, 'SEPARATE_TABLES', {}, []),
+            'SEPARATE_TABLES',
+            {}
+          );
+          if (autoMappings.length > 0) {
+            const updated = [...mappings, ...autoMappings];
+            handleSaveMappings(updated);
+          }
+        }
         return;
       }
     } catch (e) {
@@ -804,7 +829,7 @@ export default function App() {
         onClose={() => setIsAiModalOpen(false)}
         currentSheet={aiTargetSheet}
         allSheets={currentAnalysis?.worksheets || []}
-        workbookName={currentAnalysis?.filename || 'students_complex.xlsx'}
+        workbookName={currentAnalysis?.filename || files?.[0]?.filename || 'Workbook.xlsx'}
         onApplyAiSuggestions={handleApplyAiSuggestions}
       />
 

@@ -45,6 +45,7 @@ import { getDefaultSampleMappings } from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
 import { AiPresetsModal } from './AiPresetsModal';
 import { smartSanitizeIdentifier } from '../services/tamilTranslator';
+import { SchemaGenerator } from '../services/schemaGenerator';
 
 interface MappingsViewProps {
   mappings: WorksheetMapping[];
@@ -94,7 +95,6 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   const activeLiveMappings = useMemo(() => {
     return currentMappings.filter(m => {
       const wb = (m.workbookName || '').toLowerCase().trim();
-      if (wb.includes('2032') || wb.includes('grade 6')) return false;
       if (liveFilenamesSet && wb && !liveFilenamesSet.has(wb)) {
         return false;
       }
@@ -110,9 +110,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     // 1. Primary priority: Live Nextcloud files
     if (files && files.length > 0) {
       files.forEach(f => {
+        if (f.filename === 'students_complex.xlsx' || f.filename === 'students.xlsx') return;
         const fname = f.filename.trim();
         const fnameLower = fname.toLowerCase();
-        if (!seen.has(fnameLower) && !fnameLower.includes('2032') && !fnameLower.includes('grade 6')) {
+        if (!seen.has(fnameLower)) {
           seen.add(fnameLower);
           list.push(fname);
         }
@@ -125,22 +126,32 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       if (m.workbookName && typeof m.workbookName === 'string') {
         const wb = m.workbookName.trim();
         const wbLower = wb.toLowerCase();
-        if (!seen.has(wbLower) && !wbLower.includes('2032') && !wbLower.includes('grade 6')) {
+        if (wbLower !== 'students_complex.xlsx' && wbLower !== 'students.xlsx' && !seen.has(wbLower)) {
           seen.add(wbLower);
           list.push(wb);
         }
       }
     });
-    if (currentAnalysis?.filename) {
+    if (currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx' && currentAnalysis.filename !== 'students.xlsx') {
       const fname = currentAnalysis.filename.trim();
       const fnameLower = fname.toLowerCase();
-      if (!seen.has(fnameLower) && !fnameLower.includes('2032') && !fnameLower.includes('grade 6')) {
+      if (!seen.has(fnameLower)) {
         seen.add(fnameLower);
         list.push(fname);
       }
     }
     return list;
   }, [files, activeLiveMappings, currentAnalysis]);
+
+  // Automatically focus on currentAnalysis workbook if provided
+  useEffect(() => {
+    if (currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx' && currentAnalysis.filename !== 'students.xlsx') {
+      const match = uniqueWorkbooks.find(w => w.toLowerCase() === currentAnalysis.filename.toLowerCase());
+      if (match) {
+        setSelectedWorkbookFilter(match);
+      }
+    }
+  }, [currentAnalysis?.filename, uniqueWorkbooks]);
 
   // Reset selectedWorkbookFilter if the selected workbook was deleted
   useEffect(() => {
@@ -161,8 +172,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
     });
   }, [activeLiveMappings, selectedWorkbookFilter, sheetSearch]);
 
-  // Active mapping reference
-  const activeMapping = activeLiveMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0] || activeLiveMappings[0];
+  // Active mapping reference: when filtering by a specific workbook, only pick from visible sheets of that workbook
+  const activeMapping = selectedWorkbookFilter !== 'ALL'
+    ? (visibleSheetMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0])
+    : (activeLiveMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0] || activeLiveMappings[0]);
 
   // Pull all past mappings from Supabase PostgreSQL & Server Disk
   const handlePullFromSupabase = async () => {
@@ -591,11 +604,39 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   };
 
   const handleResetDefaults = () => {
-    const defaults = getDefaultSampleMappings(activeMapping?.workbookName || 'students_complex.xlsx');
+    const targetWb = activeMapping?.workbookName || (selectedWorkbookFilter !== 'ALL' ? selectedWorkbookFilter : currentAnalysis?.filename) || files?.[0]?.filename || 'Workbook.xlsx';
+    const defaults = getDefaultSampleMappings(targetWb);
     setCurrentMappings(defaults);
     onSaveMappings(defaults);
-    setSaveMessage('Reset to default sample mappings.');
+    setSaveMessage(`Reset to default sample mappings for '${targetWb}'.`);
     setTimeout(() => setSaveMessage(null), 3000);
+  };
+
+  const [isScanningWb, setIsScanningWb] = useState<boolean>(false);
+  const handleAutoGenerateMappingsForWorkbook = async (wbName: string) => {
+    setIsScanningWb(true);
+    try {
+      const targetFile = files?.find(f => f.filename.toLowerCase().trim() === wbName.toLowerCase().trim());
+      const res = await ApiClient.fetchAndParseWorkbook({} as any, targetFile?.path, wbName);
+      if (res.success && res.analysis?.worksheets && res.analysis.worksheets.length > 0) {
+        const plans = SchemaGenerator.generateSchemas(res.analysis, 'SEPARATE_TABLES', {}, supabaseTables);
+        const autoMaps = SchemaGenerator.generateMappingsFromPlans(res.analysis, plans, 'SEPARATE_TABLES', {});
+        if (autoMaps.length > 0) {
+          const updated = [...currentMappings, ...autoMaps];
+          setCurrentMappings(updated);
+          onSaveMappings(updated);
+          setActiveSheetId(autoMaps[0].id);
+          setSaveMessage(`✨ Generated mappings for all ${autoMaps.length} worksheets in '${wbName}'!`);
+          setTimeout(() => setSaveMessage(null), 4000);
+          return;
+        }
+      }
+      setSaveMessage(`Could not parse sheets for '${wbName}'. Check WebDAV connection.`);
+    } catch (e: any) {
+      setSaveMessage(`Error: ${e.message}`);
+    } finally {
+      setIsScanningWb(false);
+    }
   };
 
   const handleApplyPreset = (preset: AiWorkbookPreset) => {
@@ -907,110 +948,114 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         )}
       </div>
 
-      {/* Active Mapping Setup Card */}
-      {activeMapping && (
-        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs space-y-5">
-          {/* Multi-Sheet Routing Toolbar */}
-          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
-            <div className="flex items-center space-x-2">
-              <span className="font-bold text-slate-800">Multi-Sheet Routing Strategy:</span>
-              <span className="text-slate-500">Configure how workbook tabs route to Supabase tables</span>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => handleConsolidateAllSheets(activeMapping.supabaseTable || activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
-                className="px-2.5 py-1.5 rounded-lg bg-purple-50 border border-purple-300 text-purple-700 hover:bg-purple-100 font-semibold transition-colors"
-                title="Route all worksheets into a single common Supabase table"
-              >
-                Merge All Sheets ➔ public.{activeMapping.supabaseTable || activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_')}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSplitAllSheetsSeparate}
-                className="px-2.5 py-1.5 rounded-lg bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100 font-semibold transition-colors"
-                title="Route each worksheet to its own separate 1:1 Supabase table"
-              >
-                Separate Tables (1:1)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onNavigate('analyzer')}
-                className="px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-700 hover:bg-emerald-100 font-semibold transition-colors flex items-center space-x-1"
-                title="View and deploy PostgreSQL DDL migrations for this schema"
-              >
-                <Database className="w-3.5 h-3.5 text-emerald-600" />
-                <span>View Generated SQL Schema</span>
-              </button>
-            </div>
+      {/* Top Routing Strategy & Workbook Filter Card */}
+      <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs space-y-5">
+        {/* Multi-Sheet Routing Toolbar */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center space-x-2">
+            <span className="font-bold text-slate-800">Multi-Sheet Routing Strategy:</span>
+            <span className="text-slate-500">Configure how workbook tabs route to Supabase tables</span>
           </div>
 
-          {/* Workbook Filter & Multi-Sheet Selector Tabs */}
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center space-x-2">
-                <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Worksheet Routing Tabs ({visibleSheetMappings.length} of {activeLiveMappings.length} live mapped sheets)</span>
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold font-mono flex items-center space-x-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
-                  <span>Live Nextcloud Only</span>
-                </span>
-              </div>
-              <span className="text-xs text-slate-500">
-                Switch between worksheets across all live workbooks
+          <div className="flex flex-wrap items-center gap-2">
+            {activeMapping && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleConsolidateAllSheets(activeMapping.supabaseTable || activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
+                  className="px-2.5 py-1.5 rounded-lg bg-purple-50 border border-purple-300 text-purple-700 hover:bg-purple-100 font-semibold transition-colors"
+                  title="Route all worksheets into a single common Supabase table"
+                >
+                  Merge All Sheets ➔ public.{activeMapping.supabaseTable || activeMapping.worksheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_')}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSplitAllSheetsSeparate}
+                  className="px-2.5 py-1.5 rounded-lg bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100 font-semibold transition-colors"
+                  title="Route each worksheet to its own separate 1:1 Supabase table"
+                >
+                  Separate Tables (1:1)
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={() => onNavigate('analyzer')}
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-700 hover:bg-emerald-100 font-semibold transition-colors flex items-center space-x-1"
+              title="View and deploy PostgreSQL DDL migrations for this schema"
+            >
+              <Database className="w-3.5 h-3.5 text-emerald-600" />
+              <span>View Generated SQL Schema</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Workbook Filter & Multi-Sheet Selector Tabs */}
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Worksheet Routing Tabs ({visibleSheetMappings.length} of {activeLiveMappings.length} live mapped sheets)</span>
+              </span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold font-mono flex items-center space-x-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                <span>Live Nextcloud Only</span>
               </span>
             </div>
+            <span className="text-xs text-slate-500">
+              Switch between worksheets across all live workbooks
+            </span>
+          </div>
 
-            {/* Workbook Filter Pills */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 pt-0.5 border-b border-slate-100">
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap mr-1">
-                Filter Workbook:
+          {/* Workbook Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 pt-0.5 border-b border-slate-100">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap mr-1">
+              Filter Workbook:
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedWorkbookFilter('ALL')}
+              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${
+                selectedWorkbookFilter === 'ALL'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <span>📚 All Workbooks</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${selectedWorkbookFilter === 'ALL' ? 'bg-slate-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                {activeLiveMappings.length}
               </span>
-              <button
-                type="button"
-                onClick={() => setSelectedWorkbookFilter('ALL')}
-                className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${
-                  selectedWorkbookFilter === 'ALL'
-                    ? 'bg-slate-900 text-white shadow-xs'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                }`}
-              >
-                <span>📚 All Workbooks</span>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${selectedWorkbookFilter === 'ALL' ? 'bg-slate-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {activeLiveMappings.length}
-                </span>
-              </button>
+            </button>
 
-              {uniqueWorkbooks.map(wbName => {
-                const sheetCount = activeLiveMappings.filter(m => (m.workbookName || '').toLowerCase() === wbName.toLowerCase()).length;
-                const isSelected = selectedWorkbookFilter.toLowerCase() === wbName.toLowerCase();
-                return (
-                  <button
-                    key={wbName}
-                    type="button"
-                    onClick={() => setSelectedWorkbookFilter(wbName)}
-                    className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${
-                      isSelected
-                        ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    <FileSpreadsheet className="w-3 h-3" />
-                    <span>{wbName}</span>
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-emerald-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                      {sheetCount}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            {uniqueWorkbooks.map(wbName => {
+              const sheetCount = activeLiveMappings.filter(m => (m.workbookName || '').toLowerCase() === wbName.toLowerCase()).length;
+              const isSelected = selectedWorkbookFilter.toLowerCase() === wbName.toLowerCase();
+              return (
+                <button
+                  key={wbName}
+                  type="button"
+                  onClick={() => setSelectedWorkbookFilter(wbName)}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center space-x-1.5 ${
+                    isSelected
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-3 h-3" />
+                  <span>{wbName}</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-emerald-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                    {sheetCount}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-            {/* Sheet Tabs List */}
+          {/* Sheet Tabs List */}
+          {visibleSheetMappings.length > 0 && (
             <div className="flex border-b border-slate-200 space-x-2 pb-0.5 overflow-x-auto">
               {visibleSheetMappings.map((m) => {
                 const isActive = m.id === activeMapping?.id;
@@ -1038,7 +1083,47 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
                 );
               })}
             </div>
+          )}
+        </div>
+      </div>
+
+      {/* Unmapped Workbook Action Card */}
+      {!activeMapping && selectedWorkbookFilter !== 'ALL' && (
+        <div className="bg-white rounded-xl p-8 border border-slate-200 shadow-2xs text-center space-y-4">
+          <div className="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center mx-auto">
+            <FileSpreadsheet className="w-6 h-6" />
           </div>
+          <div>
+            <h3 className="text-base font-bold text-slate-900">
+              Worksheet Mappings for {selectedWorkbookFilter}
+            </h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+              This newly uploaded workbook is detected in Nextcloud but does not have configured sheet mappings yet. Scan the workbook from Nextcloud to auto-detect its sheets and create routing rules.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => handleAutoGenerateMappingsForWorkbook(selectedWorkbookFilter)}
+              disabled={isScanningWb}
+              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isScanningWb ? 'animate-spin' : ''}`} />
+              <span>{isScanningWb ? 'Scanning Nextcloud WebDAV...' : `Scan & Auto-Map '${selectedWorkbookFilter}'`}</span>
+            </button>
+            <button
+              onClick={() => onNavigate('analyzer')}
+              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium transition-colors"
+            >
+              <Database className="w-3.5 h-3.5 text-slate-500" />
+              <span>Inspect in Workbook Analyzer</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Active Mapping Setup Card */}
+      {activeMapping && (
+        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-2xs space-y-5">
 
           {/* Source Sheet to Target Supabase Table Router */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200">

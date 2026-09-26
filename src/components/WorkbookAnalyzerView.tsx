@@ -170,21 +170,62 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   const [normalizedRecordsPreview, setNormalizedRecordsPreview] = useState<any[] | null>(null);
   const [showNormalizationModal, setShowNormalizationModal] = useState<boolean>(false);
 
-  // Fallback / initialization with sample if null or if current analysis is of a deleted file
+  // Real workbook analysis (strictly prioritizes real live Nextcloud files over sample)
   const analysis = useMemo(() => {
-    if (currentAnalysis) {
-      const fnLower = (currentAnalysis.filename || '').toLowerCase().trim();
-      const isDeleted = fnLower.includes('2032') || fnLower.includes('grade 6') ||
-        (files && files.length > 0 && !files.some(f => f.filename.toLowerCase().trim() === fnLower));
-      if (!isDeleted) {
+    const liveNames = new Set((files || []).map(f => f.filename.toLowerCase().trim()));
+    // 1. Real analysis with parsed worksheets
+    if (currentAnalysis && currentAnalysis.worksheets && currentAnalysis.worksheets.length > 0) {
+      if (currentAnalysis.filename !== 'students_complex.xlsx' || !files || files.length === 0) {
         return currentAnalysis;
       }
     }
+    // 2. Real filename selected from Nextcloud
+    if (currentAnalysis && currentAnalysis.filename && currentAnalysis.filename !== 'students_complex.xlsx' && currentAnalysis.filename !== 'students.xlsx') {
+      return currentAnalysis;
+    }
+    // 3. Fallback to first live file in Nextcloud
+    if (files && files.length > 0) {
+      return {
+        filename: files[0].filename,
+        fileHash: files[0].fileHash,
+        fileSize: files[0].fileSize,
+        fileSizeFormatted: files[0].fileSizeFormatted,
+        totalWorksheets: 0,
+        worksheets: [],
+        analyzedAt: new Date().toISOString()
+      };
+    }
+    // 4. Sample fallback only if zero files exist
     const sample = createComplexSampleWorkbook();
     const { analysis: parsed } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);
     parsed.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     return parsed;
   }, [currentAnalysis, files]);
+
+  // Keep selectedNextcloudFilename in sync with currentAnalysis
+  useEffect(() => {
+    if (currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx') {
+      setSelectedNextcloudFilename(currentAnalysis.filename);
+    }
+  }, [currentAnalysis?.filename]);
+
+  // If no workbook is analyzed yet, automatically fetch the target live Nextcloud file
+  useEffect(() => {
+    if ((!currentAnalysis || !currentAnalysis.worksheets || currentAnalysis.worksheets.length === 0) && files && files.length > 0 && !isFetchingNextcloud) {
+      const liveNames = new Set(files.map(f => f.filename.toLowerCase().trim()));
+      let target = '';
+      if (currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx' && liveNames.has(currentAnalysis.filename.toLowerCase().trim())) {
+        target = currentAnalysis.filename;
+      } else if (selectedNextcloudFilename && selectedNextcloudFilename !== 'students_complex.xlsx' && liveNames.has(selectedNextcloudFilename.toLowerCase().trim())) {
+        target = selectedNextcloudFilename;
+      } else {
+        target = files[0].filename;
+      }
+      if (target) {
+        handleFetchFromNextcloud(target);
+      }
+    }
+  }, [files, currentAnalysis?.filename]);
 
   // Load Live Supabase Schema for comparison
   useEffect(() => {
@@ -508,12 +549,23 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
     if (!nextcloudConfig) return;
     setIsFetchingNextcloud(true);
     try {
-      const targetFilename = customFilename || selectedNextcloudFilename || currentAnalysis?.filename || (files && files[0]?.filename) || '';
+      const liveNames = new Set((files || []).map(f => f.filename.toLowerCase().trim()));
+      let targetFilename = customFilename || '';
+      if (!targetFilename && selectedNextcloudFilename && selectedNextcloudFilename !== 'students_complex.xlsx' && liveNames.has(selectedNextcloudFilename.toLowerCase().trim())) {
+        targetFilename = selectedNextcloudFilename;
+      }
+      if (!targetFilename && currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx' && liveNames.has(currentAnalysis.filename.toLowerCase().trim())) {
+        targetFilename = currentAnalysis.filename;
+      }
+      if (!targetFilename && files && files.length > 0) {
+        targetFilename = files[0].filename;
+      }
       if (!targetFilename) {
         setIsFetchingNextcloud(false);
         return;
       }
-      const targetFile = files?.find(f => f.filename === targetFilename);
+      setSelectedNextcloudFilename(targetFilename);
+      const targetFile = files?.find(f => f.filename.toLowerCase().trim() === targetFilename.toLowerCase().trim());
       const filePath = targetFile?.path;
 
       const res = await ApiClient.fetchAndParseWorkbook(nextcloudConfig, filePath, targetFilename);
@@ -531,10 +583,12 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
         setSaveSuccessNotice(`Successfully fetched ${res.analysis.filename} (${totalRowsAll.toLocaleString()} rows across ${res.analysis.worksheets.length} sheets) directly from Nextcloud WebDAV!`);
         setTimeout(() => setSaveSuccessNotice(null), 6000);
       } else {
-        alert('Failed to fetch file from Nextcloud: ' + (res.error || 'Check WebDAV configuration'));
+        setSaveSuccessNotice(`Notice fetching ${targetFilename}: ${res.error || 'Check WebDAV configuration'}`);
+        setTimeout(() => setSaveSuccessNotice(null), 8000);
       }
     } catch (e: any) {
-      alert('Error fetching from Nextcloud: ' + e.message);
+      setSaveSuccessNotice(`Error fetching from Nextcloud: ${e.message}`);
+      setTimeout(() => setSaveSuccessNotice(null), 8000);
     } finally {
       setIsFetchingNextcloud(false);
     }
@@ -1638,34 +1692,63 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
             </div>
           </div>
 
-          {/* Worksheet Tabs Navigation */}
-          <div className="flex border-b border-slate-200 overflow-x-auto space-x-2 pb-0.5">
-            {filteredWorksheetIndices.map(({ ws, idx }) => (
-              <button
-                key={`${ws.sheetName}-${idx}`}
-                id={`sheet-tab-${idx}`}
-                onClick={() => setSelectedSheetIndex(idx)}
-                className={`px-4 py-2.5 rounded-t-lg text-sm font-medium whitespace-nowrap transition-all border-b-2 flex items-center space-x-2 ${
-                  selectedSheetIndex === idx
-                    ? 'border-purple-600 text-purple-700 bg-purple-50/50 font-semibold'
-                    : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-                }`}
-              >
-                <span>{ws.sheetName}</span>
-                <span className="text-xs px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-600 font-mono">
-                  {ws.totalRows}r
-                </span>
-                {ws.headers.length > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 font-semibold">
-                    {ws.headers.length} cols
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+          {/* Worksheet Tabs Navigation & Deep Inspection */}
+          {analysis.worksheets.length === 0 || !activeSheet ? (
+            <div className="bg-white rounded-xl p-10 border border-slate-200 shadow-2xs text-center space-y-4">
+              <div className="w-14 h-14 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center mx-auto">
+                <FileSpreadsheet className={`w-7 h-7 ${isFetchingNextcloud ? 'animate-pulse text-purple-500' : ''}`} />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-slate-900">
+                  {isFetchingNextcloud ? `Downloading & Inspecting '${analysis.filename}'...` : `Workbook '${analysis.filename}'`}
+                </h3>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  {isFetchingNextcloud
+                    ? 'Connecting to Nextcloud WebDAV to extract worksheets, columns, merged cells, and data rows...'
+                    : 'Worksheet structure is loading from Nextcloud. Click below to inspect.'}
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleFetchFromNextcloud(analysis.filename)}
+                  disabled={isFetchingNextcloud}
+                  className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isFetchingNextcloud ? 'animate-spin' : ''}`} />
+                  <span>{isFetchingNextcloud ? 'Fetching WebDAV...' : `Fetch & Inspect '${analysis.filename}'`}</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex border-b border-slate-200 overflow-x-auto space-x-2 pb-0.5">
+                {filteredWorksheetIndices.map(({ ws, idx }) => (
+                  <button
+                    key={`${ws.sheetName}-${idx}`}
+                    id={`sheet-tab-${idx}`}
+                    onClick={() => setSelectedSheetIndex(idx)}
+                    className={`px-4 py-2.5 rounded-t-lg text-sm font-medium whitespace-nowrap transition-all border-b-2 flex items-center space-x-2 ${
+                      selectedSheetIndex === idx
+                        ? 'border-purple-600 text-purple-700 bg-purple-50/50 font-semibold'
+                        : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{ws.sheetName}</span>
+                    <span className="text-xs px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-600 font-mono">
+                      {ws.totalRows}r
+                    </span>
+                    {ws.headers.length > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 font-semibold">
+                        {ws.headers.length} cols
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
 
-          {/* Sheet Deep Inspection Card */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Sheet Deep Inspection Card */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Left Column: Worksheet Structural Metrics & Overrides */}
             <div className="space-y-6">
               {/* Card: Dimensions & Regions */}
@@ -1897,6 +1980,8 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
               </div>
             </div>
           </div>
+            </>
+          )}
         </>
       )}
 

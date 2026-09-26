@@ -847,10 +847,9 @@ function loadPermanentPresets(): any[] {
     savePermanentPresets(defaults);
   }
 
-  // Filter out any presets referencing deleted workbooks
+  // Filter out any presets referencing deleted workbooks that are not on disk
   const existingWbs = fs.existsSync(WORKBOOKS_DIR) ? new Set(fs.readdirSync(WORKBOOKS_DIR).map(f => f.toLowerCase().trim())) : new Set<string>();
   return allPresets.filter((p: any) => {
-    if (p.id?.includes('2032') || p.filenamePattern?.includes('2032')) return false;
     if (p.filenamePattern && p.filenamePattern.endsWith('.xlsx')) {
       if (existingWbs.size > 0 && !existingWbs.has(p.filenamePattern.toLowerCase().trim())) {
         return false;
@@ -1189,7 +1188,7 @@ app.post('/api/nextcloud/list-files', async (req, res) => {
       });
     }
 
-    // Quick reconcile: if live spreadsheet files found on Nextcloud, remove deleted files from disk and stale mappings
+    // Quick reconcile: if live spreadsheet files found on Nextcloud, sync disk copies and reconcile mappings
     const liveExcelFiles = files.filter(f => !f.isDirectory && (f.filename.endsWith('.xlsx') || f.filename.endsWith('.xls') || f.filename.endsWith('.csv')));
     let reconciledMappings: any[] = [];
     const deletedFilesList: string[] = [];
@@ -1223,6 +1222,32 @@ app.post('/api/nextcloud/list-files', async (req, res) => {
         }
       }
 
+      // Download any newly discovered live files from Nextcloud into WORKBOOKS_DIR
+      for (const lf of liveExcelFiles) {
+        const safeName = lf.filename.replace(/[/\\]/g, '_');
+        const localPath = path.join(WORKBOOKS_DIR, safeName);
+        if (!fs.existsSync(localPath)) {
+          console.log(`[Reconciler] Auto-downloading new live file from Nextcloud: ${lf.filename}`);
+          try {
+            const dlUrl = lf.path && lf.path.startsWith('http')
+              ? lf.path
+              : `${host}${lf.path.startsWith('/') ? '' : '/'}${lf.path}`;
+            const dlRes = await fetch(dlUrl, {
+              headers: { Authorization: authHeader },
+              signal: AbortSignal.timeout(15000),
+            });
+            if (dlRes.ok) {
+              const ab = await dlRes.arrayBuffer();
+              const buf = Buffer.from(ab);
+              saveWorkbookPermanently(lf.filename, buf);
+              console.log(`[Reconciler] Successfully cached newly uploaded workbook: ${lf.filename} (${buf.byteLength} bytes)`);
+            }
+          } catch (dlErr: any) {
+            console.warn(`[Reconciler] Notice downloading new file '${lf.filename}':`, dlErr.message);
+          }
+        }
+      }
+
       // Scan actual live sheets from each remaining workbook on disk
       const liveSheetsByWb: Record<string, Set<string>> = {};
       if (fs.existsSync(WORKBOOKS_DIR)) {
@@ -1251,7 +1276,60 @@ app.post('/api/nextcloud/list-files', async (req, res) => {
         return true;
       });
 
-      if (reconciledMappings.length !== diskMappings.length) {
+      // Auto-generate mappings for any newly added live workbook sheets that don't have mappings yet
+      let newMappingsAdded = false;
+      for (const [wbKey, sheetSet] of Object.entries(liveSheetsByWb)) {
+        const originalFile = liveExcelFiles.find(f => f.filename.toLowerCase().trim() === wbKey)?.filename || wbKey;
+        const localPath = path.join(WORKBOOKS_DIR, originalFile.replace(/[/\\]/g, '_'));
+        if (!fs.existsSync(localPath)) continue;
+        try {
+          const buf = fs.readFileSync(localPath);
+          const wb = XLSX.read(buf, { type: 'buffer' });
+          for (const sheetName of wb.SheetNames) {
+            const cleanWs = sheetName.toLowerCase().trim();
+            const exists = reconciledMappings.some((m: any) =>
+              (m.workbookName || '').toLowerCase().trim() === wbKey &&
+              (m.worksheetName || '').toLowerCase().trim() === cleanWs
+            );
+            if (!exists) {
+              const ws = wb.Sheets[sheetName];
+              const range = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+              const cols: any[] = [];
+              if (range.e.c >= range.s.c) {
+                for (let C = range.s.c; C <= Math.min(range.e.c, 60); ++C) {
+                  const cell = ws[XLSX.utils.encode_cell({ r: range.s.r, c: C })];
+                  const name = cell && cell.v !== undefined ? String(cell.v).trim() : `col_${C + 1}`;
+                  const cleanName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || `col_${C + 1}`;
+                  cols.push({
+                    id: `col-${Date.now()}-${C}-${Math.random().toString(36).substring(2, 6)}`,
+                    excelHeader: name,
+                    supabaseColumn: cleanName,
+                    dataType: 'text',
+                    transformation: 'trim',
+                    uniqueKey: C === 0,
+                    required: C === 0
+                  });
+                }
+              }
+              const defaultTbl = originalFile.replace(/\.xlsx?$/i, '').toLowerCase().replace(/[^a-z0-9_]/g, '_') + '_' + sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+              reconciledMappings.push({
+                id: `auto-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                workbookName: originalFile,
+                worksheetName: sheetName,
+                supabaseTable: defaultTbl,
+                headerRow: 1,
+                dataStartRow: 2,
+                columns: cols,
+                enabled: true,
+                syncPolicy: 'EXCEL_TO_DB'
+              });
+              newMappingsAdded = true;
+            }
+          }
+        } catch {}
+      }
+
+      if (reconciledMappings.length !== diskMappings.length || newMappingsAdded) {
         savePermanentMappings({ mappings: reconciledMappings, savedAt: new Date().toISOString() });
         saveUnifiedCoolifyState({ mappings: reconciledMappings });
       }
@@ -1314,33 +1392,64 @@ app.post('/api/nextcloud/fetch-and-parse', async (req, res) => {
     const user = username || 'truenas_admin';
     const pass = appPassword || 'mpxC4-dk7jn-4GYCH-WByRo-jEQdT';
 
-    let targetUrl: string;
+    const targetFilename = filename || (filePath ? decodeURIComponent(filePath).split('/').pop() : '') || 'workbook.xlsx';
+    const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+    let buffer: Buffer | null = null;
+
+    // Build candidate WebDAV URLs (handling spaces and URI encoding)
+    const candidateUrls: string[] = [];
     if (filePath && filePath.startsWith('http')) {
-      targetUrl = filePath;
-    } else if (filePath) {
-      targetUrl = `${host}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
-    } else {
-      targetUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/ExcelImports/${filename || 'students.xlsx'}`;
+      candidateUrls.push(filePath);
+    } else if (filePath && filePath.startsWith('/')) {
+      const encodedPath = filePath.split('/').map((p: string) => encodeURIComponent(decodeURIComponent(p))).join('/');
+      candidateUrls.push(`${host}${encodedPath}`);
+      candidateUrls.push(`${host}${filePath}`);
+    }
+    candidateUrls.push(`${host}/remote.php/dav/files/${encodeURIComponent(user)}/ExcelImports/${encodeURIComponent(targetFilename)}`);
+    candidateUrls.push(`${host}/remote.php/dav/files/${encodeURIComponent(user)}/${encodeURIComponent(targetFilename)}`);
+
+    for (const targetUrl of candidateUrls) {
+      if (buffer) break;
+      try {
+        const fileRes = await fetch(targetUrl, {
+          method: 'GET',
+          headers: { Authorization: authHeader },
+          signal: AbortSignal.timeout(20000),
+        });
+
+        if (fileRes.ok) {
+          const arrayBuffer = await fileRes.arrayBuffer();
+          buffer = Buffer.from(arrayBuffer);
+          console.log(`[fetch-and-parse] Successfully fetched '${targetFilename}' from WebDAV: ${targetUrl}`);
+          break;
+        }
+      } catch (netErr: any) {
+        // try next candidate
+      }
     }
 
-    const authHeader = `Basic ${getBasicAuth(user, pass)}`;
-    const fileRes = await fetch(targetUrl, {
-      method: 'GET',
-      headers: { Authorization: authHeader },
-    });
+    // If direct fetch was unsuccessful, fallback to locally cached copy in WORKBOOKS_DIR
+    if (!buffer) {
+      const localPath = path.join(WORKBOOKS_DIR, targetFilename.replace(/[/\\]/g, '_'));
+      if (fs.existsSync(localPath)) {
+        buffer = fs.readFileSync(localPath);
+        console.log(`[fetch-and-parse] Using locally cached copy of '${targetFilename}'`);
+      }
+    }
 
-    if (!fileRes.ok) {
-      return res.status(fileRes.status).json({
+    if (!buffer) {
+      return res.status(404).json({
         success: false,
-        error: `Failed to download file from ${targetUrl}: HTTP ${fileRes.status} ${fileRes.statusText}`,
+        error: `Failed to download file '${targetFilename}' from Nextcloud/WebDAV and no local cache was found.`,
       });
     }
 
-    const arrayBuffer = await fileRes.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
-    const result = parseWorkbookBuffer(buffer, filename || targetUrl.split('/').pop() || 'workbook.xlsx');
+    // Cache downloaded workbook permanently on server disk
+    saveWorkbookPermanently(targetFilename, buffer);
+
+    const result = parseWorkbookBuffer(buffer, targetFilename);
 
     return res.json({
       success: true,
@@ -3390,7 +3499,6 @@ app.get('/api/served-sheets', async (req, res) => {
     const liveWbSet = new Set(storedWorkbooks.map((w: any) => w.filename.toLowerCase().trim()));
     const finalServedSheets = Array.from(servedMap.values()).filter((s: any) => {
       const wb = (s.workbookName || '').toLowerCase().trim();
-      if (wb.includes('2032') || wb.includes('grade 6')) return false;
       if (liveWbSet.size > 0 && !liveWbSet.has(wb)) {
         if (wb.endsWith('.xlsx') && !wb.includes('class wise') && !wb.includes('donation') && !wb.includes('teacher') && !wb.includes('inventory')) {
           return false;
@@ -3406,7 +3514,7 @@ app.get('/api/served-sheets', async (req, res) => {
       workbooks: storedWorkbooks,
       mappings: (mappingsData?.mappings || []).filter((m: any) => {
         const wb = (m.workbookName || '').toLowerCase().trim();
-        return !wb.includes('2032') && !wb.includes('grade 6') && (liveWbSet.size === 0 || liveWbSet.has(wb));
+        return liveWbSet.size === 0 || liveWbSet.has(wb);
       }),
       savedAt: store.savedAt || mappingsData?.savedAt || null,
       message: 'Retrieved permanent served sheets and mapping hubs registry',

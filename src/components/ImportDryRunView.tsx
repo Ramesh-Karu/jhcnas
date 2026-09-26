@@ -179,16 +179,14 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
 
     setIsLoadingFile(true);
     try {
-      if (nextcloudConfig?.url && nextcloudConfig.isConnected) {
-        const res = await ApiClient.fetchAndParseWorkbook(nextcloudConfig, targetFile.path, targetFile.filename);
-        if (res.success && res.analysis && onAnalysisUpdate) {
-          onAnalysisUpdate(res.analysis);
-          setImportNotice({
-            success: true,
-            message: `Loaded live Nextcloud file '${targetFile.filename}'. Running simulation...`
-          });
-          return;
-        }
+      const res = await ApiClient.fetchAndParseWorkbook(nextcloudConfig || {} as any, targetFile.path, targetFile.filename);
+      if (res.success && res.analysis && onAnalysisUpdate) {
+        onAnalysisUpdate(res.analysis);
+        setImportNotice({
+          success: true,
+          message: `Loaded live Nextcloud file '${targetFile.filename}'. Running simulation...`
+        });
+        return;
       }
       if (onSelectFileForAnalysis) {
         onSelectFileForAnalysis(targetFile);
@@ -306,10 +304,14 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     }, 150);
   };
 
-  // Run dry run automatically on mount so user never sees empty screen
+  // Auto-fetch real Nextcloud file if current analysis is empty or sample
   useEffect(() => {
-    handleRunDryRun();
-  }, [currentAnalysis?.filename, mappings.length]);
+    if ((!currentAnalysis || !currentAnalysis.worksheets || currentAnalysis.worksheets.length === 0 || currentAnalysis.filename === 'students_complex.xlsx') && files && files.length > 0) {
+      handleSelectNextcloudFile(files[0].filename);
+    } else {
+      handleRunDryRun();
+    }
+  }, [currentAnalysis?.filename, mappings.length, files]);
 
   const handleExecuteImport = async () => {
     setIsImporting(true);
@@ -317,7 +319,9 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
     setDiagnosticError(null);
 
     const wb = getEffectiveWorkbook();
-    const filename = currentAnalysis?.filename || mappings[0]?.workbookName || 'Workbook.xlsx';
+    const filename = (currentAnalysis?.filename && currentAnalysis.filename !== 'students_complex.xlsx')
+      ? currentAnalysis.filename
+      : (files?.[0]?.filename || mappings[0]?.workbookName || 'Workbook.xlsx');
     const fileHash = currentAnalysis?.fileHash || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
     // Capture updated records locally so they can be dispatched immediately to Supabase
@@ -906,7 +910,7 @@ export const ImportDryRunView: React.FC<ImportDryRunViewProps> = ({
               disabled={isLoadingFile || isRunningDryRun}
               className="text-xs font-semibold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 transition-colors"
             >
-              {currentAnalysis && !files.some(f => f.filename === currentAnalysis.filename) && (
+              {currentAnalysis && currentAnalysis.filename !== 'students_complex.xlsx' && currentAnalysis.filename !== 'students.xlsx' && !files.some(f => f.filename === currentAnalysis.filename) && (
                 <option value={currentAnalysis.filename}>{currentAnalysis.filename} (Current File)</option>
               )}
               {files.map(f => (

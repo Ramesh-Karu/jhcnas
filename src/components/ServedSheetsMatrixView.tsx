@@ -483,11 +483,10 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
     const liveFileSet = files && files.length > 0 ? new Set(files.map(f => (f.filename || (f as any).name || '').toLowerCase().trim())) : null;
     const allSheets = Array.from(sheetMap.values());
     if (!liveFileSet) {
-      return allSheets.filter(s => !s.workbookName.toLowerCase().includes('2032') && !s.workbookName.toLowerCase().includes('grade 6'));
+      return allSheets;
     }
     return allSheets.filter(s => {
       const wb = s.workbookName.toLowerCase().trim();
-      if (wb.includes('2032') || wb.includes('grade 6')) return false;
       return liveFileSet.has(wb);
     });
   }, [currentAnalysis, mappings, presets, importLogs, storedServedSheets, files]);
@@ -501,7 +500,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       files.forEach(f => {
         const fname = (f.filename || (f as any).name || '').trim();
         const fnameLower = fname.toLowerCase();
-        if (fname && !seen.has(fnameLower) && !fnameLower.includes('2032') && !fnameLower.includes('grade 6')) {
+        if (fname && !seen.has(fnameLower)) {
           seen.add(fnameLower);
           list.push(fname);
         }
@@ -513,7 +512,7 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       if (s.workbookName && typeof s.workbookName === 'string') {
         const wb = s.workbookName.trim();
         const wbLower = wb.toLowerCase();
-        if (!seen.has(wbLower) && !wbLower.includes('2032') && !wbLower.includes('grade 6')) {
+        if (!seen.has(wbLower)) {
           seen.add(wbLower);
           list.push(wb);
         }

@@ -16,7 +16,7 @@ import { NextcloudFile, NavigationTab } from '../types';
 
 interface ExcelFilesViewProps {
   files: NextcloudFile[];
-  onSelectFileForAnalysis: (file: NextcloudFile) => void;
+  onSelectFileForAnalysis: (file: NextcloudFile, targetTab?: NavigationTab) => void;
   onNavigate: (tab: NavigationTab) => void;
   onRefreshFiles: () => void;
 }
@@ -77,14 +77,18 @@ export const ExcelFilesView: React.FC<ExcelFilesViewProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-100">
               {files.map((file) => (
-                <tr key={file.id} className="hover:bg-slate-50/80 transition-colors">
+                <tr 
+                  key={file.id} 
+                  onClick={() => onSelectFileForAnalysis(file, 'analyzer')}
+                  className="hover:bg-slate-50/80 transition-colors cursor-pointer"
+                >
                   <td className="px-5 py-4">
                     <div className="flex items-center space-x-3">
                       <div className="p-2 rounded-lg bg-emerald-50 text-emerald-700">
                         <FileSpreadsheet className="w-5 h-5" />
                       </div>
                       <div>
-                        <div className="font-semibold text-slate-900 text-sm">{file.filename}</div>
+                        <div className="font-semibold text-slate-900 text-sm hover:text-emerald-700 transition-colors">{file.filename}</div>
                         <div className="text-[11px] text-slate-500 font-mono flex items-center space-x-1 mt-0.5">
                           <Folder className="w-3 h-3 text-slate-400" />
                           <span>{file.path}</span>
@@ -119,13 +123,12 @@ export const ExcelFilesView: React.FC<ExcelFilesViewProps> = ({
                     </span>
                   </td>
 
-                  <td className="px-5 py-4 text-right whitespace-nowrap">
+                  <td className="px-5 py-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <div className="inline-flex items-center space-x-2">
                       <button
                         id={`btn-analyze-${file.id}`}
                         onClick={() => {
-                          onSelectFileForAnalysis(file);
-                          onNavigate('analyzer');
+                          onSelectFileForAnalysis(file, 'analyzer');
                         }}
                         className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium shadow-2xs"
                         title="Inspect worksheets, merged cells, and headers"
@@ -137,7 +140,7 @@ export const ExcelFilesView: React.FC<ExcelFilesViewProps> = ({
                       <button
                         id={`btn-map-${file.id}`}
                         onClick={() => {
-                          onNavigate('mappings');
+                          onSelectFileForAnalysis(file, 'mappings');
                         }}
                         className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium shadow-2xs"
                         title="Configure worksheet to table mappings"
@@ -149,7 +152,7 @@ export const ExcelFilesView: React.FC<ExcelFilesViewProps> = ({
                       <button
                         id={`btn-dryrun-${file.id}`}
                         onClick={() => {
-                          onNavigate('import');
+                          onSelectFileForAnalysis(file, 'import');
                         }}
                         className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium shadow-2xs"
                         title="Run Dry Run simulation"

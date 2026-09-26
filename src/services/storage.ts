@@ -173,49 +173,17 @@ export class StorageService {
     if (raw) {
       try {
         const parsed: NextcloudFile[] = JSON.parse(raw);
-        if (!parsed.some(f => f.filename === 'students.xlsx')) {
-          parsed.unshift({
-            id: 'nc-students.xlsx',
-            filename: 'students.xlsx',
-            path: '/remote.php/dav/files/truenas_admin/ExcelImports/students.xlsx',
-            fileSize: 411834,
-            fileSizeFormatted: '402.2 KB',
-            lastModified: new Date().toISOString(),
-            fileHash: '055fb66f39721e7c8085d06914085ba14f33eafa53668598c0d974edcc018a0c',
-            status: 'Synced',
-            worksheetsCount: 1
-          });
-          this.saveFiles(parsed);
+        if (Array.isArray(parsed)) {
+          // Strip out legacy mock placeholders that don't exist in Nextcloud
+          const cleaned = parsed.filter(f => f.filename !== 'students_complex.xlsx' && f.filename !== 'students.xlsx');
+          if (cleaned.length !== parsed.length) {
+            this.saveFiles(cleaned);
+          }
+          return cleaned;
         }
-        return parsed;
       } catch {}
     }
-    return [
-      {
-        id: 'nc-students.xlsx',
-        filename: 'students.xlsx',
-        path: '/remote.php/dav/files/truenas_admin/ExcelImports/students.xlsx',
-        fileSize: 411834,
-        fileSizeFormatted: '402.2 KB',
-        lastModified: new Date().toISOString(),
-        fileHash: '055fb66f39721e7c8085d06914085ba14f33eafa53668598c0d974edcc018a0c',
-        status: 'Synced',
-        lastProcessedAt: new Date().toISOString(),
-        worksheetsCount: 1
-      },
-      {
-        id: 'file-1',
-        filename: 'students_complex.xlsx',
-        path: '/ExcelImports/students_complex.xlsx',
-        fileSize: 42150,
-        fileSizeFormatted: '41.2 KB',
-        lastModified: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-        fileHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-        status: 'Synced',
-        lastProcessedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-        worksheetsCount: 5
-      }
-    ];
+    return [];
   }
 
   static saveFiles(files: NextcloudFile[]): void {
@@ -232,6 +200,13 @@ export class StorageService {
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
+        if (parsed?.filename === 'students_complex.xlsx') {
+          const isSampleExplicit = localStorage.getItem(STORAGE_KEYS.SAMPLE_LOADED) === 'true';
+          const realFiles = this.getFiles();
+          if (realFiles.length > 0 || !isSampleExplicit) {
+            return null;
+          }
+        }
         if (parsed && Array.isArray(parsed.worksheets)) {
           let modified = false;
           parsed.worksheets.forEach((ws: any) => {
@@ -282,7 +257,22 @@ export class StorageService {
 
   static getMappings(): WorksheetMapping[] {
     const raw = localStorage.getItem(STORAGE_KEYS.MAPPINGS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const realFiles = this.getFiles();
+          if (realFiles.length > 0) {
+            const liveNames = new Set(realFiles.map(f => f.filename.toLowerCase().trim()));
+            return parsed.filter(m => {
+              const wb = (m.workbookName || '').toLowerCase().trim();
+              return wb !== 'students_complex.xlsx' && (!wb || liveNames.has(wb));
+            });
+          }
+          return parsed;
+        }
+      } catch {}
+    }
     return [];
   }
 
@@ -672,11 +662,6 @@ export class StorageService {
   }
 
   static initSampleIfNeeded(): void {
-    const isLoaded = localStorage.getItem(STORAGE_KEYS.SAMPLE_LOADED);
-    const existingMappings = this.getMappings();
-    const existingAnalysis = this.getCurrentAnalysis();
-    if (!isLoaded && existingMappings.length === 0 && !existingAnalysis) {
-      this.loadSampleData();
-    }
+    // Sample is only loaded when user explicitly clicks "Sample Workbook" modal, never auto-injected
   }
 }
