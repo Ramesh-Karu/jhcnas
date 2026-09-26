@@ -480,33 +480,47 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
       }
     });
 
-    return Array.from(sheetMap.values());
-  }, [currentAnalysis, mappings, presets, importLogs, storedServedSheets]);
-
-  // Unique workbooks detected across all served sheets, mappings, and files
-  const uniqueWorkbooks = useMemo(() => {
-    const set = new Set<string>();
-    servedSheets.forEach(s => {
-      if (s.workbookName && typeof s.workbookName === 'string' && s.workbookName.trim()) {
-        set.add(s.workbookName.trim());
-      }
-    });
-    mappings.forEach(m => {
-      if (m.workbookName && typeof m.workbookName === 'string' && m.workbookName.trim()) {
-        set.add(m.workbookName.trim());
-      }
-    });
-    if (currentAnalysis?.filename) {
-      set.add(currentAnalysis.filename.trim());
+    const liveFileSet = files && files.length > 0 ? new Set(files.map(f => (f.filename || (f as any).name || '').toLowerCase().trim())) : null;
+    const allSheets = Array.from(sheetMap.values());
+    if (!liveFileSet) {
+      return allSheets.filter(s => !s.workbookName.toLowerCase().includes('2032') && !s.workbookName.toLowerCase().includes('grade 6'));
     }
-    files.forEach(f => {
-      const fname = f.filename || (f as any).name;
-      if (fname && typeof fname === 'string' && fname.trim()) {
-        set.add(fname.trim());
+    return allSheets.filter(s => {
+      const wb = s.workbookName.toLowerCase().trim();
+      if (wb.includes('2032') || wb.includes('grade 6')) return false;
+      return liveFileSet.has(wb);
+    });
+  }, [currentAnalysis, mappings, presets, importLogs, storedServedSheets, files]);
+
+  // Unique workbooks detected across live Nextcloud files
+  const uniqueWorkbooks = useMemo(() => {
+    const list: string[] = [];
+    const seen = new Set<string>();
+
+    if (files && files.length > 0) {
+      files.forEach(f => {
+        const fname = (f.filename || (f as any).name || '').trim();
+        const fnameLower = fname.toLowerCase();
+        if (fname && !seen.has(fnameLower) && !fnameLower.includes('2032') && !fnameLower.includes('grade 6')) {
+          seen.add(fnameLower);
+          list.push(fname);
+        }
+      });
+      return list;
+    }
+
+    servedSheets.forEach(s => {
+      if (s.workbookName && typeof s.workbookName === 'string') {
+        const wb = s.workbookName.trim();
+        const wbLower = wb.toLowerCase();
+        if (!seen.has(wbLower) && !wbLower.includes('2032') && !wbLower.includes('grade 6')) {
+          seen.add(wbLower);
+          list.push(wb);
+        }
       }
     });
-    return Array.from(set);
-  }, [servedSheets, mappings, currentAnalysis, files]);
+    return list;
+  }, [files, servedSheets]);
 
   // Group served sheets by Target Supabase Table (Merged Table Topology)
   const mergedTablesTopology = useMemo(() => {

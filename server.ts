@@ -830,6 +830,7 @@ function getDefaultPresets(): any[] {
 function loadPermanentPresets(): any[] {
   ensureDataDir();
   const defaults = getDefaultPresets();
+  let allPresets: any[] = defaults;
   if (fs.existsSync(PRESETS_FILE)) {
     try {
       const raw = fs.readFileSync(PRESETS_FILE, 'utf-8');
@@ -837,14 +838,26 @@ function loadPermanentPresets(): any[] {
       if (Array.isArray(loaded)) {
         const defaultIds = new Set(defaults.map(d => d.id));
         const customPresets = loaded.filter((p: any) => !defaultIds.has(p.id));
-        return [...defaults, ...customPresets];
+        allPresets = [...defaults, ...customPresets];
       }
     } catch (e) {
       console.warn('Error reading presets.json:', e);
     }
+  } else {
+    savePermanentPresets(defaults);
   }
-  savePermanentPresets(defaults);
-  return defaults;
+
+  // Filter out any presets referencing deleted workbooks
+  const existingWbs = fs.existsSync(WORKBOOKS_DIR) ? new Set(fs.readdirSync(WORKBOOKS_DIR).map(f => f.toLowerCase().trim())) : new Set<string>();
+  return allPresets.filter((p: any) => {
+    if (p.id?.includes('2032') || p.filenamePattern?.includes('2032')) return false;
+    if (p.filenamePattern && p.filenamePattern.endsWith('.xlsx')) {
+      if (existingWbs.size > 0 && !existingWbs.has(p.filenamePattern.toLowerCase().trim())) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 function savePermanentPresets(presets: any[]): boolean {
@@ -1176,11 +1189,83 @@ app.post('/api/nextcloud/list-files', async (req, res) => {
       });
     }
 
+    // Quick reconcile: if live spreadsheet files found on Nextcloud, remove deleted files from disk and stale mappings
+    const liveExcelFiles = files.filter(f => !f.isDirectory && (f.filename.endsWith('.xlsx') || f.filename.endsWith('.xls') || f.filename.endsWith('.csv')));
+    let reconciledMappings: any[] = [];
+    const deletedFilesList: string[] = [];
+    if (liveExcelFiles.length > 0) {
+      const liveFileNames = new Set(liveExcelFiles.map(f => f.filename.toLowerCase().trim()));
+      
+      // Clean up WORKBOOKS_DIR: delete any file no longer live on Nextcloud
+      if (fs.existsSync(WORKBOOKS_DIR)) {
+        const storedFiles = fs.readdirSync(WORKBOOKS_DIR);
+        for (const sf of storedFiles) {
+          if (sf.startsWith('.')) continue;
+          if (!liveFileNames.has(sf.toLowerCase().trim())) {
+            console.log(`[Reconciler] Deleting removed file from WORKBOOKS_DIR: ${sf}`);
+            try { 
+              fs.unlinkSync(path.join(WORKBOOKS_DIR, sf)); 
+              deletedFilesList.push(sf);
+            } catch {}
+          }
+        }
+      }
+
+      // Also clean up any cached copies in public/samples
+      const samplesDir = path.join(process.cwd(), 'public', 'samples');
+      if (fs.existsSync(samplesDir)) {
+        const sampleFiles = fs.readdirSync(samplesDir);
+        for (const sf of sampleFiles) {
+          if (sf.startsWith('.')) continue;
+          if (sf.endsWith('.xlsx') && !liveFileNames.has(sf.toLowerCase().trim()) && !sf.startsWith('jhc_')) {
+            try { fs.unlinkSync(path.join(samplesDir, sf)); } catch {}
+          }
+        }
+      }
+
+      // Scan actual live sheets from each remaining workbook on disk
+      const liveSheetsByWb: Record<string, Set<string>> = {};
+      if (fs.existsSync(WORKBOOKS_DIR)) {
+        const remainingFiles = fs.readdirSync(WORKBOOKS_DIR);
+        for (const rf of remainingFiles) {
+          if (rf.startsWith('.')) continue;
+          try {
+            const buf = fs.readFileSync(path.join(WORKBOOKS_DIR, rf));
+            const wb = XLSX.read(buf, { type: 'buffer' });
+            liveSheetsByWb[rf.toLowerCase().trim()] = new Set(wb.SheetNames.map(s => s.toLowerCase().trim()));
+          } catch {}
+        }
+      }
+
+      // Clean up mappings: only keep mappings whose workbook is live AND whose worksheet exists in that workbook
+      const diskData = loadPermanentMappings();
+      const diskMappings = Array.isArray(diskData?.mappings) ? diskData.mappings : [];
+      reconciledMappings = diskMappings.filter((m: any) => {
+        const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
+        const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
+        if (!liveFileNames.has(wb)) return false;
+        if (liveSheetsByWb[wb] && !liveSheetsByWb[wb].has(ws)) {
+          console.log(`[Reconciler] Pruning deleted sheet '${ws}' from workbook '${wb}'`);
+          return false;
+        }
+        return true;
+      });
+
+      if (reconciledMappings.length !== diskMappings.length) {
+        savePermanentMappings({ mappings: reconciledMappings, savedAt: new Date().toISOString() });
+        saveUnifiedCoolifyState({ mappings: reconciledMappings });
+      }
+    } else {
+      reconciledMappings = loadPermanentMappings()?.mappings || [];
+    }
+
     return res.json({
       success: true,
       folderPath: folderUrl,
       count: files.length,
       files,
+      mappings: reconciledMappings,
+      deletedFiles: deletedFilesList,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -1645,7 +1730,6 @@ app.post('/api/sheets/load-preset', async (req, res) => {
       'preset-jhc-students-2029': '2029_stu.xlsx',
       'preset-jhc-students-2030': '2030_stu.xlsx',
       'preset-jhc-students-2031': '2031_stu.xlsx',
-      'preset-jhc-students-2032': '2032_stu.xlsx',
       'preset-jhc-students-2033': '2033_stu.xlsx',
       'preset-jhc-students-2034': '2034_stu.xlsx',
     };
@@ -3303,12 +3387,27 @@ app.get('/api/served-sheets', async (req, res) => {
       } catch {}
     }
 
+    const liveWbSet = new Set(storedWorkbooks.map((w: any) => w.filename.toLowerCase().trim()));
+    const finalServedSheets = Array.from(servedMap.values()).filter((s: any) => {
+      const wb = (s.workbookName || '').toLowerCase().trim();
+      if (wb.includes('2032') || wb.includes('grade 6')) return false;
+      if (liveWbSet.size > 0 && !liveWbSet.has(wb)) {
+        if (wb.endsWith('.xlsx') && !wb.includes('class wise') && !wb.includes('donation') && !wb.includes('teacher') && !wb.includes('inventory')) {
+          return false;
+        }
+      }
+      return true;
+    });
+
     return res.json({
       success: true,
-      servedSheets: Array.from(servedMap.values()),
+      servedSheets: finalServedSheets,
       presets: presets || store.presets || [],
       workbooks: storedWorkbooks,
-      mappings: mappingsData?.mappings || [],
+      mappings: (mappingsData?.mappings || []).filter((m: any) => {
+        const wb = (m.workbookName || '').toLowerCase().trim();
+        return !wb.includes('2032') && !wb.includes('grade 6') && (liveWbSet.size === 0 || liveWbSet.has(wb));
+      }),
       savedAt: store.savedAt || mappingsData?.savedAt || null,
       message: 'Retrieved permanent served sheets and mapping hubs registry',
     });
@@ -4041,6 +4140,7 @@ async function executeFullPipelineCore(params: {
     }
 
     // 4. Query Nextcloud WebDAV for real files in source folder if connected
+    const nextcloudDiscovered: string[] = [];
     if (nextcloud?.url) {
       try {
         const host = nextcloud.url.replace(/\/+$/, '');
@@ -4069,6 +4169,7 @@ async function executeFullPipelineCore(params: {
             const decoded = decodeURIComponent(rawHref);
             const fname = decoded.split('/').pop() || '';
             if (fname.endsWith('.xlsx') || fname.endsWith('.xls') || fname.endsWith('.csv')) {
+              nextcloudDiscovered.push(fname);
               fileSet.add(fname);
             }
           }
@@ -4078,12 +4179,16 @@ async function executeFullPipelineCore(params: {
       }
     }
 
-    // Fallbacks if nothing discovered
-    if (fileSet.size === 0) {
-      console.warn('[Sync Engine] No active mappings or workbooks found to synchronize.');
+    // If Nextcloud is configured and has live files, use ONLY live Nextcloud files!
+    if (nextcloud?.url && nextcloudDiscovered.length > 0) {
+      filesToProcess = nextcloudDiscovered;
+    } else {
+      filesToProcess = Array.from(fileSet);
     }
 
-    filesToProcess = Array.from(fileSet);
+    if (filesToProcess.length === 0) {
+      console.warn('[Sync Engine] No active mappings or workbooks found to synchronize.');
+    }
   }
 
   if (filesToProcess.length === 0) {
@@ -4623,21 +4728,23 @@ async function executeFullPipelineCore(params: {
   };
 }
 
-// Automated Nextcloud Workbooks Re-Fetch & Auto-Mapping Engine
-async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseConfig?: any, mappingsList?: any[]): Promise<{
+// Automated Nextcloud Workbooks Re-Fetch & Auto-Mapping Engine with Live Reconciliation
+async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseConfig?: any, _mappingsList?: any[]): Promise<{
   success: boolean;
   downloadedFiles: string[];
+  deletedFiles: string[];
+  prunedMappingsCount: number;
   mappingsAdded: number;
+  mappings: any[];
   executedAt: string;
   error?: string;
 }> {
   const state = loadUnifiedCoolifyState();
   const nc = nextcloudConfig || state.nextcloud;
-  const sb = supabaseConfig || state.supabase;
 
   if (!nc?.url) {
     console.log('[15m Auto-Refresher] Nextcloud URL not configured, using cached local files.');
-    return { success: false, downloadedFiles: [], mappingsAdded: 0, error: 'Nextcloud URL not configured', executedAt: new Date().toISOString() };
+    return { success: false, downloadedFiles: [], deletedFiles: [], prunedMappingsCount: 0, mappingsAdded: 0, mappings: [], error: 'Nextcloud URL not configured', executedAt: new Date().toISOString() };
   }
 
   const host = nc.url.replace(/\/+$/, '');
@@ -4647,9 +4754,9 @@ async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseC
   const folderUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`;
   const authHeader = `Basic ${getBasicAuth(user, pass)}`;
 
-  console.log(`[15m Auto-Refresher] Querying Nextcloud folder '${folder}' at ${host}...`);
+  console.log(`[Nextcloud Live Reconciler] Querying Nextcloud folder '${folder}' at ${host}...`);
 
-  // 1. WebDAV PROPFIND to list all Excel files in Nextcloud
+  // 1. WebDAV PROPFIND to list all Excel files currently live in Nextcloud
   const discoveredFiles: string[] = [];
   try {
     const propRes = await fetch(folderUrl, {
@@ -4676,11 +4783,34 @@ async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseC
       }
     }
   } catch (err: any) {
-    console.warn(`[15m Auto-Refresher] Nextcloud PROPFIND discovery notice: ${err.message}`);
+    console.warn(`[Nextcloud Live Reconciler] Nextcloud PROPFIND discovery notice: ${err.message}`);
   }
 
-  // 2. Download fresh copies of ALL discovered files to server disk storage data/workbooks
+  const liveFilesLower = new Set(discoveredFiles.map(f => f.toLowerCase().trim()));
+
+  // 2. Reconcile server disk storage: DELETE files that were removed from Nextcloud
+  const deletedFiles: string[] = [];
+  if (discoveredFiles.length > 0 && fs.existsSync(WORKBOOKS_DIR)) {
+    const storedFiles = fs.readdirSync(WORKBOOKS_DIR);
+    for (const sf of storedFiles) {
+      if (sf.startsWith('.')) continue;
+      const cleanSf = sf.toLowerCase().trim();
+      if (!liveFilesLower.has(cleanSf)) {
+        console.log(`[Nextcloud Live Reconciler] Deleting removed file from local storage: ${sf}`);
+        try {
+          fs.unlinkSync(path.join(WORKBOOKS_DIR, sf));
+          deletedFiles.push(sf);
+        } catch (unErr: any) {
+          console.warn(`[Nextcloud Live Reconciler] Could not remove ${sf}:`, unErr.message);
+        }
+      }
+    }
+  }
+
+  // 3. Download fresh copies of ALL discovered files to server disk storage
   const downloadedFiles: string[] = [];
+  const liveWorkbookSheetsMap = new Map<string, Set<string>>();
+
   for (const fname of discoveredFiles) {
     const fileUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/${encodeURIComponent(fname)}`;
     try {
@@ -4694,20 +4824,51 @@ async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseC
         const buf = Buffer.from(arrayBuf);
         saveWorkbookPermanently(fname, buf);
         downloadedFiles.push(fname);
-        console.log(`[15m Auto-Refresher] Downloaded fresh copy of '${fname}' (${buf.byteLength} bytes) to server storage.`);
+
+        // Read actual live sheets in this workbook
+        try {
+          const wb = XLSX.read(buf, { type: 'buffer' });
+          const sheetNamesLower = new Set(wb.SheetNames.map(s => s.toLowerCase().trim()));
+          liveWorkbookSheetsMap.set(fname.toLowerCase().trim(), sheetNamesLower);
+        } catch (wbErr: any) {
+          console.warn(`Could not read workbook sheets for ${fname}:`, wbErr.message);
+        }
+        console.log(`[Nextcloud Live Reconciler] Downloaded fresh copy of '${fname}' (${buf.byteLength} bytes).`);
       } else {
-        console.warn(`[15m Auto-Refresher] Download notice for '${fname}': HTTP ${fRes ? fRes.status : 'Timeout/Network'}`);
+        console.warn(`[Nextcloud Live Reconciler] Download notice for '${fname}': HTTP ${fRes ? fRes.status : 'Timeout/Network'}`);
       }
     } catch (dErr: any) {
-      console.warn(`[15m Auto-Refresher] Download exception for '${fname}': ${dErr.message}`);
+      console.warn(`[Nextcloud Live Reconciler] Download exception for '${fname}': ${dErr.message}`);
     }
   }
 
-  // 3. Auto-discover worksheets for every downloaded workbook and ensure active mappings exist
-  const existingMappings = loadPermanentMappings()?.mappings || [];
-  const updatedMappings = [...existingMappings];
-  let mappingsAdded = 0;
+  // 4. Reconcile existing mappings against LIVE files and LIVE sheets
+  const existingDisk = loadPermanentMappings();
+  const existingMappings = Array.isArray(existingDisk?.mappings) ? existingDisk.mappings : [];
+  let prunedMappingsCount = 0;
 
+  const reconciledMappings = existingMappings.filter((m: any) => {
+    const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
+    const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
+
+    // If Nextcloud had files, the workbook MUST be one of the live discovered files
+    if (liveFilesLower.size > 0 && !liveFilesLower.has(wb)) {
+      prunedMappingsCount++;
+      return false;
+    }
+
+    // The worksheet MUST exist in the live workbook
+    const liveSheets = liveWorkbookSheetsMap.get(wb);
+    if (liveSheets && !liveSheets.has(ws)) {
+      prunedMappingsCount++;
+      return false;
+    }
+
+    return true;
+  });
+
+  // 5. Auto-discover any new sheets that don't have mappings yet
+  let mappingsAdded = 0;
   for (const fname of downloadedFiles) {
     const localPath = path.join(WORKBOOKS_DIR, fname.replace(/[/\\]/g, '_'));
     if (!fs.existsSync(localPath)) continue;
@@ -4718,7 +4879,7 @@ async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseC
       for (const sheetName of wb.SheetNames) {
         const cleanWb = fname.toLowerCase().trim();
         const cleanWs = sheetName.toLowerCase().trim();
-        const exists = updatedMappings.some((m: any) => 
+        const exists = reconciledMappings.some((m: any) => 
           (m.workbookName || '').toLowerCase().trim() === cleanWb &&
           (m.worksheetName || '').toLowerCase().trim() === cleanWs
         );
@@ -4742,7 +4903,7 @@ async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseC
           }
 
           const defaultTbl = fname.replace(/\.xlsx?$/i, '').toLowerCase().replace(/[^a-z0-9_]/g, '_') + '_' + sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-          updatedMappings.push({
+          reconciledMappings.push({
             id: `auto-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
             workbookName: fname,
             worksheetName: sheetName,
@@ -4757,19 +4918,71 @@ async function syncAndRefreshNextcloudWorkbooks(nextcloudConfig?: any, supabaseC
         }
       }
     } catch (parseErr: any) {
-      console.warn(`[15m Auto-Refresher] Could not parse sheets for '${fname}': ${parseErr.message}`);
+      console.warn(`[Nextcloud Live Reconciler] Could not parse sheets for '${fname}': ${parseErr.message}`);
     }
   }
 
-  if (mappingsAdded > 0) {
-    mergeAndSavePermanentMappings(updatedMappings);
-    console.log(`[15m Auto-Refresher] Auto-registered ${mappingsAdded} new sheet mappings.`);
-  }
+  // 6. Permanently save reconciled mappings to disk and state
+  savePermanentMappings({
+    mappings: reconciledMappings,
+    savedAt: new Date().toISOString(),
+  });
+  saveUnifiedCoolifyState({
+    mappings: reconciledMappings,
+  });
+  saveServedSheetsStore({
+    servedSheets: reconciledMappings,
+    workbooks: downloadedFiles,
+  });
+
+  // 7. Reconcile presets (student_batch_presets.json and presets.json)
+  const presetsFile = path.join(DATA_DIR, 'presets.json');
+  const studentPresetsFile = path.join(DATA_DIR, 'student_batch_presets.json');
+  [presetsFile, studentPresetsFile].forEach(pf => {
+    if (fs.existsSync(pf)) {
+      try {
+        let pList = JSON.parse(fs.readFileSync(pf, 'utf-8'));
+        if (Array.isArray(pList)) {
+          // Filter out presets whose workbook was deleted from Nextcloud
+          pList = pList.filter((p: any) => {
+            if (p.filenamePattern && liveFilesLower.size > 0) {
+              return liveFilesLower.has(p.filenamePattern.toLowerCase().trim());
+            }
+            return true;
+          });
+          // Prune sheet mappings for sheets deleted from that workbook
+          pList.forEach((p: any) => {
+            if (p.filenamePattern) {
+              const liveSheets = liveWorkbookSheetsMap.get(p.filenamePattern.toLowerCase().trim());
+              if (liveSheets && Array.isArray(p.sheetMappings)) {
+                p.sheetMappings = p.sheetMappings.filter((sm: any) =>
+                  liveSheets.has(sm.worksheetName.toLowerCase().trim())
+                );
+              }
+              if (liveSheets && Array.isArray(p.sheetPatterns)) {
+                p.sheetPatterns = p.sheetPatterns.filter((sp: string) =>
+                  liveSheets.has(sp.toLowerCase().trim())
+                );
+              }
+            }
+          });
+          fs.writeFileSync(pf, JSON.stringify(pList, null, 2), 'utf-8');
+        }
+      } catch (err: any) {
+        console.warn(`Preset reconciliation notice for ${pf}:`, err.message);
+      }
+    }
+  });
+
+  console.log(`[Nextcloud Live Reconciler] Completed reconciliation: ${downloadedFiles.length} live files, ${deletedFiles.length} deleted files purged, ${prunedMappingsCount} stale mappings removed, ${mappingsAdded} new mappings added.`);
 
   return {
     success: true,
     downloadedFiles,
+    deletedFiles,
+    prunedMappingsCount,
     mappingsAdded,
+    mappings: reconciledMappings,
     executedAt: new Date().toISOString()
   };
 }

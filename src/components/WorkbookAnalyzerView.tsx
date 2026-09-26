@@ -170,14 +170,21 @@ export const WorkbookAnalyzerView: React.FC<WorkbookAnalyzerViewProps> = ({
   const [normalizedRecordsPreview, setNormalizedRecordsPreview] = useState<any[] | null>(null);
   const [showNormalizationModal, setShowNormalizationModal] = useState<boolean>(false);
 
-  // Fallback / initialization with sample if null
+  // Fallback / initialization with sample if null or if current analysis is of a deleted file
   const analysis = useMemo(() => {
-    if (currentAnalysis) return currentAnalysis;
+    if (currentAnalysis) {
+      const fnLower = (currentAnalysis.filename || '').toLowerCase().trim();
+      const isDeleted = fnLower.includes('2032') || fnLower.includes('grade 6') ||
+        (files && files.length > 0 && !files.some(f => f.filename.toLowerCase().trim() === fnLower));
+      if (!isDeleted) {
+        return currentAnalysis;
+      }
+    }
     const sample = createComplexSampleWorkbook();
     const { analysis: parsed } = ExcelAnalyzer.parseBuffer(sample.binaryData, sample.filename);
     parsed.fileHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     return parsed;
-  }, [currentAnalysis]);
+  }, [currentAnalysis, files]);
 
   // Load Live Supabase Schema for comparison
   useEffect(() => {

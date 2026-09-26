@@ -1,4 +1,23 @@
 {
+  "nextcloud": {
+    "url": "https://cloud.jhcnexus.space",
+    "webdavUrl": "https://cloud.jhcnexus.space/remote.php/dav/files/truenas_admin/",
+    "username": "truenas_admin",
+    "appPassword": "mpxC4-dk7jn-4GYCH-WByRo-jEQdT",
+    "sourceFolder": "/ExcelImports"
+  },
+  "supabase": {
+    "url": "https://jhcsms.129.146.117.2.sslip.io/",
+    "anonKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc4OTU2NTgyMCwiZXhwIjo0OTQ1MjM5NDIwLCJyb2xlIjoiYW5vbiJ9.X8AlJRmfaVUmWRFucsHG4Q54U8rPFOOyew8AmX4D7p4",
+    "serviceKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc4OTU2NTgyMCwiZXhwIjo0OTQ1MjM5NDIwLCJyb2xlIjoic2VydmljZV9yb2xlIn0.Wi62skaTARyd7CtxPfalVAU0fwQHo9lSTK8JvvMifxs",
+    "serviceRoleKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc4OTU2NTgyMCwiZXhwIjo0OTQ1MjM5NDIwLCJyb2xlIjoic2VydmljZV9yb2xlIn0.Wi62skaTARyd7CtxPfalVAU0fwQHo9lSTK8JvvMifxs"
+  },
+  "syncSettings": {
+    "syncInterval": "15m",
+    "autoSyncEnabled": true,
+    "workerUrl": "",
+    "workerSecretKey": ""
+  },
   "mappings": [
     {
       "id": "wm-2026stuxlsx-0",
@@ -16964,5 +16983,10 @@
       "syncPolicy": "EXCEL_TO_DB"
     }
   ],
-  "savedAt": "2026-09-26T07:56:42.878Z"
+  "workbookInfo": {
+    "filename": "2026_stu.xlsx",
+    "totalWorksheets": 10
+  },
+  "geminiApiKey": "",
+  "lastPersistedAt": "2026-09-26T07:04:53.037Z"
 }

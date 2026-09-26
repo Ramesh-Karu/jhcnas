@@ -38,7 +38,8 @@ import {
   SupabaseConfig,
   SupabaseTableInfo,
   SupabaseTableColumn,
-  AiWorkbookPreset
+  AiWorkbookPreset,
+  NextcloudFile
 } from '../types';
 import { getDefaultSampleMappings } from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
@@ -52,6 +53,8 @@ interface MappingsViewProps {
   onOpenAiAssistant: () => void;
   currentAnalysis?: WorkbookAnalysis | null;
   supabaseConfig?: SupabaseConfig;
+  files?: NextcloudFile[];
+  onRefreshFiles?: () => void;
 }
 
 export const MappingsView: React.FC<MappingsViewProps> = ({
@@ -60,7 +63,9 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   onNavigate,
   onOpenAiAssistant,
   currentAnalysis,
-  supabaseConfig
+  supabaseConfig,
+  files,
+  onRefreshFiles
 }) => {
   const [activeSheetId, setActiveSheetId] = useState<string>(mappings[0]?.id || '');
   const [currentMappings, setCurrentMappings] = useState<WorksheetMapping[]>(mappings);
@@ -79,21 +84,74 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
   const [showAiPresetsModal, setShowAiPresetsModal] = useState<boolean>(false);
   const [presetPrefill, setPresetPrefill] = useState<boolean>(false);
 
-  // Unique workbooks detected across all mappings
+  // Set of live filenames from Nextcloud
+  const liveFilenamesSet = useMemo(() => {
+    if (!files || files.length === 0) return null;
+    return new Set(files.map(f => f.filename.toLowerCase().trim()));
+  }, [files]);
+
+  // Clean mappings strictly constrained to live files
+  const activeLiveMappings = useMemo(() => {
+    return currentMappings.filter(m => {
+      const wb = (m.workbookName || '').toLowerCase().trim();
+      if (wb.includes('2032') || wb.includes('grade 6')) return false;
+      if (liveFilenamesSet && wb && !liveFilenamesSet.has(wb)) {
+        return false;
+      }
+      return true;
+    });
+  }, [currentMappings, liveFilenamesSet]);
+
+  // Unique workbooks detected across live files and active mappings only
   const uniqueWorkbooks = useMemo(() => {
-    const set = new Set<string>();
-    currentMappings.forEach(m => {
-      if (m.workbookName && typeof m.workbookName === 'string') set.add(m.workbookName.trim());
+    const list: string[] = [];
+    const seen = new Set<string>();
+
+    // 1. Primary priority: Live Nextcloud files
+    if (files && files.length > 0) {
+      files.forEach(f => {
+        const fname = f.filename.trim();
+        const fnameLower = fname.toLowerCase();
+        if (!seen.has(fnameLower) && !fnameLower.includes('2032') && !fnameLower.includes('grade 6')) {
+          seen.add(fnameLower);
+          list.push(fname);
+        }
+      });
+      return list;
+    }
+
+    // 2. Fallback if Nextcloud files list is not loaded yet
+    activeLiveMappings.forEach(m => {
+      if (m.workbookName && typeof m.workbookName === 'string') {
+        const wb = m.workbookName.trim();
+        const wbLower = wb.toLowerCase();
+        if (!seen.has(wbLower) && !wbLower.includes('2032') && !wbLower.includes('grade 6')) {
+          seen.add(wbLower);
+          list.push(wb);
+        }
+      }
     });
     if (currentAnalysis?.filename) {
-      set.add(currentAnalysis.filename.trim());
+      const fname = currentAnalysis.filename.trim();
+      const fnameLower = fname.toLowerCase();
+      if (!seen.has(fnameLower) && !fnameLower.includes('2032') && !fnameLower.includes('grade 6')) {
+        seen.add(fnameLower);
+        list.push(fname);
+      }
     }
-    return Array.from(set);
-  }, [currentMappings, currentAnalysis]);
+    return list;
+  }, [files, activeLiveMappings, currentAnalysis]);
+
+  // Reset selectedWorkbookFilter if the selected workbook was deleted
+  useEffect(() => {
+    if (selectedWorkbookFilter !== 'ALL' && !uniqueWorkbooks.some(w => w.toLowerCase() === selectedWorkbookFilter.toLowerCase())) {
+      setSelectedWorkbookFilter('ALL');
+    }
+  }, [uniqueWorkbooks, selectedWorkbookFilter]);
 
   // Filtered sheets based on workbook selector and search
   const visibleSheetMappings = useMemo(() => {
-    return currentMappings.filter(m => {
+    return activeLiveMappings.filter(m => {
       const matchWb = selectedWorkbookFilter === 'ALL' || (m.workbookName || '').toLowerCase() === selectedWorkbookFilter.toLowerCase();
       const matchSearch = !sheetSearch.trim() || 
         (m.worksheetName || '').toLowerCase().includes(sheetSearch.toLowerCase().trim()) ||
@@ -101,10 +159,10 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         (m.workbookName || '').toLowerCase().includes(sheetSearch.toLowerCase().trim());
       return matchWb && matchSearch;
     });
-  }, [currentMappings, selectedWorkbookFilter, sheetSearch]);
+  }, [activeLiveMappings, selectedWorkbookFilter, sheetSearch]);
 
   // Active mapping reference
-  const activeMapping = currentMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0] || currentMappings[0];
+  const activeMapping = activeLiveMappings.find(m => m.id === activeSheetId) || visibleSheetMappings[0] || activeLiveMappings[0];
 
   // Pull all past mappings from Supabase PostgreSQL & Server Disk
   const handlePullFromSupabase = async () => {
@@ -632,6 +690,18 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
         </div>
 
         <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+          {onRefreshFiles && (
+            <button
+              id="btn-rescan-live-nextcloud-files"
+              onClick={onRefreshFiles}
+              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-emerald-800 shadow-2xs transition-colors"
+              title="Rescan Nextcloud to refresh live workbooks and prune any deleted files or sheets"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Rescan Live Nextcloud</span>
+            </button>
+          )}
+
           <button
             id="btn-pull-from-supabase"
             onClick={handlePullFromSupabase}
@@ -881,12 +951,18 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           {/* Workbook Filter & Multi-Sheet Selector Tabs */}
           <div className="space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Worksheet Routing Tabs ({visibleSheetMappings.length} of {currentMappings.length} total mapped sheets)</span>
-              </span>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Worksheet Routing Tabs ({visibleSheetMappings.length} of {activeLiveMappings.length} live mapped sheets)</span>
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold font-mono flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                  <span>Live Nextcloud Only</span>
+                </span>
+              </div>
               <span className="text-xs text-slate-500">
-                Switch between worksheets across all workbooks
+                Switch between worksheets across all live workbooks
               </span>
             </div>
 
@@ -906,12 +982,12 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
               >
                 <span>📚 All Workbooks</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${selectedWorkbookFilter === 'ALL' ? 'bg-slate-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {currentMappings.length}
+                  {activeLiveMappings.length}
                 </span>
               </button>
 
               {uniqueWorkbooks.map(wbName => {
-                const sheetCount = currentMappings.filter(m => (m.workbookName || '').toLowerCase() === wbName.toLowerCase()).length;
+                const sheetCount = activeLiveMappings.filter(m => (m.workbookName || '').toLowerCase() === wbName.toLowerCase()).length;
                 const isSelected = selectedWorkbookFilter.toLowerCase() === wbName.toLowerCase();
                 return (
                   <button

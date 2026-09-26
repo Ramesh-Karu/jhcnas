@@ -480,13 +480,13 @@ export const AiPresetsModal: React.FC<AiPresetsModalProps> = ({
                         }
                         setStatusMessage({
                           type: 'success',
-                          text: `Applied all 8 student batch presets! All 72+ worksheets across the 8 books are mapped to combined tables.`
+                          text: `Applied all ${studentBatchPresets.length} live student batch presets! Worksheets across the live workbooks are mapped to combined tables.`
                         });
                       }}
                       className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center space-x-1.5"
                     >
                       <Sparkles className="w-4 h-4 text-purple-200" />
-                      <span>Apply All 8 Combined Tables</span>
+                      <span>Apply All {studentBatchPresets.length} Combined Tables</span>
                     </button>
                   </div>
                 </div>

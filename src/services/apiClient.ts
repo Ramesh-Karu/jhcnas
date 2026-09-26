@@ -103,6 +103,7 @@ export class ApiClient {
     folderPath?: string;
     count?: number;
     files?: NextcloudFile[];
+    mappings?: WorksheetMapping[];
     error?: string;
   }> {
     try {
@@ -636,7 +637,10 @@ export class ApiClient {
     success: boolean;
     refreshed?: {
       downloadedFiles: string[];
+      deletedFiles?: string[];
+      prunedMappingsCount?: number;
       mappingsAdded: number;
+      mappings?: WorksheetMapping[];
       executedAt: string;
     };
     pipeline?: any;

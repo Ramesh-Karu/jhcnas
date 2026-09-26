@@ -47,9 +47,40 @@ export default function App() {
   const handleFetchNextcloudFiles = async () => {
     try {
       const res = await ApiClient.listNextcloudFiles(nextcloud);
-      if (res.success && res.files && res.files.length > 0) {
+      if (res.success && Array.isArray(res.files)) {
         setFiles(res.files);
         StorageService.saveFiles(res.files);
+
+        const liveFileNames = new Set(res.files.map(f => f.filename.toLowerCase().trim()));
+
+        // Reconcile mappings with server reconciled mappings or live files
+        if (res.mappings && Array.isArray(res.mappings)) {
+          const cleanMappings = res.mappings.filter((m: any) => {
+            const wb = (m.workbookName || '').toLowerCase().trim();
+            return !wb || liveFileNames.has(wb);
+          });
+          setMappings(cleanMappings);
+          StorageService.saveMappings(cleanMappings);
+        } else {
+          setMappings(prev => {
+            const clean = prev.filter(m => {
+              const wb = (m.workbookName || '').toLowerCase().trim();
+              return !wb || liveFileNames.has(wb);
+            });
+            StorageService.saveMappings(clean);
+            return clean;
+          });
+        }
+
+        // If current analysis is of a deleted file, switch to first live file
+        if (currentAnalysis?.filename && !liveFileNames.has(currentAnalysis.filename.toLowerCase().trim())) {
+          if (res.files.length > 0) {
+            handleSelectFileForAnalysis(res.files[0]);
+          } else {
+            setCurrentAnalysis(null);
+            StorageService.saveCurrentAnalysis(null as any);
+          }
+        }
       }
     } catch (e) {
       console.error('Failed to fetch files from Nextcloud:', e);
@@ -115,34 +146,22 @@ export default function App() {
           });
         }
         if (serverState.mappings && serverState.mappings.length > 0) {
-          // Merge server mappings with client mappings by workbook & worksheet key
-          const getMappingKey = (m: any) => {
+          const cleanServerMappings = serverState.mappings.filter((m: any) => {
             const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
-            const ws = String(m.worksheetName || m.sheet_name || '').toLowerCase().trim();
-            if (wb && ws) return `${wb}::${ws}`;
-            if (m.id) return String(m.id);
-            if (ws) return `unspecified::${ws}`;
-            return `wm-${Math.random()}`;
-          };
-          const clientMappings = StorageService.getMappings();
-          const mapByKey = new Map<string, WorksheetMapping>();
-          clientMappings.forEach(m => {
-            mapByKey.set(getMappingKey(m), m);
+            return !wb.includes('2032') && !wb.includes('grade 6');
           });
-          serverState.mappings.forEach((m: any) => {
-            const key = getMappingKey(m);
-            const prev = mapByKey.get(key);
-            mapByKey.set(key, { ...prev, ...m });
-          });
-          const merged = Array.from(mapByKey.values());
-          setMappings(merged);
-          StorageService.saveMappings(merged);
+          setMappings(cleanServerMappings);
+          StorageService.saveMappings(cleanServerMappings);
         } else {
           // Also try pulling directly from Supabase & server disk
           ApiClient.loadPermanentMappings().then(res => {
             if (res.success && res.mappings && res.mappings.length > 0) {
-              setMappings(res.mappings);
-              StorageService.saveMappings(res.mappings);
+              const clean = res.mappings.filter((m: any) => {
+                const wb = String(m.workbookName || m.file_name || m.filename || '').toLowerCase().trim();
+                return !wb.includes('2032') && !wb.includes('grade 6');
+              });
+              setMappings(clean);
+              StorageService.saveMappings(clean);
             }
           }).catch(() => {});
         }
@@ -551,15 +570,6 @@ export default function App() {
     } catch (e) {
       console.error('Error fetching file for analysis:', e);
     }
-
-    // Fallback if network fails
-    if (currentAnalysis?.filename !== file.filename && currentAnalysis) {
-      handleUpdateAnalysis({
-        ...currentAnalysis,
-        filename: file.filename,
-        fileHash: file.fileHash
-      });
-    }
   };
 
   return (
@@ -683,6 +693,8 @@ export default function App() {
               onOpenAiAssistant={() => handleOpenAiAssistant()}
               currentAnalysis={currentAnalysis}
               supabaseConfig={supabase}
+              files={files}
+              onRefreshFiles={handleFetchNextcloudFiles}
             />
           )}
 
