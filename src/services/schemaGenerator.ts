@@ -236,13 +236,18 @@ export class SchemaGenerator {
       plans.push(plan);
 
     } else if (mode === 'SEPARATE_TABLES') {
-      // 1 Table Per Sheet
+      // 1 Table Per Sheet (Defaults to Worksheet Name, customizable per sheet)
       const usedTableNames = new Set<string>();
       for (const ws of analysis.worksheets) {
         const customTable = sheetToTableMap?.[ws.sheetName];
-        let targetTable = customTable
-          ? this.sanitizeIdentifier(customTable)
-          : canonicalDefaultTable;
+        let rawTarget = customTable && customTable.trim() !== ''
+          ? customTable
+          : ws.sheetName;
+        
+        let targetTable = this.sanitizeIdentifier(rawTarget);
+        if (!targetTable || /^[0-9]/.test(targetTable)) {
+          targetTable = `sheet_${targetTable || '1'}`;
+        }
 
         if (usedTableNames.has(targetTable)) {
           let suffix = 2;

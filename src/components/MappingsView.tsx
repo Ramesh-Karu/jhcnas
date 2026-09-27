@@ -23,7 +23,8 @@ import {
   RefreshCw,
   HelpCircle,
   FileSpreadsheet,
-  AlertCircle
+  AlertCircle,
+  Code
 } from 'lucide-react';
 import { 
   WorksheetMapping, 
@@ -226,6 +227,48 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
       setSyncingWorkbook(null);
       setTimeout(() => setSaveMessage(null), 6000);
     }
+  };
+
+  const handleCopyMasterSqlScript = () => {
+    if (!currentMappings || currentMappings.length === 0) return;
+    const statements: string[] = [];
+
+    // Group mappings by target table
+    const tableToCols = new Map<string, ColumnMapping[]>();
+    currentMappings.forEach(m => {
+      const tbl = m.supabaseTable || 'records';
+      if (!tableToCols.has(tbl)) {
+        tableToCols.set(tbl, []);
+      }
+      (m.columns || []).forEach(c => {
+        if (!tableToCols.get(tbl)!.some(x => x.supabaseColumn === c.supabaseColumn)) {
+          tableToCols.get(tbl)!.push(c);
+        }
+      });
+    });
+
+    tableToCols.forEach((cols, tbl) => {
+      const colDefs: string[] = [];
+
+      cols.forEach(c => {
+        const pType = c.dataType === 'integer' ? 'integer' : c.dataType === 'decimal' ? 'numeric(12, 2)' : c.dataType === 'date' ? 'date' : c.dataType === 'boolean' ? 'boolean' : 'text';
+        if (c.uniqueKey) {
+          colDefs.push(`  "${c.supabaseColumn}" ${pType} PRIMARY KEY`);
+        } else {
+          colDefs.push(`  "${c.supabaseColumn}" ${pType}`);
+        }
+      });
+
+      colDefs.push('  created_at timestamptz DEFAULT now()');
+      colDefs.push('  updated_at timestamptz DEFAULT now()');
+
+      statements.push(`-- ==========================================\n-- TABLE: public.${tbl}\n-- ==========================================\nCREATE TABLE IF NOT EXISTS public.${tbl} (\n${colDefs.join(',\n')}\n);\n\nALTER TABLE public.${tbl} ENABLE ROW LEVEL SECURITY;\nDO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM pg_policies WHERE tablename = '${tbl}' AND policyname = 'Allow service and auth sync access'\n  ) THEN\n    CREATE POLICY "Allow service and auth sync access" ON public.${tbl} FOR ALL USING (true);\n  END IF;\nEND $$;\nGRANT ALL ON public.${tbl} TO anon, authenticated, service_role;`);
+    });
+
+    const fullScript = `-- ==========================================\n-- MASTER SQL MIGRATION SCRIPT FOR ALL MAPPED TABLES (${tableToCols.size} TABLES)\n-- ==========================================\n\n` + statements.join('\n\n');
+    navigator.clipboard.writeText(fullScript);
+    setSaveMessage(`📋 Copied Master SQL Migration Script for ALL ${tableToCols.size} mapped tables to clipboard!`);
+    setTimeout(() => setSaveMessage(null), 5000);
   };
 
   const handlePushToSupabase = async () => {
@@ -875,6 +918,16 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           >
             <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isLoadingSchema ? 'animate-spin' : ''}`} />
             <span>Refresh Supabase Tables</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleCopyMasterSqlScript}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white shadow-2xs transition-colors cursor-pointer"
+            title="Copy complete combined PostgreSQL DDL script for ALL mapped tables at once"
+          >
+            <Code className="w-3.5 h-3.5" />
+            <span>📋 Copy ALL Tables Master SQL Script</span>
           </button>
 
           <button
