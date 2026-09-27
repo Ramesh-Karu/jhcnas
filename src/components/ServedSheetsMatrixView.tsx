@@ -212,6 +212,57 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
   };
 
   const [isPushingSupabase, setIsPushingSupabase] = useState<boolean>(false);
+  const [isPruningDeleted, setIsPruningDeleted] = useState<boolean>(false);
+  const [syncingSingleFile, setSyncingSingleFile] = useState<string | null>(null);
+
+  const handlePruneDeletedFiles = async () => {
+    setIsPruningDeleted(true);
+    try {
+      const activeFileNames = files.map(f => f.filename);
+      const res = await ApiClient.pruneDeletedFiles(activeFileNames);
+      if (res.success) {
+        setSyncFeedback({
+          type: 'success',
+          message: `🧹 Cleaned up deleted file mappings! Removed ${res.prunedMappingsCount || 0} stale mappings, ${res.prunedServedSheetsCount || 0} served sheets, and ${res.prunedDiskFilesCount || 0} deleted cached files.`
+        });
+        loadAllMetadata();
+      } else {
+        setSyncFeedback({ type: 'error', message: `Pruning failed: ${res.error || 'Unknown error'}` });
+      }
+    } catch (e: any) {
+      setSyncFeedback({ type: 'error', message: `Pruning error: ${e.message}` });
+    } finally {
+      setIsPruningDeleted(false);
+      setTimeout(() => setSyncFeedback(null), 6000);
+    }
+  };
+
+  const handleSyncSingleWorkbook = async (wbName: string) => {
+    if (!wbName || wbName === 'ALL') return;
+    setSyncingSingleFile(wbName);
+    try {
+      const res = await ApiClient.executeFullPipelineSync({
+        nextcloud: nextcloudConfig as NextcloudConfig,
+        supabase: supabaseConfig as SupabaseConfig,
+        mappings,
+        targetFilename: wbName,
+        triggerType: 'MANUAL_ADMIN',
+      });
+      if (res.success) {
+        setSyncFeedback({
+          type: 'success',
+          message: `⚡ Successfully synced single file '${wbName}' into Supabase! Inserted: ${res.totalInserted || 0}, Updated: ${res.totalUpdated || 0}, Errors: ${res.totalFailed || 0}.`
+        });
+      } else {
+        setSyncFeedback({ type: 'error', message: `Single file sync failed for '${wbName}': ${res.error || 'Check configuration'}` });
+      }
+    } catch (err: any) {
+      setSyncFeedback({ type: 'error', message: `Single file sync error for '${wbName}': ${err.message}` });
+    } finally {
+      setSyncingSingleFile(null);
+      setTimeout(() => setSyncFeedback(null), 6000);
+    }
+  };
 
   const handlePushToSupabase = async () => {
     if (!supabaseConfig?.url) {
@@ -877,6 +928,28 @@ export const ServedSheetsMatrixView: React.FC<ServedSheetsMatrixViewProps> = ({
           >
             <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isLoadingMetadata ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
+          </button>
+
+          {selectedWorkbookFilter && selectedWorkbookFilter !== 'ALL' && (
+            <button
+              onClick={() => handleSyncSingleWorkbook(selectedWorkbookFilter)}
+              disabled={!!syncingSingleFile}
+              className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
+              title={`Execute immediate single-file sync for '${selectedWorkbookFilter}' into Supabase`}
+            >
+              <Activity className={`w-3.5 h-3.5 ${syncingSingleFile === selectedWorkbookFilter ? 'animate-spin' : ''}`} />
+              <span>{syncingSingleFile === selectedWorkbookFilter ? `Syncing ${selectedWorkbookFilter}...` : `⚡ Sync '${selectedWorkbookFilter}' Only`}</span>
+            </button>
+          )}
+
+          <button
+            onClick={handlePruneDeletedFiles}
+            disabled={isPruningDeleted}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-rose-50 border border-rose-300 text-xs font-bold text-rose-800 hover:bg-rose-100 shadow-2xs transition-colors cursor-pointer"
+            title="Clean up and remove stale mappings/sheets for files deleted from Nextcloud or server disk"
+          >
+            <ShieldCheck className={`w-3.5 h-3.5 text-rose-600 ${isPruningDeleted ? 'animate-spin' : ''}`} />
+            <span>{isPruningDeleted ? 'Pruning...' : '🧹 Prune Deleted File Mappings'}</span>
           </button>
 
           <button

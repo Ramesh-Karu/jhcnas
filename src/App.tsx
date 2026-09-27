@@ -54,6 +54,19 @@ export default function App() {
 
         const liveFileNames = new Set(res.files.map(f => f.filename.toLowerCase().trim()));
 
+        // Auto-prune mappings and served sheets for files deleted from Nextcloud WebDAV
+        ApiClient.pruneDeletedFiles(res.files.map(f => f.filename)).then(pRes => {
+          if (pRes.success && (pRes.prunedMappingsCount || 0) > 0) {
+            console.log(`[App] Auto-pruned ${pRes.prunedMappingsCount} stale mappings for deleted Nextcloud files`);
+            ApiClient.loadPermanentMappings().then(lRes => {
+              if (lRes.success && Array.isArray(lRes.mappings)) {
+                setMappings(lRes.mappings);
+                StorageService.saveMappings(lRes.mappings);
+              }
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+
         // Merge server mappings non-destructively without wiping local mappings
         const serverMappingsList = res.mappings;
         if (serverMappingsList && Array.isArray(serverMappingsList) && serverMappingsList.length > 0) {

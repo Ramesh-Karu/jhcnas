@@ -685,6 +685,26 @@ export class ApiClient {
     }
   }
 
+  static async pruneDeletedFiles(activeFiles?: string[]): Promise<{
+    success: boolean;
+    activeFilesCount?: number;
+    prunedMappingsCount?: number;
+    prunedServedSheetsCount?: number;
+    prunedDiskFilesCount?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/sheets/prune-deleted-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activeFiles: activeFiles || [] }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
   static async refreshAllNextcloudWorkbooks(params: {
     nextcloud?: NextcloudConfig;
     supabase?: SupabaseConfig;

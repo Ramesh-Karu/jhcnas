@@ -39,7 +39,8 @@ import {
   SupabaseTableInfo,
   SupabaseTableColumn,
   AiWorkbookPreset,
-  NextcloudFile
+  NextcloudFile,
+  NextcloudConfig
 } from '../types';
 import { getDefaultSampleMappings } from '../services/sampleWorkbook';
 import { ApiClient } from '../services/apiClient';
@@ -176,6 +177,56 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
 
   // Pull all past mappings from Supabase PostgreSQL & Server Disk
   const [isPushingSupabase, setIsPushingSupabase] = useState<boolean>(false);
+  const [isPruningDeleted, setIsPruningDeleted] = useState<boolean>(false);
+  const [syncingWorkbook, setSyncingWorkbook] = useState<string | null>(null);
+
+  const handlePruneDeletedFiles = async () => {
+    setIsPruningDeleted(true);
+    try {
+      const activeFileNames = files ? files.map(f => f.filename) : [];
+      const res = await ApiClient.pruneDeletedFiles(activeFileNames);
+      if (res.success) {
+        setSaveMessage(`🧹 Pruned stale mappings for deleted files! Removed ${res.prunedMappingsCount || 0} stale mappings and ${res.prunedDiskFilesCount || 0} deleted cached files.`);
+        if (onRefreshFiles) onRefreshFiles();
+        const loadRes = await ApiClient.loadPermanentMappings();
+        if (loadRes.success && Array.isArray(loadRes.mappings)) {
+          setCurrentMappings(loadRes.mappings);
+          onSaveMappings(loadRes.mappings);
+        }
+      } else {
+        setSaveMessage(`Prune notice: ${res.error || 'Check server connection'}`);
+      }
+    } catch (e: any) {
+      setSaveMessage(`Prune error: ${e.message}`);
+    } finally {
+      setIsPruningDeleted(false);
+      setTimeout(() => setSaveMessage(null), 6000);
+    }
+  };
+
+  const handleSyncSingleWorkbook = async (wbName: string) => {
+    if (!wbName || wbName === 'ALL') return;
+    setSyncingWorkbook(wbName);
+    try {
+      const res = await ApiClient.executeFullPipelineSync({
+        nextcloud: { url: '', username: '', appPassword: '', sourceFolder: '' } as NextcloudConfig,
+        supabase: supabaseConfig as SupabaseConfig,
+        mappings: currentMappings,
+        targetFilename: wbName,
+        triggerType: 'MANUAL_ADMIN',
+      });
+      if (res.success) {
+        setSaveMessage(`⚡ Successfully synced '${wbName}' individually into Supabase! Inserted: ${res.totalInserted || 0}, Updated: ${res.totalUpdated || 0}, Errors: ${res.totalFailed || 0}.`);
+      } else {
+        setSaveMessage(`Single file sync failed for '${wbName}': ${res.error || 'Check table mappings'}`);
+      }
+    } catch (err: any) {
+      setSaveMessage(`Single file sync error for '${wbName}': ${err.message}`);
+    } finally {
+      setSyncingWorkbook(null);
+      setTimeout(() => setSaveMessage(null), 6000);
+    }
+  };
 
   const handlePushToSupabase = async () => {
     if (!supabaseConfig?.url) {
@@ -837,6 +888,30 @@ export const MappingsView: React.FC<MappingsViewProps> = ({
           >
             <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
             <span>AI Presets Library</span>
+          </button>
+
+          {selectedWorkbookFilter && selectedWorkbookFilter !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => handleSyncSingleWorkbook(selectedWorkbookFilter)}
+              disabled={!!syncingWorkbook}
+              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
+              title={`Execute immediate single-file sync for '${selectedWorkbookFilter}' into Supabase`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncingWorkbook === selectedWorkbookFilter ? 'animate-spin' : ''}`} />
+              <span>{syncingWorkbook === selectedWorkbookFilter ? `Syncing ${selectedWorkbookFilter}...` : `⚡ Sync '${selectedWorkbookFilter}' Only`}</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handlePruneDeletedFiles}
+            disabled={isPruningDeleted}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-rose-50 border border-rose-300 text-xs font-bold text-rose-800 hover:bg-rose-100 shadow-2xs transition-colors cursor-pointer"
+            title="Clean up stale mappings for files deleted from Nextcloud or server storage"
+          >
+            <Trash2 className={`w-3.5 h-3.5 text-rose-600 ${isPruningDeleted ? 'animate-spin' : ''}`} />
+            <span>{isPruningDeleted ? 'Pruning...' : '🧹 Prune Deleted File Mappings'}</span>
           </button>
 
           <button

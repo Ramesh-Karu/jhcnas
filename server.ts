@@ -595,6 +595,104 @@ function mergeAndSavePermanentMappings(newMappings: any[], workbookInfo?: any): 
   return payload;
 }
 
+function getCanonicalTableForWorkbook(filename: string): string {
+  const norm = (filename || '').toLowerCase().trim();
+  if (norm.includes('timetable') || norm.includes('classwise') || norm.includes('time_table')) {
+    return 'timetable_master';
+  }
+  if (norm.includes('donation') || norm.includes('contribution') || norm.includes('ledger')) {
+    return 'jhc_donations';
+  }
+  if (norm.includes('teacher') || norm.includes('subjectteacher') || norm.includes('allocation')) {
+    return 'subject_teacher_allocations';
+  }
+  if (norm.includes('inventory') || norm.includes('assets') || norm.includes('equipment') || norm.includes('stock')) {
+    return 'college_inventory';
+  }
+  if (norm.includes('stu') || norm.includes('student') || norm.includes('admission') || /\b20\d\d\b/.test(norm)) {
+    return 'students';
+  }
+  return 'students';
+}
+
+function pruneDeletedFilesFromStore(activeFilenames: string[]): {
+  prunedMappingsCount: number;
+  prunedServedSheetsCount: number;
+  prunedDiskFilesCount: number;
+} {
+  ensureDataDir();
+  const activeSet = new Set(activeFilenames.map(f => f.toLowerCase().trim()));
+
+  // 1. Prune Permanent Mappings
+  let prunedMappingsCount = 0;
+  const mappingsStore = loadPermanentMappings();
+  if (mappingsStore && Array.isArray(mappingsStore.mappings)) {
+    const originalCount = mappingsStore.mappings.length;
+    mappingsStore.mappings = mappingsStore.mappings.filter((m: any) => {
+      if (!m.workbookName) return true;
+      const wbNorm = m.workbookName.toLowerCase().trim();
+      return activeSet.has(wbNorm) || activeSet.has(path.basename(wbNorm));
+    });
+    prunedMappingsCount = originalCount - mappingsStore.mappings.length;
+    if (prunedMappingsCount > 0) {
+      savePermanentMappings(mappingsStore);
+    }
+  }
+
+  // 2. Prune Served Sheets Store
+  let prunedServedSheetsCount = 0;
+  const servedStore = loadServedSheetsStore();
+  if (servedStore && Array.isArray(servedStore.servedSheets)) {
+    const originalCount = servedStore.servedSheets.length;
+    servedStore.servedSheets = servedStore.servedSheets.filter((s: any) => {
+      if (!s.workbookName) return true;
+      const wbNorm = s.workbookName.toLowerCase().trim();
+      return activeSet.has(wbNorm) || activeSet.has(path.basename(wbNorm));
+    });
+    servedStore.workbooks = (servedStore.workbooks || []).filter((w: any) => {
+      const wbNorm = String(w.filename || w.name || '').toLowerCase().trim();
+      return activeSet.has(wbNorm);
+    });
+    prunedServedSheetsCount = originalCount - servedStore.servedSheets.length;
+    if (prunedServedSheetsCount > 0) {
+      fs.writeFileSync(SERVED_SHEETS_FILE, JSON.stringify(servedStore, null, 2), 'utf-8');
+    }
+  }
+
+  // 3. Prune Disk Cache Files in /data/workbooks
+  let prunedDiskFilesCount = 0;
+  if (fs.existsSync(WORKBOOKS_DIR)) {
+    try {
+      const diskFiles = fs.readdirSync(WORKBOOKS_DIR);
+      for (const df of diskFiles) {
+        if (df.endsWith('.xlsx') || df.endsWith('.xls') || df.endsWith('.csv')) {
+          const dfNorm = df.toLowerCase().trim();
+          if (!activeSet.has(dfNorm)) {
+            try {
+              fs.unlinkSync(path.join(WORKBOOKS_DIR, df));
+              prunedDiskFilesCount++;
+              console.log(`[Pruner] Removed stale cached workbook from disk: ${df}`);
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 4. Update Unified Coolify State
+  const state = loadUnifiedCoolifyState();
+  if (state && Array.isArray(state.mappings)) {
+    state.mappings = state.mappings.filter((m: any) => {
+      if (!m.workbookName) return true;
+      const wbNorm = m.workbookName.toLowerCase().trim();
+      return activeSet.has(wbNorm) || activeSet.has(path.basename(wbNorm));
+    });
+    saveUnifiedCoolifyState({ mappings: state.mappings });
+  }
+
+  return { prunedMappingsCount, prunedServedSheetsCount, prunedDiskFilesCount };
+}
+
 function loadServedSheetsStore(): any {
   ensureDataDir();
   if (fs.existsSync(SERVED_SHEETS_FILE)) {
@@ -3501,6 +3599,63 @@ app.post('/api/supabase/upsert-records', async (req, res) => {
   }
 });
 
+// REST Endpoint to Prune Mappings & Served Sheets for Deleted Nextcloud / Disk Files
+app.post('/api/sheets/prune-deleted-files', async (req, res) => {
+  try {
+    const { activeFiles, nextcloud: ncConfig } = req.body;
+    let activeList: string[] = Array.isArray(activeFiles) ? activeFiles : [];
+
+    // Query WebDAV for real files if activeList not explicitly passed
+    if (activeList.length === 0) {
+      const state = loadUnifiedCoolifyState();
+      const nc = ncConfig?.url ? ncConfig : state.nextcloud;
+      if (nc?.url) {
+        try {
+          const host = nc.url.replace(/\/+$/, '');
+          const user = nc.username || 'truenas_admin';
+          const pass = nc.appPassword;
+          const folder = (nc.sourceFolder || '/ExcelImports').replace(/^\/+/, '').replace(/\/+$/, '');
+          const folderUrl = `${host}/remote.php/dav/files/${encodeURIComponent(user)}/${folder}/`;
+          const authHeader = `Basic ${getBasicAuth(user, pass)}`;
+
+          const propRes = await fetch(folderUrl, {
+            method: 'PROPFIND',
+            headers: { Authorization: authHeader, Depth: '1', 'Content-Type': 'application/xml' },
+            signal: AbortSignal.timeout(6000),
+          }).catch(() => null);
+
+          if (propRes && propRes.ok) {
+            const xml = await propRes.text();
+            const hrefMatches = xml.match(/<d:href>([^<]+)<\/d:href>/gi) || [];
+            for (const hm of hrefMatches) {
+              const rawHref = hm.replace(/<\/?d:href>/gi, '').trim();
+              const decoded = decodeURIComponent(rawHref);
+              const fname = decoded.split('/').pop() || '';
+              if (fname.endsWith('.xlsx') || fname.endsWith('.xls') || fname.endsWith('.csv')) {
+                activeList.push(fname);
+              }
+            }
+          }
+        } catch (ncErr: any) {
+          console.warn('[Pruner] WebDAV PROPFIND notice:', ncErr.message);
+        }
+      }
+    }
+
+    const pruned = pruneDeletedFilesFromStore(activeList);
+    logServerEvent('info', 'Pruner', `Pruned stale mappings/sheets: ${pruned.prunedMappingsCount} mappings, ${pruned.prunedServedSheetsCount} served sheets, ${pruned.prunedDiskFilesCount} disk cache files removed.`);
+
+    return res.json({
+      success: true,
+      activeFilesCount: activeList.length,
+      activeFiles: activeList,
+      ...pruned,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ==========================================
 // 8b. Permanent Secrets Management Endpoints
 // ==========================================
@@ -4735,6 +4890,8 @@ async function executeFullPipelineCore(params: {
       continue;
     }
 
+    const canonicalTable = getCanonicalTableForWorkbook(curFilename);
+
     // Identify all matching mappings for sheets in this workbook
     const existingWbMappings = activeMappings.filter((m: any) => {
       const matchFile = m.workbookName && (
@@ -4744,11 +4901,11 @@ async function executeFullPipelineCore(params: {
       return matchFile;
     });
 
-    // Intelligent Multi-Tier Sheet Mapping Resolution:
+    // Strict Domain-Isolated Multi-Tier Sheet Mapping Resolution:
     // Tier 1: Explicit mapping configured specifically for this workbook
-    // Tier 2: Generic / unscoped mappings (e.g. workbookName is empty, 'ALL', '*', or 'Workbook.xlsx')
-    // Tier 3: Sibling student/roster workbook mapping with identical sheet name
-    // Tier 4: Dynamic on-the-fly header analysis and auto-mapping
+    // Tier 2: Generic / unscoped mappings matching the SAME canonical table domain
+    // Tier 3: Sibling workbook mapping matching the SAME canonical table domain
+    // Tier 4: Dynamic on-the-fly header analysis auto-mapped to canonicalTable
     const matchingMappings: any[] = [];
     for (const sheetName of wb.SheetNames) {
       // 1. Direct match for this specific workbook
@@ -4758,33 +4915,34 @@ async function executeFullPipelineCore(params: {
         Array.isArray(m.columns) && m.columns.length > 0
       );
 
-      // 2. Generic / wildcard mappings
+      // 2. Generic / wildcard mappings - MUST match canonical table domain!
       if (!matched) {
         matched = activeMappings.find((m: any) => 
           (!m.workbookName || m.workbookName === 'ALL' || m.workbookName === '*' || m.workbookName.toLowerCase() === 'workbook.xlsx') &&
           (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim() &&
+          (m.supabaseTable || '').toLowerCase().trim() === canonicalTable.toLowerCase().trim() &&
           m.enabled !== false &&
           Array.isArray(m.columns) && m.columns.length > 0
         );
       }
 
-      // 3. Sibling workbook mapping with matching worksheet name
+      // 3. Sibling workbook mapping - MUST match canonical table domain!
       if (!matched) {
         matched = activeMappings.find((m: any) => 
           (m.worksheetName || '').toLowerCase().trim() === sheetName.toLowerCase().trim() &&
+          (m.supabaseTable || '').toLowerCase().trim() === canonicalTable.toLowerCase().trim() &&
           m.enabled !== false &&
           Array.isArray(m.columns) && m.columns.length > 0
         );
       }
 
-      // 4. Dynamic auto-mapping from sheet headers if still unmapped
+      // 4. Dynamic auto-mapping from sheet headers - ALWAYS routes strictly to canonicalTable!
       if (!matched) {
         try {
           const parsed = parseWorkbookBuffer(buffer, curFilename);
           const sheetAnalysis = parsed.worksheets.find((w: any) => w.sheetName.toLowerCase().trim() === sheetName.toLowerCase().trim());
           if (sheetAnalysis && sheetAnalysis.headers.length > 0) {
-            const isStudentWb = /stu|student|20\d\d/i.test(curFilename) || /^[0-9]+[a-z]?$/i.test(sheetName) || /sheet1/i.test(sheetName);
-            const targetTable = isStudentWb ? 'students' : (sheetName.toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'records');
+            const targetTable = canonicalTable;
             
             const columns: any[] = sheetAnalysis.headers.map((h: any) => {
               const colNorm = h.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -4827,7 +4985,7 @@ async function executeFullPipelineCore(params: {
                 totalWorksheets: wb.SheetNames.length
               });
             } catch {}
-            console.log(`[Sync Engine] Auto-synthesized dynamic mapping for '${curFilename}' sheet '${sheetName}' -> table 'public.${targetTable}' (${columns.length} columns)`);
+            console.log(`[Sync Engine] Auto-synthesized isolated mapping for '${curFilename}' sheet '${sheetName}' -> table 'public.${targetTable}' (${columns.length} columns)`);
           }
         } catch (dynErr: any) {
           console.warn(`[Sync Engine] Notice during auto-mapping for ${curFilename}/${sheetName}:`, dynErr.message);
@@ -4835,9 +4993,11 @@ async function executeFullPipelineCore(params: {
       }
 
       if (matched) {
+        // Enforce strict target table domain isolation!
         matchingMappings.push({
           ...matched,
           workbookName: curFilename,
+          supabaseTable: matched.supabaseTable || canonicalTable
         });
       }
     }
